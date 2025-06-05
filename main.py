@@ -228,7 +228,7 @@ def process(input_path):
                     "content": processed_text
                 }
             ],
-            max_tokens=100000,
+            max_tokens=4096,
             temperature=0.25
         )
         next_steps = completion.choices[0].message.content.strip()
