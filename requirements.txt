@@ -1,2 +1,5 @@
 openai>=1.0.0
 python-dotenv
+tqdm
+pandas
+python-dateutil
