@@ -36,8 +36,13 @@ def extract_date_from_section(section):
     header = section.strip().splitlines()[0].lstrip("#").strip()
     # Normalize dashes to standard hyphen-minus
     header = header.replace("–", "-").replace("—", "-")
-    for token in re.split(r'\s+', header):
-        return date_parse(token, fuzzy=False, dayfirst=False, yearfirst=True).strftime("%Y-%m-%d")
+    tokens = re.split(r"\s+", header)
+    for token in tokens:
+        try:
+            return date_parse(token, fuzzy=False, dayfirst=False, yearfirst=True).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    raise ValueError(f"No valid date found in header: {header}")
     
 def get_short_hash(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
