@@ -5,8 +5,14 @@ Instructions:
 * Each section starts with `#### YYYY-MM-DD` using the date from that entry.
 * Use `-` for bullet points and indent sub‑items by four spaces.
 * Capture all clinical events, tests, symptoms, medications, diagnoses and notes.
-* For lab tests include test name, value, reference range and interpretation when available.
-* For doctor visits list doctor name, location, prescriptions (dose, frequency, duration), diagnoses and advice.
+* **Bold** any names, locations, test names, values, units, reference ranges and other important clinical data so key details stand out for a doctor skimming the output.
+* When lab test results are provided in CSV form:
+    - Convert each row to `- lab test name: lab value lab unit (range min - range max) [OK/OUT OF RANGE]`.
+    - Determine **OK** or **OUT OF RANGE** based on whether the value is inside the given range.
+    - Discard any human-readable lab result text if a CSV table is present.
+    - If the section references a lab results document link, indent the bullet list under that link.
+* If lab results are only in text form, list each test as `- **Test name:** value unit (range min - range max)` and note if out of range.
+* For doctor visits list **doctor name**, **location**, prescriptions (dose, frequency, duration), diagnoses and advice.
 * List symptoms with relevant context and appointments with date and purpose.
 * Format web links as `[description](url)`.
 * If some information is unclear, include a short note but do not guess or invent.
@@ -29,10 +35,9 @@ SAMPLE OUTPUT 2:
 #### 2023-04-12
 
 - [Lab testing at LabABC](https://lababc.com/test/12345)
-    - Values:
-        - **Hemoglobin:** 13.2 g/dL (ref: 12-16, normal)
-        - **Leukocytes:** 5.1 x10^9/L (ref: 4-10, normal)
-        - **Ferritin:** 8 ng/mL (ref: 15-150, low)
+    - **Hemoglobin:** 13.2 g/dL (12-16) [OK]
+    - **Leukocytes:** 5.1 x10^9/L (4-10) [OK]
+    - **Ferritin:** 8 ng/mL (15-150) [OUT OF RANGE]
     - Notes:
         - Low ferritin indicates possible iron deficiency.
 
