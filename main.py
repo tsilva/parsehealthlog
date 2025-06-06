@@ -215,7 +215,17 @@ def process(input_path):
             processed_file.write_text(
                 f"{raw_hash}\n{processed_section}", encoding="utf-8"
             )
-            logger.info(f"Processed section for date {date} written to {processed_file}")
+            logger.info(
+                f"Processed section for date {date} written to {processed_file}"
+            )
+
+            # Write labs for this date if available
+            lab_df = labs_by_date.get(date)
+            if lab_df is not None and not lab_df.empty:
+                lab_path = data_dir / f"{date}.labs.md"
+                labs_text = LAB_SECTION_HEADER + "\n" + format_lab_results(lab_df)
+                lab_path.write_text(labs_text + "\n", encoding="utf-8")
+                labs_written.add(date)
 
             # Return True to indicate successful processing
             return date, True
@@ -274,6 +284,7 @@ def process(input_path):
             lab_dfs.append(labs_df)
 
     labs_by_date = {}
+    labs_written = set()
     if lab_dfs:
         labs_df = pd.concat(lab_dfs, ignore_index=True)
         keep_cols = [
@@ -339,9 +350,11 @@ def process(input_path):
     else:
         logger.info("All sections processed successfully")
 
-    # Write labs to separate files for each date
+    # Write labs for any dates that weren't processed above
     if labs_by_date:
-        write_labs_files(data_dir, labs_by_date)
+        remaining = {d: df for d, df in labs_by_date.items() if d not in labs_written}
+        if remaining:
+            write_labs_files(data_dir, remaining)
 
     # Build the final curated health log text
     processed_map = {f.stem: f for f in data_dir.glob("*.processed.md")}

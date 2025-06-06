@@ -44,7 +44,8 @@ python main.py <your_health_log.md>
   - `output/clarifying_questions.md` — concise questions a doctor might ask about the log
   - `output/summary.md` — short patient summary
   - `output/next_steps.md` — recommended actions
-  - `output/<DATE>.labs.md` — structured lab results for each date
+  - `output/<DATE>.labs.md` — structured lab results for each date, generated
+    during parallel section processing
   - `output/clinical_data_missing_report.md` — report of any clinical data missing from the structured output
   - `error.log` — errors captured during processing
   - Logs are also echoed to the console
