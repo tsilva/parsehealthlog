@@ -479,7 +479,7 @@ def process(input_path):
             {"role": "user", "content": final_text},
         ],
         max_tokens=4096,
-        temperature=0.5,
+        temperature=1.0,
         calls=questions_runs,
         merge_system_prompt=MERGE_BULLETS_SYSTEM_PROMPT,
     )
