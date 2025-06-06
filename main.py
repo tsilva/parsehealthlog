@@ -237,14 +237,34 @@ def process(input_path):
         with open(next_steps_file_path, "w", encoding="utf-8") as f: f.write(next_steps)
         print(f"Saved processed health summary to {data_dir / 'next_steps.md'}")
 
+    # If labs parser output path is set, ensure all lab dates are present in the log
+    if LABS_PARSER_OUTPUT_PATH:
+        labs_dir = Path(LABS_PARSER_OUTPUT_PATH)
+        date_pattern = re.compile(r"^(\d{4}-\d{2}-\d{2})")
+        lab_dates = set()
+        if labs_dir.exists():
+            for fname in os.listdir(labs_dir):
+                m = date_pattern.match(fname)
+                if m:
+                    lab_dates.add(m.group(1))
+
+        log_dates = {f.stem for f in processed_files}
+        missing_dates = sorted(lab_dates - log_dates)
+        if missing_dates:
+            print("Lab output dates missing from health log:")
+            for d in missing_dates:
+                print(d)
+        else:
+            print("All lab output dates are present in the health log.")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Health log parser and validator")
-    parser.add_argument("health_log_path", help="Health log path", required=False)
-    
-    health_log_path = args.health_log_path if args.health_log_path else os.getenv("HEALTH_LOG_PATH")
+    parser.add_argument("health_log_path", help="Health log path", nargs="?")
 
     args = parser.parse_args()
+    health_log_path = args.health_log_path if args.health_log_path else os.getenv("HEALTH_LOG_PATH")
+
     process(health_log_path)
 
 if __name__ == "__main__":
