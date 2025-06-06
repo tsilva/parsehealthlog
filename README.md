@@ -18,6 +18,15 @@ This project is ideal for patients, caregivers, or clinicians who want to organi
 pipx install . --force
 ```
 
+To work in a local development environment you can use the helper scripts
+provided in this repo:
+
+- **Linux/macOS:** `./activate-env.sh`
+- **Windows (PowerShell):** `./activate-env.ps1`
+
+Running either script will create a `.venv` directory managed by `uv` if one
+does not already exist and install packages from `requirements.txt`.
+
 - Requires Python 3.8+
 - Set up your `.env` file (see `.env.example`) with your OpenRouter API key and preferred model
 
