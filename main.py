@@ -139,6 +139,31 @@ def write_labs_files(data_dir, labs_by_date):
         (data_dir / f"{date}.labs.md").write_text(labs_text + "\n", encoding="utf-8")
 
 
+def load_or_generate_file(
+    file_path: Path,
+    description: str,
+    model_id: str,
+    messages: list,
+    max_tokens: int,
+    temperature: float = 0.0,
+):
+    """Load file if it exists, otherwise generate it using the LLM."""
+    if file_path.exists():
+        return file_path.read_text(encoding="utf-8").strip()
+
+    logger.info(f"Generating {description}...")
+    completion = client.chat.completions.create(
+        model=model_id,
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+    content = completion.choices[0].message.content.strip()
+    file_path.write_text(content, encoding="utf-8")
+    logger.info(f"Saved {description} to {file_path}")
+    return content
+
+
 def process(input_path):
     default_model = os.getenv("MODEL_ID")
 
@@ -363,8 +388,12 @@ def process(input_path):
             write_labs_files(data_dir, remaining)
 
     # Build the final curated health log text
-    processed_map = {f.stem: f for f in data_dir.glob("*.processed.md")}
-    labs_map = {f.stem: f for f in data_dir.glob("*.labs.md")}
+    def date_key(path: Path) -> str:
+        """Return the YYYY-MM-DD portion from a file path."""
+        return path.name.split(".")[0]
+
+    processed_map = {date_key(f): f for f in data_dir.glob("*.processed.md")}
+    labs_map = {date_key(f): f for f in data_dir.glob("*.labs.md")}
     all_dates = sorted(set(processed_map) | set(labs_map), reverse=True)
 
     processed_entries = []
@@ -385,26 +414,20 @@ def process(input_path):
 
     # Generate or load the summary and prepend it to the processed text
     summary_file_path = data_dir / "summary.md"
-    if summary_file_path.exists():
-        summary = summary_file_path.read_text(encoding="utf-8").strip()
-    else:
-        logger.info("Generating health summary...")
-        summary_source = processed_text
-        if header_text:
-            summary_source = header_text + "\n\n" + processed_text
-        completion = client.chat.completions.create(
-            model=summary_model_id,
-            messages=[
-                {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
-                {"role": "user", "content": summary_source},
-            ],
-            max_tokens=4096,
-            temperature=0.0,
-        )
-        summary = completion.choices[0].message.content.strip()
-        with open(summary_file_path, "w", encoding="utf-8") as f:
-            f.write(summary)
-        logger.info(f"Saved processed health summary to {data_dir / 'summary.md'}")
+    summary_source = processed_text
+    if header_text:
+        summary_source = header_text + "\n\n" + processed_text
+    summary = load_or_generate_file(
+        summary_file_path,
+        "health summary",
+        summary_model_id,
+        [
+            {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
+            {"role": "user", "content": summary_source},
+        ],
+        max_tokens=2048,
+        temperature=0.0,
+    )
 
     final_text = summary + "\n\n" + processed_text
     with open(data_dir / "output.md", "w", encoding="utf-8") as f:
@@ -413,41 +436,31 @@ def process(input_path):
 
     # Ask the LLM for clarifying questions about the log
     questions_file_path = data_dir / "clarifying_questions.md"
-    if not questions_file_path.exists():
-        logger.info("Generating clarifying questions...")
-        completion = client.chat.completions.create(
-            model=questions_model_id,
-            messages=[
-                {"role": "system", "content": QUESTIONS_SYSTEM_PROMPT},
-                {"role": "user", "content": final_text},
-            ],
-            max_tokens=4096,
-            temperature=0.0,
-        )
-        questions = completion.choices[0].message.content.strip()
-        with open(questions_file_path, "w", encoding="utf-8") as f:
-            f.write(questions)
-        logger.info(f"Saved clarifying questions to {questions_file_path}")
+    load_or_generate_file(
+        questions_file_path,
+        "clarifying questions",
+        questions_model_id,
+        [
+            {"role": "system", "content": QUESTIONS_SYSTEM_PROMPT},
+            {"role": "user", "content": final_text},
+        ],
+        max_tokens=4096,
+        temperature=0.0,
+    )
 
     # Write next steps using the LLM
     next_steps_file_path = data_dir / "next_steps.md"
-    if not next_steps_file_path.exists():
-        logger.info("Generating next steps...")
-        completion = client.chat.completions.create(
-            model=next_steps_model_id,
-            messages=[
-                {"role": "system", "content": NEXT_STEPS_SYSTEM_PROMPT},
-                {"role": "user", "content": final_text},
-            ],
-            max_tokens=4096,
-            temperature=0.25,
-        )
-        next_steps = completion.choices[0].message.content.strip()
-        with open(next_steps_file_path, "w", encoding="utf-8") as f:
-            f.write(next_steps)
-        logger.info(
-            f"Saved processed health summary to {data_dir / 'next_steps.md'}"
-        )
+    load_or_generate_file(
+        next_steps_file_path,
+        "next steps",
+        next_steps_model_id,
+        [
+            {"role": "system", "content": NEXT_STEPS_SYSTEM_PROMPT},
+            {"role": "user", "content": final_text},
+        ],
+        max_tokens=8192,
+        temperature=0.25,
+    )
 
     # If labs parser output path is set, ensure all lab dates are present in the log
     if LABS_PARSER_OUTPUT_PATH:
@@ -462,7 +475,7 @@ def process(input_path):
 
         # processed file names look like "YYYY-MM-DD.processed.md" so we only
         # want the date portion before the first dot
-        log_dates = {name for name in processed_map.keys()}
+        log_dates = set(processed_map.keys())
         missing_dates = sorted(lab_dates - log_dates)
         if missing_dates:
             logger.info("Lab output dates missing from health log:")
