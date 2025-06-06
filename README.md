@@ -41,7 +41,7 @@ python main.py <your_health_log.md>
 - Input: A Markdown file with health log entries (can be unstructured)
 - Output:
   - `output/output.md` — patient summary followed by the curated log
-  - `output/clarifying_questions.md` — concise questions a doctor might ask about the log
+  - `output/clarifying_questions.md` — clarifying questions merged from multiple runs
   - `output/summary.md` — short patient summary
   - `output/next_steps.md` — recommended actions
   - `output/<DATE>.labs.md` — structured lab results for each date, generated
@@ -57,6 +57,7 @@ python main.py <your_health_log.md>
 - `PROCESS_MODEL_ID` — model for transforming raw sections
 - `VALIDATE_MODEL_ID` — model for validating processed sections
 - `QUESTIONS_MODEL_ID` — model for generating clarifying questions
+- `QUESTIONS_RUNS` — how many times to generate clarifying questions (default: 3)
 - `SUMMARY_MODEL_ID` — model for creating summaries
 - `NEXT_STEPS_MODEL_ID` — model for recommended next steps
 - `MAX_WORKERS` — number of parallel processing threads (default: 1)

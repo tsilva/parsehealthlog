@@ -70,6 +70,7 @@ VALIDATE_USER_PROMPT = load_prompt("validate.user_prompt")
 SUMMARY_SYSTEM_PROMPT = load_prompt("summary.system_prompt")
 NEXT_STEPS_SYSTEM_PROMPT = load_prompt("next_steps.system_prompt")
 QUESTIONS_SYSTEM_PROMPT = load_prompt("questions.system_prompt")
+MERGE_BULLETS_SYSTEM_PROMPT = load_prompt("merge_bullets.system_prompt")
 
 # Initialize OpenAI client
 client = OpenAI(
@@ -146,22 +147,54 @@ def load_or_generate_file(
     messages: list,
     max_tokens: int,
     temperature: float = 0.0,
+    *,
+    calls: int = 1,
+    merge_system_prompt: str | None = None,
 ):
     """Load file if it exists, otherwise generate it using the LLM."""
     if file_path.exists():
         return file_path.read_text(encoding="utf-8").strip()
 
     logger.info(f"Generating {description}...")
-    completion = client.chat.completions.create(
-        model=model_id,
-        messages=messages,
-        max_tokens=max_tokens,
-        temperature=temperature,
-    )
-    content = completion.choices[0].message.content.strip()
+    outputs = []
+    for _ in range(calls):
+        completion = client.chat.completions.create(
+            model=model_id,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        outputs.append(completion.choices[0].message.content.strip())
+
+    if calls == 1:
+        content = outputs[0]
+    else:
+        assert merge_system_prompt, "merge_system_prompt required when calls > 1"
+        content = merge_outputs(outputs, merge_system_prompt, model_id)
+
     file_path.write_text(content, encoding="utf-8")
     logger.info(f"Saved {description} to {file_path}")
     return content
+
+
+def merge_outputs(outputs: list[str], system_prompt: str, model_id: str) -> str:
+    """Merge multiple outputs using an LLM to remove redundancy."""
+    if not outputs:
+        return ""
+    user_content = "\n\n".join(outputs)
+    completion = client.chat.completions.create(
+        model=model_id,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ],
+        max_tokens=4096,
+        temperature=0.0,
+    )
+    return completion.choices[0].message.content.strip()
+
+
+
 
 
 def process(input_path):
@@ -434,7 +467,8 @@ def process(input_path):
         f.write(final_text)
     logger.info(f"Saved processed health log to {data_dir / 'output.md'}")
 
-    # Ask the LLM for clarifying questions about the log
+    # Ask the LLM for clarifying questions about the log multiple times
+    questions_runs = int(os.getenv("QUESTIONS_RUNS", "3"))
     questions_file_path = data_dir / "clarifying_questions.md"
     load_or_generate_file(
         questions_file_path,
@@ -445,7 +479,9 @@ def process(input_path):
             {"role": "user", "content": final_text},
         ],
         max_tokens=4096,
-        temperature=0.0,
+        temperature=0.5,
+        calls=questions_runs,
+        merge_system_prompt=MERGE_BULLETS_SYSTEM_PROMPT,
     )
 
     # Write next steps using the LLM
