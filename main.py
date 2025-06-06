@@ -139,11 +139,25 @@ def process(input_path):
                 temperature=0.0,
             )
 
-            # If the validation does not return "$OK$", retry processing
+            # If the validation does not return "$OK$", capture the failure
             error_content = completion.choices[0].message.content.strip()
             if "$OK$" not in error_content:
                 logger.error(f"Validation failed for date {date}: {error_content}")
-                logger.info("Retrying processing...")
+
+                # Save sample of the failure for analysis on the last attempt
+                if attempt == 3:
+                    failed_dir = data_dir / "failed_samples"
+                    failed_dir.mkdir(exist_ok=True)
+                    failure_path = failed_dir / f"{date}.failure.md"
+                    failure_text = (
+                        "===== RAW TEXT =====\n" + raw_section +
+                        "\n\n===== PROCESSED TEXT =====\n" + processed_section +
+                        "\n\n===== VALIDATION OUTPUT =====\n" + error_content + "\n"
+                    )
+                    failure_path.write_text(failure_text, encoding="utf-8")
+                    logger.info(f"Saved failed sample to {failure_path}")
+                else:
+                    logger.info("Retrying processing...")
                 continue
 
             # If validation passes, write the processed section to file
