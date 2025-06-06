@@ -365,8 +365,12 @@ def process(input_path):
             write_labs_files(data_dir, remaining)
 
     # Build the final curated health log text
-    processed_map = {f.stem: f for f in data_dir.glob("*.processed.md")}
-    labs_map = {f.stem: f for f in data_dir.glob("*.labs.md")}
+    def date_key(path: Path) -> str:
+        """Return the YYYY-MM-DD portion from a file path."""
+        return path.name.split(".")[0]
+
+    processed_map = {date_key(f): f for f in data_dir.glob("*.processed.md")}
+    labs_map = {date_key(f): f for f in data_dir.glob("*.labs.md")}
     all_dates = sorted(set(processed_map) | set(labs_map), reverse=True)
 
     processed_entries = []
@@ -464,7 +468,7 @@ def process(input_path):
 
         # processed file names look like "YYYY-MM-DD.processed.md" so we only
         # want the date portion before the first dot
-        log_dates = {name for name in processed_map.keys()}
+        log_dates = set(processed_map.keys())
         missing_dates = sorted(lab_dates - log_dates)
         if missing_dates:
             logger.info("Lab output dates missing from health log:")
