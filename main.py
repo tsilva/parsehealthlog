@@ -184,11 +184,12 @@ def process(input_path):
     # Read and split input file into sections
     with open(input_path, "r", encoding="utf-8") as f:
         input_text = f.read()
-    # Only keep text starting from the first section header (###)
+    # Preserve any notes before the first section header for later summarization
     first_section_idx = input_text.find("###")
     if first_section_idx == -1:
         logger.error("No section headers (###) found in input file.")
         sys.exit(1)
+    header_text = input_text[:first_section_idx].strip()
     input_text = input_text[first_section_idx:]
     sections = [
         s.strip()
@@ -339,11 +340,14 @@ def process(input_path):
     summary_file_path = data_dir / "summary.md"
     if not summary_file_path.exists():
         logger.info("Generating health summary...")
+        summary_source = processed_text
+        if header_text:
+            summary_source = header_text + "\n\n" + processed_text
         completion = client.chat.completions.create(
             model=summary_model_id,
             messages=[
                 {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
-                {"role": "user", "content": processed_text},
+                {"role": "user", "content": summary_source},
             ],
             max_tokens=2048,
             temperature=0.0,
