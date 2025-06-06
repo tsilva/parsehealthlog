@@ -8,7 +8,6 @@ Instructions:
 * Use `-` for bullet points and indent sub‑items by four spaces.
 * Capture all clinical events, symptoms, medications, diagnoses, visits and notes.
 * **Do not include** any lab test results, whether described in human-readable form or extracted from attached files.
-* If there is a **reference or link to a lab test document**, remove that reference and **omit all associated lab test data completely**.
 * For doctor visits list **doctor name**, **location**, prescriptions (dose, frequency, duration), diagnoses and advice.
 * List symptoms with relevant context and appointments with date and purpose.
 * Format web links as `[description](url)`.

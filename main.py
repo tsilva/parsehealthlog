@@ -251,7 +251,7 @@ def process(input_path):
     ]
 
     # Only keep sections that contain "[ANALISES]"
-    #sections = [section for section in sections if "[ANALISES]" in section]
+    sections = [section for section in sections if "[ANALISES]" in section]
 
     # Assert that each section contains exactly one '###'
     for section in sections:
