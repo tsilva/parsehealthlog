@@ -70,10 +70,7 @@ def process(input_path):
     # Run LLM to process a section, return formatted markdown
     def _process(raw_section):
         """Process a single raw section and return (date, success)."""
-        # Write raw section to file
         date = extract_date_from_section(raw_section)
-        raw_file = data_dir / f"{date}.raw.md"
-        raw_file.write_text(raw_section, encoding="utf-8")
 
         # The existence/up-to-date check is now outside
         for attempt in range(1, 4):
@@ -201,6 +198,12 @@ def process(input_path):
                 section = section + f"\n\nLab Results CSV:\n{csv_string}"
             new_sections.append(section)
         sections = new_sections
+
+    # Rewrite all raw files with lab data mixed in
+    for section in sections:
+        date = extract_date_from_section(section)
+        raw_file = data_dir / f"{date}.raw.md"
+        raw_file.write_text(section, encoding="utf-8")
 
     # Precompute which sections need processing
     to_process = []
