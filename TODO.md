@@ -1,3 +1,3 @@
 - feedback failure explanation when processing
 - add user metrics to health log
-- if labs parser output dir is available, read the all.csv file from there and use it to inject lab data into health log (injected in raw stage so that the processor can use it)
+- if labs parser output dir is available, read the all.csv file from there and use it to inject lab data into health log (injected in raw stage so that the processor can use it) (DONE)
