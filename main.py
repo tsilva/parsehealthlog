@@ -307,8 +307,6 @@ def process(input_path):
         labs_df = labs_df[[c for c in keep_cols if c in labs_df.columns]]
         labs_by_date = {str(d): df for d, df in labs_df.groupby("date")}
 
-
-
     # Rewrite all raw files
     for section in sections:
         date = extract_date_from_section(section)
@@ -400,7 +398,7 @@ def process(input_path):
                 {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
                 {"role": "user", "content": summary_source},
             ],
-            max_tokens=2048,
+            max_tokens=4096,
             temperature=0.0,
         )
         summary = completion.choices[0].message.content.strip()
@@ -423,7 +421,7 @@ def process(input_path):
                 {"role": "system", "content": QUESTIONS_SYSTEM_PROMPT},
                 {"role": "user", "content": final_text},
             ],
-            max_tokens=1024,
+            max_tokens=4096,
             temperature=0.0,
         )
         questions = completion.choices[0].message.content.strip()
