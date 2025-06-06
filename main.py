@@ -10,6 +10,9 @@ import hashlib
 import io
 import pandas as pd
 
+# HACK: temporary env hack
+os.environ.pop("SSL_CERT_FILE", None)
+
 LABS_PARSER_OUTPUT_PATH = os.getenv("LABS_PARSER_OUTPUT_PATH")
 
 def load_prompt(prompt_name):
@@ -126,6 +129,12 @@ def process(input_path):
 
     # Read and split input file into sections
     with open(input_path, "r", encoding="utf-8") as f: input_text = f.read()
+    # Only keep text starting from the first section header (###)
+    first_section_idx = input_text.find("###")
+    if first_section_idx == -1:
+        print("No section headers (###) found in input file.")
+        sys.exit(1)
+    input_text = input_text[first_section_idx:]
     sections = [s.strip() for s in re.split(r'(?=^###)', input_text, flags=re.MULTILINE) if s.strip()]
 
     # Assert that each section contains exactly one '###'
