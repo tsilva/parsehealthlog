@@ -11,7 +11,6 @@ Instructions:
     - Determine **OK** or **OUT OF RANGE** based on whether the value is inside the given range.
     - Discard any human-readable lab result text if a CSV table is present.
     - If the section references a lab results document link, indent the bullet list under that link.
-* If lab results are only in text form, list each test as `- **Test name:** value unit (range min - range max)` and note if out of range.
 * For doctor visits list **doctor name**, **location**, prescriptions (dose, frequency, duration), diagnoses and advice.
 * List symptoms with relevant context and appointments with date and purpose.
 * Format web links as `[description](url)`.
