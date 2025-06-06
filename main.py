@@ -287,6 +287,13 @@ def process(input_path):
     labs_written = set()
     if lab_dfs:
         labs_df = pd.concat(lab_dfs, ignore_index=True)
+
+        if "date" in labs_df.columns:
+            labs_df["date"] = (
+                pd.to_datetime(labs_df["date"], errors="coerce")
+                .dt.strftime("%Y-%m-%d")
+            )
+
         keep_cols = [
             "date",
             "lab_type",
@@ -296,8 +303,9 @@ def process(input_path):
             "lab_range_min_final",
             "lab_range_max_final",
         ]
+
         labs_df = labs_df[[c for c in keep_cols if c in labs_df.columns]]
-        labs_by_date = {d: df for d, df in labs_df.groupby("date")}
+        labs_by_date = {str(d): df for d, df in labs_df.groupby("date")}
 
 
 
