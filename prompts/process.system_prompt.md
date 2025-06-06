@@ -19,31 +19,46 @@ Instructions:
 
 ---- SAMPLE OUTPUT 1: ----
 
-#### 2023-04-11
+#### 2025-06-03
 
-- Colonoscopy performed by **Dr. Jones (Gastroenterologist)** at **City Hospital**
-    - Findings:
-        - No polyps found, normal mucosa.
-        - Biopsy taken for further analysis.
-    - Notes:
-        - Follow-up in 2 weeks for biopsy results.
-        - Preparation was difficult, but manageable.
+- Consultation:
+  - Doctor: **Dr. Mariana Velasquez (Neurogastroenterology)**
+  - Location: **Riverside Medical Center**
+  - Prescription:
+    - **Nortriptyline 10mg**, once daily at night before bedtime, for 2 months.
+    - **Laxomix Syrup 25ml**, three times a day, for 1 month.
+  - Notes:
+    - Expressed concern over the prior use of Motidrex for gut motility, explaining that it only temporarily affects the upper gastrointestinal tract and isn't suitable long-term.
+
+#### 2025-04-28
+
+- [Exam: Colonoscopy](https://link)
+  - Doctor: **Dr. Evan Moreno (Gastroenterologist)**
+  - Location: **Greenhill Diagnostic Center**
+  - Results:
+    - No abnormalities detected; mucosa appeared healthy.
+    - Tissue biopsy taken for histopathological analysis.
+  - Notes:
+    - Patient to return in 2 weeks to discuss biopsy results.
+    - Reported that bowel preparation was difficult but completed successfully.
 
 ---- SAMPLE OUTPUT 2: ----
 
-#### 2023-04-12
+#### 2025-02-14
 
-- Doctor visit with **Dr. Smith (Gastroenterologist)** at **City Hospital**
-    - Prescription:
-        - **Iron Protein Succinylate 100 mg**, 1 tablet daily for 3 month
-        - **Vitamin C 500 mg**, 1 tablet daily for 3 month
-        - **Folic Acid 1 mg**, 1 tablet daily for 3 month
-        - **Vitamin B12 1000 mcg**, 1 tablet weekly for 3 month
-    - Diagnosis:
-        - Iron deficiency anemia
-    - Notes:
-        - Advised dietary changes to include more iron-rich foods.
-        - Recommended follow-up in 3 months.
+- Consultation:
+  - Doctor: **Dr. Julian Tanaka (Gastroenterologist)**
+  - Location: **Oakview Hospital**
+  - Diagnosis:
+    - Mild iron deficiency anemia
+  - [Prescription](https://link):
+    - **Ferrosol 100 mg oral solution** – 10 mL once daily, taken with meals, for 2 months.
+    - **Ascorbic Acid 500 mg chewable tablets** – One tablet twice daily for 6 weeks.
+    - **Folinex 1 mg pills** – One pill every other day for 3 months.
+    - **Cobalamin 1000 mcg sublingual tablets** – One tablet twice weekly, allowed to dissolve under the tongue, for 8 weeks.
+  - Notes:
+    - Recommended including red meat, spinach, and legumes in the diet.
+    - Scheduled follow-up visit in 3 months.
 
-- I did not feel well on 2023-04-10, had a headache and fatigue.
-- I have a follow-up appointment scheduled for 2023-05-01.
+- Experienced fatigue and lightheadedness on **2025-04-13**.
+- Upcoming follow-up appointment set for **2025-06-01**.
