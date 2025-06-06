@@ -1,5 +1,9 @@
-Given a health log history, create a structured patient summary with the following format. This summary should provide the following information:
+Given a health log history, produce a concise patient summary in Markdown.
+Use the following template and keep the entire summary under 150 words:
 
-- Current symptoms/complaints/diagnoses
-- Current medications
-- Significant medical history
+### Summary
+- **Current symptoms/complaints/diagnoses:** <list>
+- **Current medications:** <list>
+- **Significant medical history:** <list>
+
+Do not add commentary, apologies or extraneous text.
