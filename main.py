@@ -130,26 +130,13 @@ def format_lab_results(lab_df):
     return "\n".join(lines)
 
 
-def update_labs_in_processed_files(data_dir, labs_by_date):
-    """Append formatted lab results to the end of each processed file."""
-    for processed_file in data_dir.glob("*.processed.md"):
-        content = processed_file.read_text(encoding="utf-8").splitlines()
-        if not content:
+def write_labs_files(data_dir, labs_by_date):
+    """Write lab results to separate `YYYY-MM-DD.labs.md` files."""
+    for date, df in labs_by_date.items():
+        if df is None or df.empty:
             continue
-        hash_line = content[0]
-        body = "\n".join(content[1:]).strip()
-
-        # Remove previously inserted lab results, if any
-        if LAB_SECTION_HEADER in body:
-            body = body.split(LAB_SECTION_HEADER, 1)[0].rstrip()
-
-        date = processed_file.name.split(".", 1)[0]
-        lab_df = labs_by_date.get(date)
-        if lab_df is not None and not lab_df.empty:
-            labs_text = format_lab_results(lab_df)
-            body = body + "\n\n" + LAB_SECTION_HEADER + "\n" + labs_text
-
-        processed_file.write_text(hash_line + "\n" + body + "\n", encoding="utf-8")
+        labs_text = LAB_SECTION_HEADER + "\n" + format_lab_results(df)
+        (data_dir / f"{date}.labs.md").write_text(labs_text + "\n", encoding="utf-8")
 
 
 def process(input_path):
@@ -352,17 +339,29 @@ def process(input_path):
     else:
         logger.info("All sections processed successfully")
 
-    # Always update lab summaries in processed files
+    # Write labs to separate files for each date
     if labs_by_date:
-        update_labs_in_processed_files(data_dir, labs_by_date)
+        write_labs_files(data_dir, labs_by_date)
 
     # Build the final curated health log text
-    processed_files = list(data_dir.glob("*.processed.md"))
-    processed_files = sorted(processed_files, key=lambda f: f.stem, reverse=True)
-    processed_entries = [
-        "\n".join(f.read_text(encoding="utf-8").splitlines()[1:])
-        for f in processed_files
-    ]
+    processed_map = {f.stem: f for f in data_dir.glob("*.processed.md")}
+    labs_map = {f.stem: f for f in data_dir.glob("*.labs.md")}
+    all_dates = sorted(set(processed_map) | set(labs_map), reverse=True)
+
+    processed_entries = []
+    for date in all_dates:
+        parts = []
+        pf = processed_map.get(date)
+        if pf:
+            part = "\n".join(pf.read_text(encoding="utf-8").splitlines()[1:])
+            parts.append(part)
+        lf = labs_map.get(date)
+        if lf:
+            labs_text = lf.read_text(encoding="utf-8").strip()
+            if labs_text:
+                parts.append(labs_text)
+        processed_entries.append("\n".join(parts).strip())
+
     processed_text = "\n\n".join(processed_entries)
 
     # Generate or load the summary and prepend it to the processed text
@@ -444,7 +443,7 @@ def process(input_path):
 
         # processed file names look like "YYYY-MM-DD.processed.md" so we only
         # want the date portion before the first dot
-        log_dates = {f.name.split(".", 1)[0] for f in processed_files}
+        log_dates = {name for name in processed_map.keys()}
         missing_dates = sorted(lab_dates - log_dates)
         if missing_dates:
             logger.info("Lab output dates missing from health log:")
