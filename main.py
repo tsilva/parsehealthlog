@@ -253,7 +253,7 @@ def process(input_path):
                 finally:
                     buffer.close()
 
-                section = section + f"\n\nLab Results CSV:\n{csv_string}"
+                section = section + f"\n\nMOST ACCURATE LAB RESULTS CSV:\n{csv_string}"
             new_sections.append(section)
         sections = new_sections
 
