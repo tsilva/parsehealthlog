@@ -10,14 +10,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dateutil.parser import parse as date_parse
 import argparse
 import hashlib
-import io
 import pandas as pd
 
 # HACK: temporary env hack
 os.environ.pop("SSL_CERT_FILE", None)
 
 LABS_PARSER_OUTPUT_PATH = os.getenv("LABS_PARSER_OUTPUT_PATH")
-LAB_PLACEHOLDER = "<<LAB_RESULTS_PLACEHOLDER>>"
+LAB_SECTION_HEADER = "Lab test results:"
 
 
 def setup_logging():
@@ -131,6 +130,28 @@ def format_lab_results(lab_df):
     return "\n".join(lines)
 
 
+def update_labs_in_processed_files(data_dir, labs_by_date):
+    """Append formatted lab results to the end of each processed file."""
+    for processed_file in data_dir.glob("*.processed.md"):
+        content = processed_file.read_text(encoding="utf-8").splitlines()
+        if not content:
+            continue
+        hash_line = content[0]
+        body = "\n".join(content[1:]).strip()
+
+        # Remove previously inserted lab results, if any
+        if LAB_SECTION_HEADER in body:
+            body = body.split(LAB_SECTION_HEADER, 1)[0].rstrip()
+
+        date = processed_file.name.split(".", 1)[0]
+        lab_df = labs_by_date.get(date)
+        if lab_df is not None and not lab_df.empty:
+            labs_text = format_lab_results(lab_df)
+            body = body + "\n\n" + LAB_SECTION_HEADER + "\n" + labs_text
+
+        processed_file.write_text(hash_line + "\n" + body + "\n", encoding="utf-8")
+
+
 def process(input_path):
     default_model = os.getenv("MODEL_ID")
 
@@ -200,10 +221,8 @@ def process(input_path):
                     logger.info("Retrying processing...")
                 continue
 
-            # If validation passes, insert labs and write the processed section to file
-            if date in labs_by_date:
-                labs_text = format_lab_results(labs_by_date[date])
-                processed_section = processed_section.replace(LAB_PLACEHOLDER, labs_text)
+            # If validation passes, write the processed section to file
+            processed_section = processed_section.strip()
             raw_hash = get_short_hash(raw_section)
             processed_file = data_dir / f"{date}.processed.md"
             processed_file.write_text(
@@ -279,15 +298,9 @@ def process(input_path):
         labs_df = labs_df[[c for c in keep_cols if c in labs_df.columns]]
         labs_by_date = {d: df for d, df in labs_df.groupby("date")}
 
-        new_sections = []
-        for section in sections:
-            date = extract_date_from_section(section)
-            if date in labs_by_date:
-                section = section + f"\n\n{LAB_PLACEHOLDER}"
-            new_sections.append(section)
-        sections = new_sections
 
-    # Rewrite all raw files with lab data mixed in
+
+    # Rewrite all raw files
     for section in sections:
         date = extract_date_from_section(section)
         raw_file = data_dir / f"{date}.raw.md"
@@ -335,6 +348,10 @@ def process(input_path):
         logger.info(f"Failure log written to {log_path}")
     else:
         logger.info("All sections processed successfully")
+
+    # Always update lab summaries in processed files
+    if labs_by_date:
+        update_labs_in_processed_files(data_dir, labs_by_date)
 
     # Build the final curated health log text
     processed_files = list(data_dir.glob("*.processed.md"))
