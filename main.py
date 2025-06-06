@@ -274,7 +274,7 @@ def process(input_path):
 
 def main():
     parser = argparse.ArgumentParser(description="Health log parser and validator")
-    parser.add_argument("health_log_path", help="Health log path", required=False)
+    parser.add_argument("--health_log_path", help="Health log path")
     args = parser.parse_args()
     health_log_path = args.health_log_path if args.health_log_path else os.getenv("HEALTH_LOG_PATH")
     if not health_log_path:
