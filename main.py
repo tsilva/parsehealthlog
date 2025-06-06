@@ -10,6 +10,9 @@ import hashlib
 import io
 import pandas as pd
 
+# HACK: temporary env hack
+os.environ.pop("SSL_CERT_FILE", None)
+
 LABS_PARSER_OUTPUT_PATH = os.getenv("LABS_PARSER_OUTPUT_PATH")
 
 def load_prompt(prompt_name):
@@ -58,13 +61,14 @@ def process(input_path):
 
     # Run LLM to process a section, return formatted markdown
     def _process(raw_section):
+        """Process a single raw section and return (date, success)."""
         # Write raw section to file
         date = extract_date_from_section(raw_section)
         raw_file = data_dir / f"{date}.raw.md"
         raw_file.write_text(raw_section, encoding="utf-8")
 
         # The existence/up-to-date check is now outside
-        for _ in range(3):
+        for attempt in range(1, 4):
             # Run LLM to process the section
             completion = client.chat.completions.create(
                 model=model_id,
@@ -106,7 +110,7 @@ def process(input_path):
             # If the validation does not return "$OK$", retry processing
             error_content = completion.choices[0].message.content.strip()
             if "$OK$" not in error_content:
-                print(f"Validation failed for date {date}: {error_content}") 
+                print(f"Validation failed for date {date}: {error_content}")
                 print("Retrying processing...")
                 continue
             
@@ -117,14 +121,20 @@ def process(input_path):
             print(f"Processed section for date {date} written to {processed_file}")
             
             # Return True to indicate successful processing
-            return True
+            return date, True
         
         # If all retries failed, return False
         print(f"Failed to process section for date {date} after 3 attempts")
-        return False 
+        return date, False
 
     # Read and split input file into sections
     with open(input_path, "r", encoding="utf-8") as f: input_text = f.read()
+    # Only keep text starting from the first section header (###)
+    first_section_idx = input_text.find("###")
+    if first_section_idx == -1:
+        print("No section headers (###) found in input file.")
+        sys.exit(1)
+    input_text = input_text[first_section_idx:]
     sections = [s.strip() for s in re.split(r'(?=^###)', input_text, flags=re.MULTILINE) if s.strip()]
 
     # Assert that each section contains exactly one '###'
@@ -178,10 +188,21 @@ def process(input_path):
     
     # Process sections in parallel (only those that need processing)
     max_workers = int(os.getenv("MAX_WORKERS", "4"))
+    failed_dates = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(_process, section) for section in to_process]
-        for _ in tqdm(as_completed(futures), total=len(futures), desc="Processing sections"):
-            _.result()
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Processing sections"):
+            date, ok = future.result()
+            if not ok:
+                failed_dates.append(date)
+
+    if failed_dates:
+        log_path = data_dir / "processing_failures.log"
+        log_path.write_text("\n".join(failed_dates) + "\n", encoding="utf-8")
+        print(f"Failed to process sections for dates: {', '.join(failed_dates)}")
+        print(f"Failure log written to {log_path}")
+    else:
+        print("All sections processed successfully")
 
     # Write the final curated health log
     processed_files = list(data_dir.glob("*.processed.md"))
@@ -260,11 +281,12 @@ def process(input_path):
 
 def main():
     parser = argparse.ArgumentParser(description="Health log parser and validator")
-    parser.add_argument("health_log_path", help="Health log path", nargs="?")
-
+    parser.add_argument("health_log_path", help="Health log path", required=False)
     args = parser.parse_args()
     health_log_path = args.health_log_path if args.health_log_path else os.getenv("HEALTH_LOG_PATH")
-
+    if not health_log_path:
+        print("Health log path not provided and HEALTH_LOG_PATH not set")
+        sys.exit(1)
     process(health_log_path)
 
 if __name__ == "__main__":

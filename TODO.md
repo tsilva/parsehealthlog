@@ -1,5 +1,8 @@
-- ensure that user knows if all files were processed successfully
+- ~~ensure that user knows if all files were processed successfully~~
 - add support for running directly from target directory
 - ~~point out lab dates that are not in health log~~
 - feedback failure explanation when processing
 - add user metrics to health log
+- if labs parser output dir is available, read the all.csv file from there and use it to inject lab data into health log (injected in raw stage so that the processor can use it)
+- make script look for dates in files that are not in log
+- remove test.py
