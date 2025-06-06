@@ -10,6 +10,9 @@ import hashlib
 import io
 import pandas as pd
 
+# HACK: temporary env hack
+os.environ.pop("SSL_CERT_FILE", None)
+
 LABS_PARSER_OUTPUT_PATH = os.getenv("LABS_PARSER_OUTPUT_PATH")
 
 def load_prompt(prompt_name):
