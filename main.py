@@ -38,6 +38,11 @@ def setup_logging():
 
     logger.handlers = [stdout_handler, error_handler]
 
+    # Silence verbose HTTP logs from dependencies
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("openai").setLevel(logging.WARNING)
+
 
 setup_logging()
 
