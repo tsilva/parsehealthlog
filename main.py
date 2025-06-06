@@ -156,39 +156,51 @@ def process(input_path):
         tqdm.write(f"Duplicate dates found: {duplicates}")
         sys.exit(1)
 
-    # If labs.csv exists, read it and append lab results to sections
+    # Combine lab data from labs.csv and labs parser output if available
+    lab_dfs = []
+
+    # Legacy per-log labs.csv
     labs_csv = Path(input_path).parent / "labs.csv"
     if labs_csv.exists():
         labs_df = pd.read_csv(labs_csv)
-        labs_df = labs_df[
-            [
-                "date",
-                "lab_type",
-                "lab_name_enum",
-                "lab_value_final",
-                "lab_unit_final",
-                "lab_range_min_final",
-                "lab_range_max_final",
-            ]
-        ]
+        lab_dfs.append(labs_df)
 
-        _sections = []
+    # Aggregated labs from LABS_PARSER_OUTPUT_PATH/all.csv
+    if LABS_PARSER_OUTPUT_PATH:
+        all_csv = Path(LABS_PARSER_OUTPUT_PATH) / "all.csv"
+        if all_csv.exists():
+            labs_df = pd.read_csv(all_csv)
+            lab_dfs.append(labs_df)
+
+    if lab_dfs:
+        labs_df = pd.concat(lab_dfs, ignore_index=True)
+        # Keep only the relevant columns if present
+        keep_cols = [
+            "date",
+            "lab_type",
+            "lab_name_enum",
+            "lab_value_final",
+            "lab_unit_final",
+            "lab_range_min_final",
+            "lab_range_max_final",
+        ]
+        labs_df = labs_df[[c for c in keep_cols if c in labs_df.columns]]
+
+        new_sections = []
         for section in sections:
             date = extract_date_from_section(section)
             lab_results = labs_df[labs_df["date"] == date]
-            if lab_results.empty:
-                continue
+            if not lab_results.empty:
+                buffer = io.StringIO()
+                try:
+                    lab_results.to_csv(buffer, index=False)
+                    csv_string = buffer.getvalue()
+                finally:
+                    buffer.close()
 
-            buffer = io.StringIO()
-            try:
-                lab_results.to_csv(buffer, index=False)
-                csv_string = buffer.getvalue()
-            finally:
-                buffer.close()
-
-            _section = section + f"\n\nLab Results CSV:\n{csv_string}"
-            _sections.append(_section)
-        sections = _sections
+                section = section + f"\n\nLab Results CSV:\n{csv_string}"
+            new_sections.append(section)
+        sections = new_sections
 
     # Precompute which sections need processing
     to_process = []
