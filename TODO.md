@@ -1,3 +1,0 @@
-- feedback failure explanation when processing
-- add user metrics to health log
-- if labs parser output dir is available, write each date's lab results to `<DATE>.labs.md` and merge them into the final report (DONE)
