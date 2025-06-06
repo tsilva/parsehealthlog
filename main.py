@@ -279,6 +279,27 @@ def process(input_path):
             f.write(next_steps)
         tqdm.write(f"Saved processed health summary to {data_dir / 'next_steps.md'}")
 
+    # If labs parser output path is set, ensure all lab dates are present in the log
+    if LABS_PARSER_OUTPUT_PATH:
+        labs_dir = Path(LABS_PARSER_OUTPUT_PATH)
+        date_pattern = re.compile(r"^(\d{4}-\d{2}-\d{2})")
+        lab_dates = set()
+        if labs_dir.exists():
+            for fname in os.listdir(labs_dir):
+                m = date_pattern.match(fname)
+                if m:
+                    lab_dates.add(m.group(1))
+
+        # processed file names look like "YYYY-MM-DD.processed.md" so we only
+        # want the date portion before the first dot
+        log_dates = {f.name.split(".", 1)[0] for f in processed_files}
+        missing_dates = sorted(lab_dates - log_dates)
+        if missing_dates:
+            print("Lab output dates missing from health log:")
+            for d in missing_dates:
+                print(d)
+        else:
+            print("All lab output dates are present in the health log.")
 
 def main():
     parser = argparse.ArgumentParser(description="Health log parser and validator")
