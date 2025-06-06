@@ -62,3 +62,17 @@ Instructions:
 
 - Experienced fatigue and lightheadedness on **2025-04-13**.
 - Upcoming follow-up appointment set for **2025-06-01**.
+
+---- SAMPLE OUTPUT 3: ----
+
+#### 2025-01-01
+
+- [Lab Tests](https://link):
+  - Doctor: Dr. John Smith
+  - Notes:
+    - Low red blood cells (3.5, min = 4.2)
+    - Low hemoglobin (10.6 g/dL, min = 11.8)
+    - Low hematocrit (31.8%, min = 37)
+    - High RDW (14.9%, max = 14.9)
+    - Anisocytosis and Anisochromia
+    - Low HDL cholesterol (56 mg/dL, min = 60)
