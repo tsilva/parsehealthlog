@@ -98,7 +98,13 @@ def get_short_hash(text):
 
 
 def process(input_path):
-    model_id = os.getenv("MODEL_ID")
+    default_model = os.getenv("MODEL_ID")
+
+    process_model_id = os.getenv("PROCESS_MODEL_ID", default_model)
+    validate_model_id = os.getenv("VALIDATE_MODEL_ID", default_model)
+    questions_model_id = os.getenv("QUESTIONS_MODEL_ID", default_model)
+    summary_model_id = os.getenv("SUMMARY_MODEL_ID", default_model)
+    next_steps_model_id = os.getenv("NEXT_STEPS_MODEL_ID", default_model)
 
     # Create output path
     data_dir = Path("output") / Path(input_path).stem
@@ -113,7 +119,7 @@ def process(input_path):
         for attempt in range(1, 4):
             # Run LLM to process the section
             completion = client.chat.completions.create(
-                model=model_id,
+                model=process_model_id,
                 messages=[
                     {"role": "system", "content": PROCESS_SYSTEM_PROMPT},
                     {"role": "user", "content": raw_section},
@@ -125,7 +131,7 @@ def process(input_path):
 
             # Run LLM to validate the processed section
             completion = client.chat.completions.create(
-                model=model_id,
+                model=validate_model_id,
                 messages=[
                     {"role": "system", "content": VALIDATE_SYSTEM_PROMPT},
                     {
@@ -316,7 +322,7 @@ def process(input_path):
     if not questions_file_path.exists():
         logger.info("Generating clarifying questions...")
         completion = client.chat.completions.create(
-            model=model_id,
+            model=questions_model_id,
             messages=[
                 {"role": "system", "content": QUESTIONS_SYSTEM_PROMPT},
                 {"role": "user", "content": processed_text},
@@ -334,7 +340,7 @@ def process(input_path):
     if not summary_file_path.exists():
         logger.info("Generating health summary...")
         completion = client.chat.completions.create(
-            model=model_id,
+            model=summary_model_id,
             messages=[
                 {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
                 {"role": "user", "content": processed_text},
@@ -352,7 +358,7 @@ def process(input_path):
     if not next_steps_file_path.exists():
         logger.info("Generating next steps...")
         completion = client.chat.completions.create(
-            model=model_id,
+            model=next_steps_model_id,
             messages=[
                 {"role": "system", "content": NEXT_STEPS_SYSTEM_PROMPT},
                 {"role": "user", "content": processed_text},
