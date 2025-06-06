@@ -306,7 +306,7 @@ def process(input_path):
     else:
         logger.info("All sections processed successfully")
 
-    # Write the final curated health log
+    # Build the final curated health log text
     processed_files = list(data_dir.glob("*.processed.md"))
     processed_files = sorted(processed_files, key=lambda f: f.stem, reverse=True)
     processed_entries = [
@@ -314,31 +314,12 @@ def process(input_path):
         for f in processed_files
     ]
     processed_text = "\n\n".join(processed_entries)
-    with open(data_dir / "output.md", "w", encoding="utf-8") as f:
-        f.write(processed_text)
-    logger.info(f"Saved processed health log to {data_dir / 'output.md'}")
 
-    # Ask the LLM for clarifying questions about the log
-    questions_file_path = data_dir / "clarifying_questions.md"
-    if not questions_file_path.exists():
-        logger.info("Generating clarifying questions...")
-        completion = client.chat.completions.create(
-            model=questions_model_id,
-            messages=[
-                {"role": "system", "content": QUESTIONS_SYSTEM_PROMPT},
-                {"role": "user", "content": processed_text},
-            ],
-            max_tokens=1024,
-            temperature=0.0,
-        )
-        questions = completion.choices[0].message.content.strip()
-        with open(questions_file_path, "w", encoding="utf-8") as f:
-            f.write(questions)
-        logger.info(f"Saved clarifying questions to {questions_file_path}")
-
-    # Write the summary using the LLM
+    # Generate or load the summary and prepend it to the processed text
     summary_file_path = data_dir / "summary.md"
-    if not summary_file_path.exists():
+    if summary_file_path.exists():
+        summary = summary_file_path.read_text(encoding="utf-8").strip()
+    else:
         logger.info("Generating health summary...")
         summary_source = processed_text
         if header_text:
@@ -357,6 +338,29 @@ def process(input_path):
             f.write(summary)
         logger.info(f"Saved processed health summary to {data_dir / 'summary.md'}")
 
+    final_text = summary + "\n\n" + processed_text
+    with open(data_dir / "output.md", "w", encoding="utf-8") as f:
+        f.write(final_text)
+    logger.info(f"Saved processed health log to {data_dir / 'output.md'}")
+
+    # Ask the LLM for clarifying questions about the log
+    questions_file_path = data_dir / "clarifying_questions.md"
+    if not questions_file_path.exists():
+        logger.info("Generating clarifying questions...")
+        completion = client.chat.completions.create(
+            model=questions_model_id,
+            messages=[
+                {"role": "system", "content": QUESTIONS_SYSTEM_PROMPT},
+                {"role": "user", "content": final_text},
+            ],
+            max_tokens=1024,
+            temperature=0.0,
+        )
+        questions = completion.choices[0].message.content.strip()
+        with open(questions_file_path, "w", encoding="utf-8") as f:
+            f.write(questions)
+        logger.info(f"Saved clarifying questions to {questions_file_path}")
+
     # Write next steps using the LLM
     next_steps_file_path = data_dir / "next_steps.md"
     if not next_steps_file_path.exists():
@@ -365,7 +369,7 @@ def process(input_path):
             model=next_steps_model_id,
             messages=[
                 {"role": "system", "content": NEXT_STEPS_SYSTEM_PROMPT},
-                {"role": "user", "content": processed_text},
+                {"role": "user", "content": final_text},
             ],
             max_tokens=4096,
             temperature=0.25,
