@@ -125,6 +125,12 @@ def process(input_path):
 
     # Read and split input file into sections
     with open(input_path, "r", encoding="utf-8") as f: input_text = f.read()
+    # Only keep text starting from the first section header (###)
+    first_section_idx = input_text.find("###")
+    if first_section_idx == -1:
+        print("No section headers (###) found in input file.")
+        sys.exit(1)
+    input_text = input_text[first_section_idx:]
     sections = [s.strip() for s in re.split(r'(?=^###)', input_text, flags=re.MULTILINE) if s.strip()]
 
     # Assert that each section contains exactly one '###'
@@ -240,11 +246,9 @@ def process(input_path):
 
 def main():
     parser = argparse.ArgumentParser(description="Health log parser and validator")
-    parser.add_argument("health_log_path", help="Health log path", required=False)
-    
-    health_log_path = args.health_log_path if args.health_log_path else os.getenv("HEALTH_LOG_PATH")
-
+    parser.add_argument("health_log_path", help="Health log path", nargs="?")
     args = parser.parse_args()
+    health_log_path = args.health_log_path if args.health_log_path else os.getenv("HEALTH_LOG_PATH")
     process(health_log_path)
 
 if __name__ == "__main__":
