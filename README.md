@@ -50,8 +50,13 @@ python main.py <your_health_log.md>
 
 **Environment variables (`.env`):**
 
-- `MODEL_ID` — LLM model to use (e.g., `openai/gpt-4.1`)
 - `OPENROUTER_API_KEY` — your OpenRouter API key
+- `MODEL_ID` — default LLM model (e.g., `openai/gpt-4.1`)
+- `PROCESS_MODEL_ID` — model for transforming raw sections
+- `VALIDATE_MODEL_ID` — model for validating processed sections
+- `QUESTIONS_MODEL_ID` — model for generating clarifying questions
+- `SUMMARY_MODEL_ID` — model for creating summaries
+- `NEXT_STEPS_MODEL_ID` — model for recommended next steps
 - `MAX_WORKERS` — number of parallel processing threads (default: 1)
 
 **Example workflow:**
