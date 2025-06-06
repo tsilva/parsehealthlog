@@ -253,6 +253,9 @@ def process(input_path):
         if s.strip()
     ]
 
+    # Only keep sections that contain "[ANALISES]"
+    #sections = [section for section in sections if "[ANALISES]" in section]
+
     # Assert that each section contains exactly one '###'
     for section in sections:
         count = section.count("###")
