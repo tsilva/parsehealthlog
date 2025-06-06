@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 import os, re, sys
+import logging
 from pathlib import Path
 from openai import OpenAI
 from tqdm import tqdm
@@ -16,6 +17,31 @@ import pandas as pd
 os.environ.pop("SSL_CERT_FILE", None)
 
 LABS_PARSER_OUTPUT_PATH = os.getenv("LABS_PARSER_OUTPUT_PATH")
+
+
+def setup_logging():
+    """Configure logging to stdout and an error log file."""
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+
+    formatter = logging.Formatter(
+        "%(asctime)s - %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    stdout_handler = logging.StreamHandler(sys.stdout)
+    stdout_handler.setFormatter(formatter)
+
+    error_handler = logging.FileHandler("error.log")
+    error_handler.setLevel(logging.ERROR)
+    error_handler.setFormatter(formatter)
+
+    logger.handlers = [stdout_handler, error_handler]
+
+
+setup_logging()
+
+logger = logging.getLogger(__name__)
 
 
 def load_prompt(prompt_name):
@@ -105,8 +131,8 @@ def process(input_path):
             # If the validation does not return "$OK$", retry processing
             error_content = completion.choices[0].message.content.strip()
             if "$OK$" not in error_content:
-                tqdm.write(f"Validation failed for date {date}: {error_content}")
-                tqdm.write("Retrying processing...")
+                logger.error(f"Validation failed for date {date}: {error_content}")
+                logger.info("Retrying processing...")
                 continue
 
             # If validation passes, write the processed section to file
@@ -115,13 +141,13 @@ def process(input_path):
             processed_file.write_text(
                 f"{raw_hash}\n{processed_section}", encoding="utf-8"
             )
-            tqdm.write(f"Processed section for date {date} written to {processed_file}")
+            logger.info(f"Processed section for date {date} written to {processed_file}")
 
             # Return True to indicate successful processing
             return date, True
 
         # If all retries failed, return False
-        tqdm.write(f"Failed to process section for date {date} after 3 attempts")
+        logger.error(f"Failed to process section for date {date} after 3 attempts")
         return date, False
 
     # Read and split input file into sections
@@ -130,7 +156,7 @@ def process(input_path):
     # Only keep text starting from the first section header (###)
     first_section_idx = input_text.find("###")
     if first_section_idx == -1:
-        tqdm.write("No section headers (###) found in input file.")
+        logger.error("No section headers (###) found in input file.")
         sys.exit(1)
     input_text = input_text[first_section_idx:]
     sections = [
@@ -143,14 +169,14 @@ def process(input_path):
     for section in sections:
         count = section.count("###")
         if count != 1:
-            tqdm.write(f"Section does not contain exactly one '###':\n{section}")
+            logger.error(f"Section does not contain exactly one '###':\n{section}")
             sys.exit(1)
 
     # Assert no duplicate dates in sections
     dates = [extract_date_from_section(section) for section in sections]
     if len(dates) != len(set(dates)):
         duplicates = {date for date in dates if dates.count(date) > 1}
-        tqdm.write(f"Duplicate dates found: {duplicates}")
+        logger.error(f"Duplicate dates found: {duplicates}")
         sys.exit(1)
 
     # Combine lab data from labs.csv and labs parser output if available
@@ -231,7 +257,7 @@ def process(input_path):
                     failed_dates.append(date)
                 pbar.update(1)
     except KeyboardInterrupt:
-        tqdm.write("Interrupted by user, cancelling pending tasks...")
+        logger.error("Interrupted by user, cancelling pending tasks...")
         for future in futures:
             future.cancel()
         executor.shutdown(wait=False)
@@ -241,10 +267,12 @@ def process(input_path):
     if failed_dates:
         log_path = data_dir / "processing_failures.log"
         log_path.write_text("\n".join(failed_dates) + "\n", encoding="utf-8")
-        tqdm.write(f"Failed to process sections for dates: {', '.join(failed_dates)}")
-        tqdm.write(f"Failure log written to {log_path}")
+        logger.error(
+            f"Failed to process sections for dates: {', '.join(failed_dates)}"
+        )
+        logger.info(f"Failure log written to {log_path}")
     else:
-        tqdm.write("All sections processed successfully")
+        logger.info("All sections processed successfully")
 
     # Write the final curated health log
     processed_files = list(data_dir.glob("*.processed.md"))
@@ -256,12 +284,12 @@ def process(input_path):
     processed_text = "\n\n".join(processed_entries)
     with open(data_dir / "output.md", "w", encoding="utf-8") as f:
         f.write(processed_text)
-    tqdm.write(f"Saved processed health log to {data_dir / 'output.md'}")
+    logger.info(f"Saved processed health log to {data_dir / 'output.md'}")
 
     # Write the summary using the LLM
     summary_file_path = data_dir / "summary.md"
     if not summary_file_path.exists():
-        tqdm.write("Generating health summary...")
+        logger.info("Generating health summary...")
         completion = client.chat.completions.create(
             model=model_id,
             messages=[
@@ -274,12 +302,12 @@ def process(input_path):
         summary = completion.choices[0].message.content.strip()
         with open(summary_file_path, "w", encoding="utf-8") as f:
             f.write(summary)
-        tqdm.write(f"Saved processed health summary to {data_dir / 'summary.md'}")
+        logger.info(f"Saved processed health summary to {data_dir / 'summary.md'}")
 
     # Write next steps using the LLM
     next_steps_file_path = data_dir / "next_steps.md"
     if not next_steps_file_path.exists():
-        tqdm.write("Generating next steps...")
+        logger.info("Generating next steps...")
         completion = client.chat.completions.create(
             model=model_id,
             messages=[
@@ -292,7 +320,9 @@ def process(input_path):
         next_steps = completion.choices[0].message.content.strip()
         with open(next_steps_file_path, "w", encoding="utf-8") as f:
             f.write(next_steps)
-        tqdm.write(f"Saved processed health summary to {data_dir / 'next_steps.md'}")
+        logger.info(
+            f"Saved processed health summary to {data_dir / 'next_steps.md'}"
+        )
 
     # If labs parser output path is set, ensure all lab dates are present in the log
     if LABS_PARSER_OUTPUT_PATH:
@@ -310,11 +340,11 @@ def process(input_path):
         log_dates = {f.name.split(".", 1)[0] for f in processed_files}
         missing_dates = sorted(lab_dates - log_dates)
         if missing_dates:
-            print("Lab output dates missing from health log:")
+            logger.info("Lab output dates missing from health log:")
             for d in missing_dates:
-                print(d)
+                logger.info(d)
         else:
-            print("All lab output dates are present in the health log.")
+            logger.info("All lab output dates are present in the health log.")
 
 def main():
     parser = argparse.ArgumentParser(description="Health log parser and validator")
@@ -322,7 +352,7 @@ def main():
     args = parser.parse_args()
     health_log_path = args.health_log_path if args.health_log_path else os.getenv("HEALTH_LOG_PATH")
     if not health_log_path:
-        tqdm.write("Health log path not provided and HEALTH_LOG_PATH not set")
+        logger.error("Health log path not provided and HEALTH_LOG_PATH not set")
         sys.exit(1)
     process(health_log_path)
 
