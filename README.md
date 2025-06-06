@@ -41,6 +41,9 @@ python main.py <your_health_log.md>
 - Input: A Markdown file with health log entries (can be unstructured)
 - Output:
   - `output/output.md` — curated, structured health log
+  - `output/clarifying_questions.md` — concise questions a doctor might ask about the log
+  - `output/summary.md` — short patient summary
+  - `output/next_steps.md` — recommended actions
   - `output/clinical_data_missing_report.md` — report of any clinical data missing from the structured output
   - `error.log` — errors captured during processing
   - Logs are also echoed to the console

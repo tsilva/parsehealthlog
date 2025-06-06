@@ -59,6 +59,7 @@ VALIDATE_SYSTEM_PROMPT = load_prompt("validate.system_prompt")
 VALIDATE_USER_PROMPT = load_prompt("validate.user_prompt")
 SUMMARY_SYSTEM_PROMPT = load_prompt("summary.system_prompt")
 NEXT_STEPS_SYSTEM_PROMPT = load_prompt("next_steps.system_prompt")
+QUESTIONS_SYSTEM_PROMPT = load_prompt("questions.system_prompt")
 
 # Initialize OpenAI client
 client = OpenAI(
@@ -285,6 +286,24 @@ def process(input_path):
     with open(data_dir / "output.md", "w", encoding="utf-8") as f:
         f.write(processed_text)
     logger.info(f"Saved processed health log to {data_dir / 'output.md'}")
+
+    # Ask the LLM for clarifying questions about the log
+    questions_file_path = data_dir / "clarifying_questions.md"
+    if not questions_file_path.exists():
+        logger.info("Generating clarifying questions...")
+        completion = client.chat.completions.create(
+            model=model_id,
+            messages=[
+                {"role": "system", "content": QUESTIONS_SYSTEM_PROMPT},
+                {"role": "user", "content": processed_text},
+            ],
+            max_tokens=1024,
+            temperature=0.0,
+        )
+        questions = completion.choices[0].message.content.strip()
+        with open(questions_file_path, "w", encoding="utf-8") as f:
+            f.write(questions)
+        logger.info(f"Saved clarifying questions to {questions_file_path}")
 
     # Write the summary using the LLM
     summary_file_path = data_dir / "summary.md"
