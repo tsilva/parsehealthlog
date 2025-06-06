@@ -13,6 +13,7 @@ Instructions:
     - If the range is not provided, omit the `(range min - range max)` portion and do not add a classification.
     - Discard any human-readable lab result text if a CSV table is present.
     - If the section references a lab results document link, indent the bullet list under that link.
+* If you find lab results in human readable format before the CSV results, ignore them, because the CSV results are more accurate, use the CSV results instead.
 * For doctor visits list **doctor name**, **location**, prescriptions (dose, frequency, duration), diagnoses and advice.
 * List symptoms with relevant context and appointments with date and purpose.
 * Format web links as `[description](url)`.
