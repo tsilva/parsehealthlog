@@ -1,4 +1,6 @@
-from dotenv import load_dotenv; load_dotenv(override=True)
+from dotenv import load_dotenv
+
+load_dotenv(override=True)
 import os, re, sys
 from pathlib import Path
 from openai import OpenAI
@@ -13,87 +15,129 @@ import pandas as pd
 # HACK: temporary env hack
 os.environ.pop("SSL_CERT_FILE", None)
 
-LABS_PARSER_OUTPUT_PATH = os.getenv("LABS_PARSER_OUTPUT_PATH")
 
-def load_prompt(prompt_name):
-    """Load a prompt from the prompts directory."""
-    prompts_dir = Path(__file__).parent / "prompts"
-    prompt_path = prompts_dir / f"{prompt_name}.md"
-    if not prompt_path.exists():
-        raise FileNotFoundError(f"Prompt file {prompt_path} does not exist.")
-    with open(prompt_path, "r", encoding="utf-8") as f:
-        return f.read()
 
-PROCESS_SYSTEM_PROMPT = load_prompt("process.system_prompt")
-VALIDATE_SYSTEM_PROMPT = load_prompt("validate.system_prompt")
-VALIDATE_USER_PROMPT = load_prompt("validate.user_prompt")
-SUMMARY_SYSTEM_PROMPT = load_prompt("summary.system_prompt")
-NEXT_STEPS_SYSTEM_PROMPT = load_prompt("next_steps.system_prompt")
+    base_url="https://openrouter.ai/api/v1", api_key=os.getenv("OPENROUTER_API_KEY")
 
-# Initialize OpenAI client
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.getenv("OPENROUTER_API_KEY")
-)
 
-# Extract date from section header, tolerant to different formats
-def extract_date_from_section(section):
-    header = section.strip().splitlines()[0].lstrip("#").strip()
-    # Normalize dashes to standard hyphen-minus
-    header = header.replace("–", "-").replace("—", "-")
-    tokens = re.split(r"\s+", header)
-    for token in tokens:
-        try:
-            return date_parse(token, fuzzy=False, dayfirst=False, yearfirst=True).strftime("%Y-%m-%d")
-        except ValueError:
-            continue
-    raise ValueError(f"No valid date found in header: {header}")
-    
-def get_short_hash(text):
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
+            return date_parse(
+                token, fuzzy=False, dayfirst=False, yearfirst=True
+            ).strftime("%Y-%m-%d")
 
-def process(input_path):
-    model_id = os.getenv("MODEL_ID")
 
-    # Create output path
-    data_dir = Path("output") / Path(input_path).stem
-    data_dir.mkdir(parents=True, exist_ok=True)
 
-    # Run LLM to process a section, return formatted markdown
-    def _process(raw_section):
         """Process a single raw section and return (date, success)."""
-        # Write raw section to file
-        date = extract_date_from_section(raw_section)
-        raw_file = data_dir / f"{date}.raw.md"
-        raw_file.write_text(raw_section, encoding="utf-8")
-
-        # The existence/up-to-date check is now outside
         for attempt in range(1, 4):
-            # Run LLM to process the section
-            completion = client.chat.completions.create(
-                model=model_id,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": PROCESS_SYSTEM_PROMPT
+                    {"role": "system", "content": PROCESS_SYSTEM_PROMPT},
+                    {"role": "user", "content": raw_section},
+                temperature=0.0,
+                    {"role": "system", "content": VALIDATE_SYSTEM_PROMPT},
+                        "role": "user",
+                            raw_section=raw_section, processed_section=processed_section
+                        ),
                     },
-                    {
-                        "role": "user", 
-                        "content": raw_section
-                    }
-                ],
-                max_tokens=2048,
-                temperature=0.0
-            )
-            processed_section = completion.choices[0].message.content.strip()
+                temperature=0.0,
 
-            # Run LLM to validate the processed section
-            completion = client.chat.completions.create(
-                model=model_id,
-                messages=[
-                    {
-                        "role": "system", 
-                        "content": VALIDATE_SYSTEM_PROMPT
+                tqdm.write(f"Validation failed for date {date}: {error_content}")
+                tqdm.write("Retrying processing...")
+
+            raw_hash = get_short_hash(raw_section)
+            processed_file.write_text(
+                f"{raw_hash}\n{processed_section}", encoding="utf-8"
+            )
+            tqdm.write(f"Processed section for date {date} written to {processed_file}")
+
+            return date, True
+
+        tqdm.write(f"Failed to process section for date {date} after 3 attempts")
+        return date, False
+    with open(input_path, "r", encoding="utf-8") as f:
+        input_text = f.read()
+    # Only keep text starting from the first section header (###)
+    first_section_idx = input_text.find("###")
+    if first_section_idx == -1:
+        tqdm.write("No section headers (###) found in input file.")
+        sys.exit(1)
+    input_text = input_text[first_section_idx:]
+    sections = [
+        s.strip()
+        for s in re.split(r"(?=^###)", input_text, flags=re.MULTILINE)
+        if s.strip()
+    ]
+        count = section.count("###")
+            tqdm.write(f"Section does not contain exactly one '###':\n{section}")
+
+        tqdm.write(f"Duplicate dates found: {duplicates}")
+        labs_df = labs_df[
+            [
+                "date",
+                "lab_type",
+                "lab_name_enum",
+                "lab_value_final",
+                "lab_unit_final",
+                "lab_range_min_final",
+                "lab_range_max_final",
+            ]
+        ]
+
+            lab_results = labs_df[labs_df["date"] == date]
+            if lab_results.empty:
+                continue
+            if _raw_hash == raw_hash:
+                continue
+
+    failed_dates = []
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    futures = [executor.submit(_process, section) for section in to_process]
+    try:
+        with tqdm(total=len(futures), desc="Processing sections") as pbar:
+            for future in as_completed(futures):
+                date, ok = future.result()
+                if not ok:
+                    failed_dates.append(date)
+                pbar.update(1)
+    except KeyboardInterrupt:
+        tqdm.write("Interrupted by user, cancelling pending tasks...")
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=False)
+        raise
+    executor.shutdown()
+
+    if failed_dates:
+        log_path = data_dir / "processing_failures.log"
+        log_path.write_text("\n".join(failed_dates) + "\n", encoding="utf-8")
+        tqdm.write(f"Failed to process sections for dates: {', '.join(failed_dates)}")
+        tqdm.write(f"Failure log written to {log_path}")
+    else:
+        tqdm.write("All sections processed successfully")
+    processed_entries = [
+        "\n".join(f.read_text(encoding="utf-8").splitlines()[1:])
+        for f in processed_files
+    ]
+    with open(data_dir / "output.md", "w", encoding="utf-8") as f:
+        f.write(processed_text)
+    tqdm.write(f"Saved processed health log to {data_dir / 'output.md'}")
+
+        tqdm.write("Generating health summary...")
+                {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
+                {"role": "user", "content": processed_text},
+            temperature=0.0,
+        with open(summary_file_path, "w", encoding="utf-8") as f:
+            f.write(summary)
+        tqdm.write(f"Saved processed health summary to {data_dir / 'summary.md'}")
+        tqdm.write("Generating next steps...")
+                {"role": "system", "content": NEXT_STEPS_SYSTEM_PROMPT},
+                {"role": "user", "content": processed_text},
+            temperature=0.25,
+        with open(next_steps_file_path, "w", encoding="utf-8") as f:
+            f.write(next_steps)
+        tqdm.write(f"Saved processed health summary to {data_dir / 'next_steps.md'}")
+    parser.add_argument("--health_log_path", help="Health log path")
+    if not health_log_path:
+        tqdm.write("Health log path not provided and HEALTH_LOG_PATH not set")
+        sys.exit(1)
+
                     },
                     {
                         "role": "user", 

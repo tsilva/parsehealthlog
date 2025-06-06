@@ -6,3 +6,7 @@
 - if labs parser output dir is available, read the all.csv file from there and use it to inject lab data into health log (injected in raw stage so that the processor can use it)
 - make script look for dates in files that are not in log
 - remove test.py
+
+- if labs parser output dir is available, read the all.csv file from there and use it to inject lab data into health log (injected in raw stage so that the processor can use it)
+- make script look for dates in files that are not in log
+- remove test.py
