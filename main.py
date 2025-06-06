@@ -228,7 +228,9 @@ def process(input_path):
                     "content": processed_text
                 }
             ],
-            max_tokens=2048,
+        # processed file names look like "YYYY-MM-DD.processed.md" so we only
+        # want the date portion before the first dot
+        log_dates = {f.name.split(".", 1)[0] for f in processed_files}
             temperature=0.0
         )
         summary = completion.choices[0].message.content.strip()
