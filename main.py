@@ -1,4 +1,6 @@
-from dotenv import load_dotenv; load_dotenv(override=True)
+from dotenv import load_dotenv
+
+load_dotenv(override=True)
 import os, re, sys
 from pathlib import Path
 from openai import OpenAI
@@ -10,7 +12,11 @@ import hashlib
 import io
 import pandas as pd
 
+# HACK: temporary env hack
+os.environ.pop("SSL_CERT_FILE", None)
+
 LABS_PARSER_OUTPUT_PATH = os.getenv("LABS_PARSER_OUTPUT_PATH")
+
 
 def load_prompt(prompt_name):
     """Load a prompt from the prompts directory."""
@@ -21,6 +27,7 @@ def load_prompt(prompt_name):
     with open(prompt_path, "r", encoding="utf-8") as f:
         return f.read()
 
+
 PROCESS_SYSTEM_PROMPT = load_prompt("process.system_prompt")
 VALIDATE_SYSTEM_PROMPT = load_prompt("validate.system_prompt")
 VALIDATE_USER_PROMPT = load_prompt("validate.user_prompt")
@@ -29,9 +36,9 @@ NEXT_STEPS_SYSTEM_PROMPT = load_prompt("next_steps.system_prompt")
 
 # Initialize OpenAI client
 client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.getenv("OPENROUTER_API_KEY")
+    base_url="https://openrouter.ai/api/v1", api_key=os.getenv("OPENROUTER_API_KEY")
 )
+
 
 # Extract date from section header, tolerant to different formats
 def extract_date_from_section(section):
@@ -41,13 +48,17 @@ def extract_date_from_section(section):
     tokens = re.split(r"\s+", header)
     for token in tokens:
         try:
-            return date_parse(token, fuzzy=False, dayfirst=False, yearfirst=True).strftime("%Y-%m-%d")
+            return date_parse(
+                token, fuzzy=False, dayfirst=False, yearfirst=True
+            ).strftime("%Y-%m-%d")
         except ValueError:
             continue
     raise ValueError(f"No valid date found in header: {header}")
-    
+
+
 def get_short_hash(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
+
 
 def process(input_path):
     model_id = os.getenv("MODEL_ID")
@@ -58,28 +69,23 @@ def process(input_path):
 
     # Run LLM to process a section, return formatted markdown
     def _process(raw_section):
+        """Process a single raw section and return (date, success)."""
         # Write raw section to file
         date = extract_date_from_section(raw_section)
         raw_file = data_dir / f"{date}.raw.md"
         raw_file.write_text(raw_section, encoding="utf-8")
 
         # The existence/up-to-date check is now outside
-        for _ in range(3):
+        for attempt in range(1, 4):
             # Run LLM to process the section
             completion = client.chat.completions.create(
                 model=model_id,
                 messages=[
-                    {
-                        "role": "system",
-                        "content": PROCESS_SYSTEM_PROMPT
-                    },
-                    {
-                        "role": "user", 
-                        "content": raw_section
-                    }
+                    {"role": "system", "content": PROCESS_SYSTEM_PROMPT},
+                    {"role": "user", "content": raw_section},
                 ],
                 max_tokens=2048,
-                temperature=0.0
+                temperature=0.0,
             )
             processed_section = completion.choices[0].message.content.strip()
 
@@ -87,77 +93,91 @@ def process(input_path):
             completion = client.chat.completions.create(
                 model=model_id,
                 messages=[
+                    {"role": "system", "content": VALIDATE_SYSTEM_PROMPT},
                     {
-                        "role": "system", 
-                        "content": VALIDATE_SYSTEM_PROMPT
-                    },
-                    {
-                        "role": "user", 
+                        "role": "user",
                         "content": VALIDATE_USER_PROMPT.format(
-                            raw_section=raw_section,
-                            processed_section=processed_section
-                        )
-                    }
+                            raw_section=raw_section, processed_section=processed_section
+                        ),
+                    },
                 ],
                 max_tokens=2048,
-                temperature=0.0
+                temperature=0.0,
             )
-            
+
             # If the validation does not return "$OK$", retry processing
             error_content = completion.choices[0].message.content.strip()
             if "$OK$" not in error_content:
-                print(f"Validation failed for date {date}: {error_content}") 
-                print("Retrying processing...")
+                tqdm.write(f"Validation failed for date {date}: {error_content}")
+                tqdm.write("Retrying processing...")
                 continue
-            
+
             # If validation passes, write the processed section to file
-            raw_hash = get_short_hash(raw_section) 
+            raw_hash = get_short_hash(raw_section)
             processed_file = data_dir / f"{date}.processed.md"
-            processed_file.write_text(f"{raw_hash}\n{processed_section}", encoding="utf-8")
-            print(f"Processed section for date {date} written to {processed_file}")
-            
+            processed_file.write_text(
+                f"{raw_hash}\n{processed_section}", encoding="utf-8"
+            )
+            tqdm.write(f"Processed section for date {date} written to {processed_file}")
+
             # Return True to indicate successful processing
-            return True
-        
+            return date, True
+
         # If all retries failed, return False
-        print(f"Failed to process section for date {date} after 3 attempts")
-        return False 
+        tqdm.write(f"Failed to process section for date {date} after 3 attempts")
+        return date, False
 
     # Read and split input file into sections
-    with open(input_path, "r", encoding="utf-8") as f: input_text = f.read()
+    with open(input_path, "r", encoding="utf-8") as f:
+        input_text = f.read()
     # Only keep text starting from the first section header (###)
     first_section_idx = input_text.find("###")
     if first_section_idx == -1:
-        print("No section headers (###) found in input file.")
+        tqdm.write("No section headers (###) found in input file.")
         sys.exit(1)
     input_text = input_text[first_section_idx:]
-    sections = [s.strip() for s in re.split(r'(?=^###)', input_text, flags=re.MULTILINE) if s.strip()]
+    sections = [
+        s.strip()
+        for s in re.split(r"(?=^###)", input_text, flags=re.MULTILINE)
+        if s.strip()
+    ]
 
     # Assert that each section contains exactly one '###'
     for section in sections:
-        count = section.count('###')
+        count = section.count("###")
         if count != 1:
-            print(f"Section does not contain exactly one '###':\n{section}")
+            tqdm.write(f"Section does not contain exactly one '###':\n{section}")
             sys.exit(1)
 
     # Assert no duplicate dates in sections
     dates = [extract_date_from_section(section) for section in sections]
     if len(dates) != len(set(dates)):
         duplicates = {date for date in dates if dates.count(date) > 1}
-        print(f"Duplicate dates found: {duplicates}")
+        tqdm.write(f"Duplicate dates found: {duplicates}")
         sys.exit(1)
 
     # If labs.csv exists, read it and append lab results to sections
     labs_csv = Path(input_path).parent / "labs.csv"
     if labs_csv.exists():
         labs_df = pd.read_csv(labs_csv)
-        labs_df = labs_df[["date","lab_type","lab_name_enum","lab_value_final","lab_unit_final","lab_range_min_final","lab_range_max_final"]]
+        labs_df = labs_df[
+            [
+                "date",
+                "lab_type",
+                "lab_name_enum",
+                "lab_value_final",
+                "lab_unit_final",
+                "lab_range_min_final",
+                "lab_range_max_final",
+            ]
+        ]
 
         _sections = []
         for section in sections:
             date = extract_date_from_section(section)
-            lab_results = labs_df[labs_df['date'] == date]
-            if lab_results.empty: continue
+            lab_results = labs_df[labs_df["date"] == date]
+            if lab_results.empty:
+                continue
 
             buffer = io.StringIO()
             try:
@@ -179,77 +199,97 @@ def process(input_path):
         if processed_file.exists():
             processed_text = processed_file.read_text(encoding="utf-8").strip()
             _raw_hash = processed_text.splitlines()[0].strip()
-            if _raw_hash == raw_hash: continue 
+            if _raw_hash == raw_hash:
+                continue
         to_process.append(section)
-    
+
     # Process sections in parallel (only those that need processing)
     max_workers = int(os.getenv("MAX_WORKERS", "4"))
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(_process, section) for section in to_process]
-        for _ in tqdm(as_completed(futures), total=len(futures), desc="Processing sections"):
-            _.result()
+    failed_dates = []
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    futures = [executor.submit(_process, section) for section in to_process]
+    try:
+        with tqdm(total=len(futures), desc="Processing sections") as pbar:
+            for future in as_completed(futures):
+                date, ok = future.result()
+                if not ok:
+                    failed_dates.append(date)
+                pbar.update(1)
+    except KeyboardInterrupt:
+        tqdm.write("Interrupted by user, cancelling pending tasks...")
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=False)
+        raise
+    executor.shutdown()
+
+    if failed_dates:
+        log_path = data_dir / "processing_failures.log"
+        log_path.write_text("\n".join(failed_dates) + "\n", encoding="utf-8")
+        tqdm.write(f"Failed to process sections for dates: {', '.join(failed_dates)}")
+        tqdm.write(f"Failure log written to {log_path}")
+    else:
+        tqdm.write("All sections processed successfully")
 
     # Write the final curated health log
     processed_files = list(data_dir.glob("*.processed.md"))
     processed_files = sorted(processed_files, key=lambda f: f.stem, reverse=True)
-    processed_entries = ["\n".join(f.read_text(encoding="utf-8").splitlines()[1:]) for f in processed_files]
+    processed_entries = [
+        "\n".join(f.read_text(encoding="utf-8").splitlines()[1:])
+        for f in processed_files
+    ]
     processed_text = "\n\n".join(processed_entries)
-    with open(data_dir / "output.md", "w", encoding="utf-8") as f: f.write(processed_text)
-    print(f"Saved processed health log to {data_dir / 'output.md'}")
+    with open(data_dir / "output.md", "w", encoding="utf-8") as f:
+        f.write(processed_text)
+    tqdm.write(f"Saved processed health log to {data_dir / 'output.md'}")
 
     # Write the summary using the LLM
     summary_file_path = data_dir / "summary.md"
     if not summary_file_path.exists():
-        print("Generating health summary...")
+        tqdm.write("Generating health summary...")
         completion = client.chat.completions.create(
             model=model_id,
             messages=[
-                {
-                    "role": "system", 
-                    "content": SUMMARY_SYSTEM_PROMPT
-                },
-                {
-                    "role": "user", 
-                    "content": processed_text
-                }
+                {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
+                {"role": "user", "content": processed_text},
             ],
             max_tokens=2048,
-            temperature=0.0
+            temperature=0.0,
         )
         summary = completion.choices[0].message.content.strip()
-        with open(summary_file_path, "w", encoding="utf-8") as f: f.write(summary)
-        print(f"Saved processed health summary to {data_dir / 'summary.md'}")
+        with open(summary_file_path, "w", encoding="utf-8") as f:
+            f.write(summary)
+        tqdm.write(f"Saved processed health summary to {data_dir / 'summary.md'}")
 
     # Write next steps using the LLM
     next_steps_file_path = data_dir / "next_steps.md"
     if not next_steps_file_path.exists():
-        print("Generating next steps...")
+        tqdm.write("Generating next steps...")
         completion = client.chat.completions.create(
             model=model_id,
             messages=[
-                {
-                    "role": "system", 
-                    "content": NEXT_STEPS_SYSTEM_PROMPT
-                },
-                {
-                    "role": "user", 
-                    "content": processed_text
-                }
+                {"role": "system", "content": NEXT_STEPS_SYSTEM_PROMPT},
+                {"role": "user", "content": processed_text},
             ],
             max_tokens=4096,
-            temperature=0.25
+            temperature=0.25,
         )
         next_steps = completion.choices[0].message.content.strip()
-        with open(next_steps_file_path, "w", encoding="utf-8") as f: f.write(next_steps)
-        print(f"Saved processed health summary to {data_dir / 'next_steps.md'}")
+        with open(next_steps_file_path, "w", encoding="utf-8") as f:
+            f.write(next_steps)
+        tqdm.write(f"Saved processed health summary to {data_dir / 'next_steps.md'}")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Health log parser and validator")
-    parser.add_argument("health_log_path", help="Health log path", nargs="?")
+    parser.add_argument("--health_log_path", help="Health log path")
     args = parser.parse_args()
     health_log_path = args.health_log_path if args.health_log_path else os.getenv("HEALTH_LOG_PATH")
+    if not health_log_path:
+        tqdm.write("Health log path not provided and HEALTH_LOG_PATH not set")
+        sys.exit(1)
     process(health_log_path)
+
 
 if __name__ == "__main__":
     main()
