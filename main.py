@@ -10,6 +10,8 @@ import hashlib
 import io
 import pandas as pd
 
+LABS_PARSER_OUTPUT_PATH = os.getenv("LABS_PARSER_OUTPUT_PATH")
+
 def load_prompt(prompt_name):
     """Load a prompt from the prompts directory."""
     prompts_dir = Path(__file__).parent / "prompts"
@@ -238,10 +240,12 @@ def process(input_path):
 
 def main():
     parser = argparse.ArgumentParser(description="Health log parser and validator")
-    parser.add_argument("input_file", help="Original input file")
+    parser.add_argument("health_log_path", help="Health log path", required=False)
     
+    health_log_path = args.health_log_path if args.health_log_path else os.getenv("HEALTH_LOG_PATH")
+
     args = parser.parse_args()
-    process(args.input_file)
+    process(health_log_path)
 
 if __name__ == "__main__":
     main()
