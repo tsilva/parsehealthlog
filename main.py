@@ -29,10 +29,15 @@ def setup_logging():
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except AttributeError:
+        pass
+
     stdout_handler = logging.StreamHandler(sys.stdout)
     stdout_handler.setFormatter(formatter)
 
-    error_handler = logging.FileHandler("error.log")
+    error_handler = logging.FileHandler("error.log", encoding="utf-8")
     error_handler.setLevel(logging.ERROR)
     error_handler.setFormatter(formatter)
 
