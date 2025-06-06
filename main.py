@@ -206,14 +206,22 @@ def process(input_path):
     # Process sections in parallel (only those that need processing)
     max_workers = int(os.getenv("MAX_WORKERS", "4"))
     failed_dates = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(_process, section) for section in to_process]
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    futures = [executor.submit(_process, section) for section in to_process]
+    try:
         with tqdm(total=len(futures), desc="Processing sections") as pbar:
             for future in as_completed(futures):
                 date, ok = future.result()
                 if not ok:
                     failed_dates.append(date)
                 pbar.update(1)
+    except KeyboardInterrupt:
+        tqdm.write("Interrupted by user, cancelling pending tasks...")
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=False)
+        raise
+    executor.shutdown()
 
     if failed_dates:
         log_path = data_dir / "processing_failures.log"
