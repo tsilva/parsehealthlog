@@ -17,6 +17,7 @@ import pandas as pd
 os.environ.pop("SSL_CERT_FILE", None)
 
 LABS_PARSER_OUTPUT_PATH = os.getenv("LABS_PARSER_OUTPUT_PATH")
+LAB_PLACEHOLDER = "<<LAB_RESULTS_PLACEHOLDER>>"
 
 
 def setup_logging():
@@ -97,6 +98,39 @@ def get_short_hash(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
 
 
+def format_lab_results(lab_df):
+    """Format lab results DataFrame into markdown bullet list."""
+    lines = []
+    for _, row in lab_df.iterrows():
+        name = str(row.get("lab_name_enum", "")).strip()
+        value = row.get("lab_value_final")
+        unit = str(row.get("lab_unit_final", "")).strip()
+        line = f"- **{name}:** {value}"
+        if unit:
+            line += f" {unit}"
+        rmin = row.get("lab_range_min_final")
+        rmax = row.get("lab_range_max_final")
+        status = None
+        if pd.notna(rmin) and pd.notna(rmax):
+            line += f" ({rmin} - {rmax})"
+            try:
+                v = float(value)
+                rmin_f = float(rmin)
+                rmax_f = float(rmax)
+                if v < rmin_f:
+                    status = "BELOW RANGE"
+                elif v > rmax_f:
+                    status = "ABOVE RANGE"
+                else:
+                    status = "OK"
+            except Exception:
+                status = None
+        if status:
+            line += f" [{status}]"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def process(input_path):
     default_model = os.getenv("MODEL_ID")
 
@@ -166,7 +200,10 @@ def process(input_path):
                     logger.info("Retrying processing...")
                 continue
 
-            # If validation passes, write the processed section to file
+            # If validation passes, insert labs and write the processed section to file
+            if date in labs_by_date:
+                labs_text = format_lab_results(labs_by_date[date])
+                processed_section = processed_section.replace(LAB_PLACEHOLDER, labs_text)
             raw_hash = get_short_hash(raw_section)
             processed_file = data_dir / f"{date}.processed.md"
             processed_file.write_text(
@@ -227,9 +264,9 @@ def process(input_path):
             labs_df = pd.read_csv(all_csv)
             lab_dfs.append(labs_df)
 
+    labs_by_date = {}
     if lab_dfs:
         labs_df = pd.concat(lab_dfs, ignore_index=True)
-        # Keep only the relevant columns if present
         keep_cols = [
             "date",
             "lab_type",
@@ -240,20 +277,13 @@ def process(input_path):
             "lab_range_max_final",
         ]
         labs_df = labs_df[[c for c in keep_cols if c in labs_df.columns]]
+        labs_by_date = {d: df for d, df in labs_df.groupby("date")}
 
         new_sections = []
         for section in sections:
             date = extract_date_from_section(section)
-            lab_results = labs_df[labs_df["date"] == date]
-            if not lab_results.empty:
-                buffer = io.StringIO()
-                try:
-                    lab_results.to_csv(buffer, index=False)
-                    csv_string = buffer.getvalue()
-                finally:
-                    buffer.close()
-
-                section = section + f"\n\nMOST ACCURATE LAB RESULTS CSV:\n{csv_string}"
+            if date in labs_by_date:
+                section = section + f"\n\n{LAB_PLACEHOLDER}"
             new_sections.append(section)
         sections = new_sections
 
