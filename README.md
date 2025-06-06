@@ -39,9 +39,11 @@ python main.py <your_health_log.md>
 ```
 
 - Input: A Markdown file with health log entries (can be unstructured)
-- Output: 
+- Output:
   - `output/output.md` — curated, structured health log
   - `output/clinical_data_missing_report.md` — report of any clinical data missing from the structured output
+  - `error.log` — errors captured during processing
+  - Logs are also echoed to the console
 
 **Environment variables (`.env`):**
 
