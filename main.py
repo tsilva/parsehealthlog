@@ -71,6 +71,8 @@ SUMMARY_SYSTEM_PROMPT = load_prompt("summary.system_prompt")
 NEXT_STEPS_SYSTEM_PROMPT = load_prompt("next_steps.system_prompt")
 QUESTIONS_SYSTEM_PROMPT = load_prompt("questions.system_prompt")
 MERGE_BULLETS_SYSTEM_PROMPT = load_prompt("merge_bullets.system_prompt")
+SPECIALIST_NEXT_STEPS_SYSTEM_PROMPT = load_prompt("specialist_next_steps.system_prompt")
+CONSENSUS_NEXT_STEPS_SYSTEM_PROMPT = load_prompt("consensus_next_steps.system_prompt")
 
 # Initialize OpenAI client
 client = OpenAI(
@@ -484,15 +486,40 @@ def process(input_path):
         merge_system_prompt=MERGE_BULLETS_SYSTEM_PROMPT,
     )
 
-    # Write next steps using the LLM
-    next_steps_file_path = data_dir / "next_steps.md"
+    # Write specialist-specific next steps and consensus plan
+    specialties = [
+        "gastroenterology",
+        "neurology",
+        "psychiatry",
+        "nutrition",
+        "rheumatology",
+        "internal medicine",
+    ]
+    specialist_outputs = []
+    for spec in specialties:
+        spec_file = data_dir / f"next_steps_{spec.replace(' ', '_')}.md"
+        spec_prompt = SPECIALIST_NEXT_STEPS_SYSTEM_PROMPT.format(specialty=spec)
+        content = load_or_generate_file(
+            spec_file,
+            f"{spec} next steps",
+            next_steps_model_id,
+            [
+                {"role": "system", "content": spec_prompt},
+                {"role": "user", "content": final_text},
+            ],
+            max_tokens=8192,
+            temperature=0.25,
+        )
+        specialist_outputs.append(content)
+
+    consensus_file = data_dir / "next_steps.md"
     load_or_generate_file(
-        next_steps_file_path,
-        "next steps",
+        consensus_file,
+        "consensus next steps",
         next_steps_model_id,
         [
-            {"role": "system", "content": NEXT_STEPS_SYSTEM_PROMPT},
-            {"role": "user", "content": final_text},
+            {"role": "system", "content": CONSENSUS_NEXT_STEPS_SYSTEM_PROMPT},
+            {"role": "user", "content": "\n\n".join(specialist_outputs)},
         ],
         max_tokens=8192,
         temperature=0.25,
