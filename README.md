@@ -43,7 +43,8 @@ python main.py <your_health_log.md>
   - `output/output.md` — patient summary followed by the curated log
   - `output/clarifying_questions.md` — clarifying questions merged from multiple runs
   - `output/summary.md` — short patient summary
-  - `output/next_steps.md` — recommended actions
+  - `output/next_steps_<SPECIALTY>.md` — recommended actions from each specialist
+  - `output/next_steps.md` — consensus recommendations
   - `output/<DATE>.labs.md` — structured lab results for each date, generated
     during parallel section processing
   - `output/clinical_data_missing_report.md` — report of any clinical data missing from the structured output
