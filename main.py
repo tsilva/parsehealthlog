@@ -159,14 +159,23 @@ def load_or_generate_file(
 
     logger.info(f"Generating {description}...")
     outputs = []
-    for _ in range(calls):
+    for i in range(calls):
         completion = client.chat.completions.create(
             model=model_id,
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
         )
-        outputs.append(completion.choices[0].message.content.strip())
+        output = completion.choices[0].message.content.strip()
+        outputs.append(output)
+        if calls > 1:
+            alt_path = file_path.with_name(
+                f"{file_path.stem}_{i + 1}{file_path.suffix}"
+            )
+            alt_path.write_text(output, encoding="utf-8")
+            logger.info(
+                f"Saved alternative {i + 1} for {description} to {alt_path}"
+            )
 
     if calls == 1:
         content = outputs[0]

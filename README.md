@@ -41,6 +41,7 @@ python main.py <your_health_log.md>
 - Input: A Markdown file with health log entries (can be unstructured)
 - Output:
   - `output/output.md` — patient summary followed by the curated log
+  - `output/clarifying_questions_<N>.md` — raw questions from each run
   - `output/clarifying_questions.md` — clarifying questions merged from multiple runs
   - `output/summary.md` — short patient summary
   - `output/next_steps_<SPECIALTY>.md` — recommended actions from each specialist
