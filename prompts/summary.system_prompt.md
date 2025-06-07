@@ -1,4 +1,4 @@
-Given a health log history, produce a concise patient summary in Markdown.
+Given a health log history, produce a concise patient summary in Markdown. All output must be in English.
 Keep the entire summary under 150 words. Use bullet lists and:
 - One bullet per user stat
 - One bullet per symptom/complaint/disease
