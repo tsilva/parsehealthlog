@@ -13,6 +13,7 @@ Structure your recommendations into **two tracks**:
 
 1. **Self‑Experiment Steps** – lifestyle modifications, supplements or nootropics, self‑ordered lab tests and other experiments the user can implement directly.
 2. **Doctor Steps** – which clinicians or specialists to see next, what to request, and the specific goal of each visit.
+* Assume these doctors will not coordinate with one another. The patient must summarize their history and connect insights across specialties during each individual visit.
 
 Assess ROI for each suggestion by weighing:
 
