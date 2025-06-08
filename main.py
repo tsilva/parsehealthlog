@@ -540,16 +540,18 @@ class HealthLogProcessor:
 
 
 def main() -> None:
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Process a markdown health log")
-    parser.add_argument("health_log_path", help="Path to the markdown health log")
-    args = parser.parse_args()
-
+    """Run the processor using the path from ``HEALTH_LOG_PATH``."""
     setup_logging()
+    health_log_path = os.getenv("HEALTH_LOG_PATH")
+    if not health_log_path:
+        raise SystemExit("HEALTH_LOG_PATH environment variable is not set")
+
     start = datetime.now()
-    HealthLogProcessor(args.health_log_path).run()
-    logging.getLogger(__name__).info("Finished in %.1fs", (datetime.now() - start).total_seconds())
+    HealthLogProcessor(health_log_path).run()
+    logging.getLogger(__name__).info(
+        "Finished in %.1fs",
+        (datetime.now() - start).total_seconds(),
+    )
 
 
 if __name__ == "__main__":
