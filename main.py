@@ -246,7 +246,7 @@ class HealthLogProcessor:
         q_runs = int(os.getenv("QUESTIONS_RUNS", "3"))
         self._generate_file(
             "clarifying_questions.md",
-            "merge_bullets.system_prompt",  # prompt used only for merge step
+            "questions.system_prompt",
             role="questions",
             temperature=1.0,
             calls=q_runs,
