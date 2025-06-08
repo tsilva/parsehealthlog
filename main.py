@@ -225,6 +225,11 @@ class HealthLogProcessor:
         header_text, sections = self._split_sections()
         self._load_labs()
 
+        log_dates = {extract_date(sec) for sec in sections}
+        missing = sorted(set(self.labs_by_date) - log_dates)
+        for date in missing:
+            self.logger.error("Labs found for %s but no health log entry exists", date)
+
         # Write raw sections & compute which ones need processing
         to_process: list[str] = []
         for sec in sections:
@@ -249,7 +254,6 @@ class HealthLogProcessor:
                 bar.update(1)
 
         if failed:
-            (self.output_dir / "processing_failures.log").write_text("\n".join(failed) + "\n", encoding="utf-8")
             self.logger.error("Failed to process sections for: %s", ", ".join(failed))
         else:
             self.logger.info("All sections processed successfully")
