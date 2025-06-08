@@ -8,15 +8,17 @@ from __future__ import annotations
 • Enriches the log with lab-result CSVs (per-log `labs.csv` *and* aggregated
   `LABS_PARSER_OUTPUT_PATH/all.csv`).
 • Produces an `output` folder next to the script (one sub-folder per input file) with:
-      ├─ <date>.raw.md          # original section text
-      ├─ <date>.processed.md    # validated LLM output (first line = raw SHA-256 hash)
-      ├─ <date>.labs.md         # formatted labs for the date (if any)
+      ├─ entries/               # dated sections and labs
+      │   ├─ <date>.raw.md
+      │   ├─ <date>.processed.md
+      │   └─ <date>.labs.md
       ├─ intro.md               # any pre-dated content
-      ├─ summary.md             # high-level summary produced by the LLM
-      ├─ clarifying_questions.md
-      ├─ next_steps_<spec>.md   # per-speciality next steps
-      ├─ next_steps.md          # merged consensus plan
-      └─ output.md              # summary + all processed sections (reverse-chronological)
+      └─ reports/               # generated summaries and plans
+          ├─ summary.md
+          ├─ clarifying_questions.md
+          ├─ next_steps_<spec>.md
+          ├─ next_steps.md
+          └─ output.md          # summary + all processed sections (reverse-chronological)
 
 The code assumes these environment variables:
     OPENROUTER_API_KEY           – mandatory (forwarded to openrouter.ai)
@@ -190,6 +192,10 @@ class HealthLogProcessor:
 
         self.output_dir = Path("output") / self.path.stem
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.entries_dir = self.output_dir / "entries"
+        self.entries_dir.mkdir(exist_ok=True)
+        self.reports_dir = self.output_dir / "reports"
+        self.reports_dir.mkdir(exist_ok=True)
 
         self.logger = logging.getLogger(__name__)
 
@@ -223,10 +229,10 @@ class HealthLogProcessor:
         to_process: list[str] = []
         for sec in sections:
             date = extract_date(sec)
-            raw_path = self.output_dir / f"{date}.raw.md"
+            raw_path = self.entries_dir / f"{date}.raw.md"
             raw_path.write_text(sec, encoding="utf-8")
 
-            processed_path = self.output_dir / f"{date}.processed.md"
+            processed_path = self.entries_dir / f"{date}.processed.md"
             if processed_path.exists() and processed_path.read_text().splitlines()[0].strip() == short_hash(sec):
                 continue  # up-to-date
             to_process.append(sec)
@@ -252,7 +258,7 @@ class HealthLogProcessor:
         for date, df in self.labs_by_date.items():
             if df.empty:
                 continue
-            lab_path = self.output_dir / f"{date}.labs.md"
+            lab_path = self.entries_dir / f"{date}.labs.md"
             lab_path.write_text(
                 f"{LAB_SECTION_HEADER}\n{format_labs(df)}\n",
                 encoding="utf-8",
@@ -260,8 +266,8 @@ class HealthLogProcessor:
 
         self.logger.info("Assembling final output and generating summary...")
         final_markdown = self._assemble_output(header_text)
-        (self.output_dir / "output.md").write_text(final_markdown, encoding="utf-8")
-        self.logger.info("Saved full log to %s", self.output_dir / "output.md")
+        (self.reports_dir / "output.md").write_text(final_markdown, encoding="utf-8")
+        self.logger.info("Saved full log to %s", self.reports_dir / "output.md")
 
         # Clarifying questions
         q_runs = int(os.getenv("QUESTIONS_RUNS", "3"))
@@ -326,7 +332,7 @@ class HealthLogProcessor:
         extra_messages: Iterable[dict[str, str]] | None = None,
         description: str | None = None,
     ) -> str:
-        path = self.output_dir / filename
+        path = self.reports_dir / filename
         if path.exists():
             if description:
                 self.logger.info("%s already exists at %s", description.capitalize(), path)
@@ -389,7 +395,7 @@ class HealthLogProcessor:
 
     def _process_section(self, section: str) -> tuple[str, bool]:
         date = extract_date(section)
-        processed_path = self.output_dir / f"{date}.processed.md"
+        processed_path = self.entries_dir / f"{date}.processed.md"
         raw_digest = short_hash(section)
 
         for attempt in range(1, 4):
@@ -418,7 +424,7 @@ class HealthLogProcessor:
 
                 # Write labs for this date (if any)
                 if (df := self.labs_by_date.get(date)) is not None and not df.empty:
-                    lab_path = self.output_dir / f"{date}.labs.md"
+                    lab_path = self.entries_dir / f"{date}.labs.md"
                     lab_path.write_text(f"{LAB_SECTION_HEADER}\n{format_labs(df)}\n", encoding="utf-8")
                 return date, True
 
@@ -495,11 +501,11 @@ class HealthLogProcessor:
     def _assemble_output(self, header_text: str) -> str:
         # Gather all processed + lab files, newest first
         items: list[tuple[str, str]] = []  # date → markdown chunk
-        for processed_path in self.output_dir.glob("*.processed.md"):
+        for processed_path in self.entries_dir.glob("*.processed.md"):
             date = processed_path.stem.split(".")[0]
             body = "\n".join(processed_path.read_text(encoding="utf-8").splitlines()[1:])
             parts = [body]
-            lab_path = self.output_dir / f"{date}.labs.md"
+            lab_path = self.entries_dir / f"{date}.labs.md"
             if lab_path.exists():
                 parts.append(lab_path.read_text(encoding="utf-8").strip())
             items.append((date, "\n".join(parts)))
