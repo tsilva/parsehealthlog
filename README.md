@@ -27,15 +27,15 @@ provided in this repo:
 Running either script will create a `.venv` directory managed by `uv` if one
 does not already exist and install packages from `requirements.txt`.
 
-- Requires Python 3.8+
-- Set up your `.env` file (see `.env.example`) with your OpenRouter API key and preferred model
+ - Requires Python 3.8+
+ - Set up your `.env` file (see `.env.example`) with your OpenRouter API key, preferred model, and health log path
 
 ## 🛠️ Usage
 
 **Basic usage:**
 
 ```bash
-python main.py <your_health_log.md>
+python main.py
 ```
 
 - Input: A Markdown file with health log entries (can be unstructured)
@@ -64,15 +64,17 @@ python main.py <your_health_log.md>
 - `QUESTIONS_RUNS` — how many times to generate clarifying questions (default: 3)
 - `SUMMARY_MODEL_ID` — model for creating summaries
 - `NEXT_STEPS_MODEL_ID` — model for recommended next steps
+- `HEALTH_LOG_PATH` — path to the markdown health log
+- `LABS_PARSER_OUTPUT_PATH` — path to aggregated lab CSVs
 - `MAX_WORKERS` — number of parallel processing threads (default: 1)
 - `OUTPUT_PATH` — base directory for generated output (default: `output`)
 
 **Example workflow:**
 
-1. Prepare your `.env` file with API credentials.
-2. Run the tool on your health log:
+1. Prepare your `.env` file with API credentials and the path to your health log.
+2. Run the tool:
    ```bash
-   python main.py my_health_journal.md
+   python main.py
    ```
 3. Review the structured log and reports in the `OUTPUT_PATH/<LOG>/` directory (defaults to `output/<LOG>/`).
 
