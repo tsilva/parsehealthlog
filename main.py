@@ -123,16 +123,32 @@ def format_labs(df: pd.DataFrame) -> str:
         name = str(row.lab_name_enum).strip()
         value = row.lab_value_final
         unit = str(getattr(row, "lab_unit_final", "")).strip()
-        line = f"- **{name}:** {value}{f' {unit}' if unit else ''}"
         rmin, rmax = row.lab_range_min_final, row.lab_range_max_final
+
+        is_bool = unit.lower() in {"boolean", "bool"}
+        if is_bool:
+            sval = str(value).strip().lower()
+            is_positive = sval in {"1", "1.0", "true", "positive", "yes"}
+            display = "Positive" if is_positive else "Negative"
+            line = f"- **{name}:** {display}"
+        else:
+            line = f"- **{name}:** {value}{f' {unit}' if unit else ''}"
+            if pd.notna(rmin) and pd.notna(rmax):
+                line += f" ({rmin} - {rmax})"
+
         if pd.notna(rmin) and pd.notna(rmax):
-            line += f" ({rmin} - {rmax})"
             try:
-                v, lo, hi = map(float, (value, rmin, rmax))
+                try:
+                    v = float(value)
+                except Exception:  # noqa: BLE001
+                    sval = str(value).strip().lower()
+                    v = 1.0 if sval in {"true", "positive", "yes", "1", "1.0"} else 0.0
+                lo, hi = map(float, (rmin, rmax))
                 status = "BELOW RANGE" if v < lo else "ABOVE RANGE" if v > hi else "OK"
                 line += f" [{status}]"
             except Exception:  # noqa: BLE001
                 pass
+
         out.append(line)
     return "\n".join(out)
 
