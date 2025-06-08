@@ -63,6 +63,7 @@ python main.py <your_health_log.md>
 - `SUMMARY_MODEL_ID` — model for creating summaries
 - `NEXT_STEPS_MODEL_ID` — model for recommended next steps
 - `MAX_WORKERS` — number of parallel processing threads (default: 1)
+- `MAX_OUTPUT_TOKENS` — maximum tokens returned by the model (default: 4096)
 
 **Example workflow:**
 

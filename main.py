@@ -28,6 +28,7 @@ The code assumes these environment variables:
     NEXT_STEPS_MODEL_ID          – (optional) override for next-steps generation
     LABS_PARSER_OUTPUT_PATH      – (optional) path to aggregated lab CSVs
     MAX_WORKERS                  – (optional) ThreadPoolExecutor size (default 4)
+    MAX_OUTPUT_TOKENS            – (optional) cap for tokens in LLM responses (default 4096)
     QUESTIONS_RUNS               – how many diverse question sets to generate (default 3)
 
 The implementation is ~50 % shorter than the original (~350 → ~170 LoC) while
@@ -165,14 +166,25 @@ class LLM:
     client: OpenAI
     model: str
 
-    def __call__(self, messages: list[dict[str, str]], *, max_tokens: int = 2048, temperature: float = 0.0) -> str:
+    def __call__(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        max_tokens: int,
+        temperature: float = 0.0,
+    ) -> str:
         resp = self.client.chat.completions.create(
             model=self.model,
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
         )
-        return resp.choices[0].message.content.strip()
+        choice = resp.choices[0]
+        if getattr(choice, "finish_reason", None) == "length":
+            logging.getLogger(__name__).warning(
+                "LLM response for %s truncated due to token limit", self.model
+            )
+        return choice.message.content.strip()
 
 
 # --------------------------------------------------------------------------------------
@@ -206,6 +218,7 @@ class HealthLogProcessor:
             "questions": os.getenv("QUESTIONS_MODEL_ID", default_model),
             "next_steps": os.getenv("NEXT_STEPS_MODEL_ID", default_model),
         }
+        self.default_max_tokens = int(os.getenv("MAX_OUTPUT_TOKENS", "4096"))
         self.llm = {k: LLM(self.client, v) for k, v in self.models.items()}
 
         # Lab data per date – populated lazily
@@ -320,7 +333,7 @@ class HealthLogProcessor:
         system_prompt_or_name: str,
         *,
         role: str,
-        max_tokens: int = 2048,
+        max_tokens: int | None = None,
         temperature: float = 0.0,
         calls: int = 1,
         extra_messages: Iterable[dict[str, str]] | None = None,
@@ -346,7 +359,7 @@ class HealthLogProcessor:
         for i in range(calls):
             out = self.llm[role](
                 [{"role": "system", "content": system_prompt}, *extra_messages],
-                max_tokens=max_tokens,
+                max_tokens=max_tokens or self.default_max_tokens,
                 temperature=temperature,
             )
             outputs.append(out)
@@ -364,7 +377,7 @@ class HealthLogProcessor:
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": "\n\n".join(variants)},
             ],
-            max_tokens=4096,
+            max_tokens=self.default_max_tokens,
         )
         return merged
 
@@ -383,7 +396,8 @@ class HealthLogProcessor:
                 [
                     {"role": "system", "content": self._prompt("process.system_prompt")},
                     {"role": "user", "content": section},
-                ]
+                ],
+                max_tokens=self.default_max_tokens,
             )
 
             # 2) VALIDATE
@@ -396,7 +410,8 @@ class HealthLogProcessor:
                             raw_section=section, processed_section=processed
                         ),
                     },
-                ]
+                ],
+                max_tokens=self.default_max_tokens,
             )
             if "$OK$" in validation:
                 processed_path.write_text(f"{raw_digest}\n{processed}", encoding="utf-8")
