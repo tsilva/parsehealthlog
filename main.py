@@ -384,33 +384,29 @@ class HealthLogProcessor:
 
     def _split_sections(self) -> tuple[str, list[str]]:
         text = self.path.read_text(encoding="utf-8")
-        first_hash = text.find("###")
-        if first_hash == -1:
-            raise ValueError("No '###' section headers found in input file.")
-        header_text = text[:first_hash].strip()
-        body = text[first_hash:]
 
-        # Split on "###" that start at line-begin
-        sections = [s.strip() for s in re.split(r"(?=^###)", body, flags=re.MULTILINE) if s.strip()]
+        # Locate the first dated section header (### YYYY-MM-DD)
+        match = re.search(r"^###\s*\d{4}-\d{2}-\d{2}", text, flags=re.MULTILINE)
+        if not match:
+            raise ValueError("No dated sections found (expected '### YYYY-MM-DD').")
 
-        dated, intro = [], []
-        seen_date = False
-        for sec in sections:
-            try:
-                extract_date(sec)
-                dated.append(sec)
-                seen_date = True
-            except ValueError:
-                if not seen_date:
-                    intro.append(sec)
-                else:
-                    self.logger.warning("Skipping undated section after first dated one")
+        intro_text = text[: match.start()].strip()
+        body = text[match.start() :]
 
-        if intro:
+        # Split the remainder on dated section headers
+        sections = [
+            s.strip()
+            for s in re.split(r"(?=^###\s*\d{4}-\d{2}-\d{2})", body, flags=re.MULTILINE)
+            if s.strip()
+        ]
+
+        header_text = ""
+        if intro_text:
             intro_path = self.output_dir / "intro.md"
-            intro_path.write_text("\n\n".join(filter(None, [header_text, *intro])) + "\n", encoding="utf-8")
+            intro_path.write_text(intro_text + "\n", encoding="utf-8")
             header_text = intro_path.read_text(encoding="utf-8")
-        return header_text, dated
+
+        return header_text, sections
 
     def _load_labs(self) -> None:
         lab_dfs: list[pd.DataFrame] = []
