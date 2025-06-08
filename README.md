@@ -49,7 +49,7 @@ python main.py <your_health_log.md>
   - `output/<DATE>.labs.md` — structured lab results for each date, generated
     during parallel section processing
   - `output/clinical_data_missing_report.md` — report of any clinical data missing from the structured output
-  - `error.log` — errors captured during processing
+  - `logs/error.log` — errors captured during processing
   - Logs are also echoed to the console
 
 **Environment variables (`.env`):**
