@@ -319,9 +319,6 @@ def process(input_path):
         if s.strip()
     ]
 
-    # Only keep sections that contain "[ANALISES]"
-    sections = [section for section in sections if "[ANALISES]" in section]
-
     # Separate intro sections that come before the first dated section
     intro_sections = []
     dated_sections = []
