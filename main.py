@@ -322,7 +322,19 @@ def process(input_path):
     # Only keep sections that contain "[ANALISES]"
     sections = [section for section in sections if "[ANALISES]" in section]
 
-    # Assert that each section contains exactly one '###'
+    # Separate intro sections that don't have a parseable date
+    intro_sections = []
+    dated_sections = []
+    for section in sections:
+        try:
+            extract_date_from_section(section)
+            dated_sections.append(section)
+        except ValueError:
+            intro_sections.append(section)
+
+    sections = dated_sections
+
+    # Assert that each remaining section contains exactly one '###'
     for section in sections:
         count = section.count("###")
         if count != 1:
@@ -335,6 +347,16 @@ def process(input_path):
         duplicates = {date for date in dates if dates.count(date) > 1}
         logger.error(f"Duplicate dates found: {duplicates}")
         sys.exit(1)
+
+    # Save intro text (header and non-date sections) for later use
+    intro_parts = []
+    if header_text:
+        intro_parts.append(header_text)
+    if intro_sections:
+        intro_parts.append("\n\n".join(intro_sections))
+    intro_text = "\n\n".join(intro_parts).strip()
+    if intro_text:
+        (data_dir / "intro.md").write_text(intro_text + "\n", encoding="utf-8")
 
     # Combine lab data from labs.csv and labs parser output if available
     lab_dfs = []
@@ -459,8 +481,8 @@ def process(input_path):
     # Generate or load the summary and prepend it to the processed text
     summary_file_path = data_dir / "summary.md"
     summary_source = processed_text
-    if header_text:
-        summary_source = header_text + "\n\n" + processed_text
+    if intro_text:
+        summary_source = intro_text + "\n\n" + processed_text
     summary = load_or_generate_file(
         summary_file_path,
         "health summary",
