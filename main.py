@@ -125,16 +125,30 @@ def format_labs(df: pd.DataFrame) -> str:
         name = str(row.lab_name_enum).strip()
         value = row.lab_value_final
         unit = str(getattr(row, "lab_unit_final", "")).strip()
-        line = f"- **{name}:** {value}{f' {unit}' if unit else ''}"
         rmin, rmax = row.lab_range_min_final, row.lab_range_max_final
+
+        is_bool = unit.lower() in {"boolean", "bool"}
+        if is_bool:
+            sval = str(value).strip().lower()
+            is_positive = sval in {"1", "1.0", "true", "positive", "yes"}
+            line = f"- **{name}:** {'Positive' if is_positive else 'Negative'}"
+        else:
+            line = f"- **{name}:** {value}{f' {unit}' if unit else ''}"
+            if pd.notna(rmin) and pd.notna(rmax):
+                line += f" ({rmin} - {rmax})"
+
         if pd.notna(rmin) and pd.notna(rmax):
-            line += f" ({rmin} - {rmax})"
             try:
-                v, lo, hi = map(float, (value, rmin, rmax))
+                if is_bool:
+                    v = 1.0 if is_positive else 0.0
+                else:
+                    v = float(value)
+                lo, hi = map(float, (rmin, rmax))
                 status = "BELOW RANGE" if v < lo else "ABOVE RANGE" if v > hi else "OK"
                 line += f" [{status}]"
             except Exception:  # noqa: BLE001
                 pass
+
         out.append(line)
     return "\n".join(out)
 
@@ -234,11 +248,15 @@ class HealthLogProcessor:
         else:
             self.logger.info("All sections processed successfully")
 
-        # Write remaining labs (ones for which no processed section exists)
+        # Always regenerate lab markdown files
         for date, df in self.labs_by_date.items():
+            if df.empty:
+                continue
             lab_path = self.output_dir / f"{date}.labs.md"
-            if not lab_path.exists() and not df.empty:
-                lab_path.write_text(f"{LAB_SECTION_HEADER}\n{format_labs(df)}\n", encoding="utf-8")
+            lab_path.write_text(
+                f"{LAB_SECTION_HEADER}\n{format_labs(df)}\n",
+                encoding="utf-8",
+            )
 
         self.logger.info("Assembling final output and generating summary...")
         final_markdown = self._assemble_output(header_text)
