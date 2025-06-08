@@ -40,17 +40,17 @@ python main.py <your_health_log.md>
 
 - Input: A Markdown file with health log entries (can be unstructured)
 - Output:
-  - `output/<LOG>/entries/<DATE>.raw.md` — original section text
-  - `output/<LOG>/entries/<DATE>.processed.md` — validated LLM output
-  - `output/<LOG>/entries/<DATE>.labs.md` — structured lab results for each date
-  - `output/<LOG>/intro.md` — any pre-dated content
-  - `output/<LOG>/reports/summary.md` — short patient summary
-  - `output/<LOG>/reports/clarifying_questions_<N>.md` — raw questions from each run
-  - `output/<LOG>/reports/clarifying_questions.md` — clarifying questions merged from multiple runs
-  - `output/<LOG>/reports/next_steps_<SPECIALTY>.md` — recommended actions from each specialist
-  - `output/<LOG>/reports/next_steps.md` — consensus recommendations
-  - `output/<LOG>/reports/output.md` — patient summary followed by the curated log
-  - `output/<LOG>/reports/clinical_data_missing_report.md` — report of any clinical data missing from the structured output
+  - `OUTPUT_DIR/<LOG>/entries/<DATE>.raw.md` — original section text
+  - `OUTPUT_DIR/<LOG>/entries/<DATE>.processed.md` — validated LLM output
+  - `OUTPUT_DIR/<LOG>/entries/<DATE>.labs.md` — structured lab results for each date
+  - `OUTPUT_DIR/<LOG>/intro.md` — any pre-dated content
+  - `OUTPUT_DIR/<LOG>/reports/summary.md` — short patient summary
+  - `OUTPUT_DIR/<LOG>/reports/clarifying_questions_<N>.md` — raw questions from each run
+  - `OUTPUT_DIR/<LOG>/reports/clarifying_questions.md` — clarifying questions merged from multiple runs
+  - `OUTPUT_DIR/<LOG>/reports/next_steps_<SPECIALTY>.md` — recommended actions from each specialist
+  - `OUTPUT_DIR/<LOG>/reports/next_steps.md` — consensus recommendations
+  - `OUTPUT_DIR/<LOG>/reports/output.md` — patient summary followed by the curated log
+  - `OUTPUT_DIR/<LOG>/reports/clinical_data_missing_report.md` — report of any clinical data missing from the structured output
   - `logs/error.log` — errors captured during processing
   - Logs are also echoed to the console
 
@@ -65,6 +65,7 @@ python main.py <your_health_log.md>
 - `SUMMARY_MODEL_ID` — model for creating summaries
 - `NEXT_STEPS_MODEL_ID` — model for recommended next steps
 - `MAX_WORKERS` — number of parallel processing threads (default: 1)
+- `OUTPUT_DIR` — base directory for generated output (default: `output`)
 
 **Example workflow:**
 
@@ -73,7 +74,7 @@ python main.py <your_health_log.md>
    ```bash
    python main.py my_health_journal.md
    ```
-3. Review the structured log and reports in the `output/<LOG>/` directory.
+3. Review the structured log and reports in the `OUTPUT_DIR/<LOG>/` directory (defaults to `output/<LOG>/`).
 
 ## 📄 License
 
