@@ -373,7 +373,7 @@ class HealthLogProcessor:
                         temperature=temperature,
                     )
                     outputs.append(out)
-                    variant_path = self.OUTPUT_PATH / f"{base}_{i+1}{suffix}"
+                    variant_path = self.reports_dir / f"{base}_{i+1}{suffix}"
                     variant_path.write_text(out, encoding="utf-8")
                     bar.update(1)
         else:
