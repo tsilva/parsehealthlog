@@ -7,7 +7,8 @@ from __future__ import annotations
   specialist plans, consensus, etc.) to LLM prompts stored in a local `prompts/` folder.
 • Enriches the log with lab-result CSVs (per-log `labs.csv` *and* aggregated
   `LABS_PARSER_OUTPUT_PATH/all.csv`).
-• Produces an `output` folder next to the script (one sub-folder per input file) with:
+• Produces an output folder (default `output/` next to the script,
+  configurable via `OUTPUT_DIR`) with:
       ├─ entries/               # dated sections and labs
       │   ├─ <date>.raw.md
       │   ├─ <date>.processed.md
@@ -28,6 +29,7 @@ The code assumes these environment variables:
     QUESTIONS_MODEL_ID           – (optional) override for questions
     SUMMARY_MODEL_ID             – (optional) override for summary
     NEXT_STEPS_MODEL_ID          – (optional) override for next-steps generation
+    OUTPUT_DIR                   – (optional) base directory for generated output
     LABS_PARSER_OUTPUT_PATH      – (optional) path to aggregated lab CSVs
     MAX_WORKERS                  – (optional) ThreadPoolExecutor size (default 4)
     QUESTIONS_RUNS               – how many diverse question sets to generate (default 3)
@@ -190,7 +192,8 @@ class HealthLogProcessor:
         if not self.path.exists():
             raise FileNotFoundError(self.path)
 
-        self.output_dir = Path("output") / self.path.stem
+        output_base = Path(os.getenv("OUTPUT_DIR", "output"))
+        self.output_dir = output_base / self.path.stem
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.entries_dir = self.output_dir / "entries"
         self.entries_dir.mkdir(exist_ok=True)
@@ -225,6 +228,11 @@ class HealthLogProcessor:
         header_text, sections = self._split_sections()
         self._load_labs()
 
+        log_dates = {extract_date(sec) for sec in sections}
+        missing = sorted(set(self.labs_by_date) - log_dates)
+        for date in missing:
+            self.logger.error("Labs found for %s but no health log entry exists", date)
+
         # Write raw sections & compute which ones need processing
         to_process: list[str] = []
         for sec in sections:
@@ -249,7 +257,6 @@ class HealthLogProcessor:
                 bar.update(1)
 
         if failed:
-            (self.output_dir / "processing_failures.log").write_text("\n".join(failed) + "\n", encoding="utf-8")
             self.logger.error("Failed to process sections for: %s", ", ".join(failed))
         else:
             self.logger.info("All sections processed successfully")
