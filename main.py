@@ -8,7 +8,7 @@ from __future__ import annotations
 • Enriches the log with lab-result CSVs (per-log `labs.csv` *and* aggregated
   `LABS_PARSER_OUTPUT_PATH/all.csv`).
 • Produces an output folder (default `output/` next to the script,
-  configurable via `OUTPUT_DIR`) with:
+  configurable via `OUTPUT_PATH`) with:
       ├─ entries/               # dated sections and labs
       │   ├─ <date>.raw.md
       │   ├─ <date>.processed.md
@@ -29,7 +29,7 @@ The code assumes these environment variables:
     QUESTIONS_MODEL_ID           – (optional) override for questions
     SUMMARY_MODEL_ID             – (optional) override for summary
     NEXT_STEPS_MODEL_ID          – (optional) override for next-steps generation
-    OUTPUT_DIR                   – (optional) base directory for generated output
+    OUTPUT_PATH                   – (optional) base directory for generated output
     LABS_PARSER_OUTPUT_PATH      – (optional) path to aggregated lab CSVs
     MAX_WORKERS                  – (optional) ThreadPoolExecutor size (default 4)
     QUESTIONS_RUNS               – how many diverse question sets to generate (default 3)
@@ -192,12 +192,12 @@ class HealthLogProcessor:
         if not self.path.exists():
             raise FileNotFoundError(self.path)
 
-        output_base = Path(os.getenv("OUTPUT_DIR", "output"))
-        self.output_dir = output_base / self.path.stem
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.entries_dir = self.output_dir / "entries"
+        output_base = Path(os.getenv("OUTPUT_PATH", "output"))
+        self.OUTPUT_PATH = output_base
+        self.OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
+        self.entries_dir = self.OUTPUT_PATH / "entries"
         self.entries_dir.mkdir(exist_ok=True)
-        self.reports_dir = self.output_dir / "reports"
+        self.reports_dir = self.OUTPUT_PATH / "reports"
         self.reports_dir.mkdir(exist_ok=True)
 
         self.logger = logging.getLogger(__name__)
@@ -368,7 +368,7 @@ class HealthLogProcessor:
                         temperature=temperature,
                     )
                     outputs.append(out)
-                    variant_path = self.output_dir / f"{base}_{i+1}{suffix}"
+                    variant_path = self.OUTPUT_PATH / f"{base}_{i+1}{suffix}"
                     variant_path.write_text(out, encoding="utf-8")
                     bar.update(1)
         else:
@@ -465,7 +465,7 @@ class HealthLogProcessor:
 
         header_text = ""
         if intro_text:
-            intro_path = self.output_dir / "intro.md"
+            intro_path = self.OUTPUT_PATH / "intro.md"
             intro_path.write_text(intro_text + "\n", encoding="utf-8")
             header_text = intro_path.read_text(encoding="utf-8")
 
