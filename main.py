@@ -38,6 +38,9 @@ The implementation is ~50 % shorter than the original (~350 → ~170 LoC) while
 maintaining identical behaviour.
 """
 
+from dotenv import load_dotenv
+load_dotenv(override=True)
+
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -192,7 +195,9 @@ class HealthLogProcessor:
         if not self.path.exists():
             raise FileNotFoundError(self.path)
 
-        output_base = Path(os.getenv("OUTPUT_PATH", "output"))
+        print(os.getenv("OUTPUT_PATH"))
+        output_base = Path(os.getenv("OUTPUT_PATH"))
+        print(f"Output base path: {output_base}")
         self.OUTPUT_PATH = output_base
         self.OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
         self.entries_dir = self.OUTPUT_PATH / "entries"
