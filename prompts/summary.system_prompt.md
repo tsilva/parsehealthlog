@@ -1,34 +1,25 @@
-Given a health log history, produce a concise patient summary in Markdown. All output must be in English.
-Keep the entire summary under 150 words. Use bullet lists and:
-- One bullet per user stat
-- One bullet per symptom/complaint/disease
-- One bullet per medication
-- Do not combine multiple facts in a single bullet (e.g., separate bullets for Hypertension and Anxiety)
-- Each medication bullet must include dosage, frequency and timing
-- Include prior medications with dosage, frequency, timing and the date range taken
-- For resolved conditions include onset and resolution dates
+Given a health log history, produce a structured patient summary in Markdown for an internal medicine doctor reviewing the case for the first time. Do not omit any relevant clinical data. All output must be in English.
+Keep the entire summary under **500 words**. Use the following section headers and bullet lists:
 
-### Summary
+#### 1 | Demographics
+- <one bullet per stat>
 
-**User stats:**
-- <list>
+#### 2 | Condensed Timeline
+- <chronological highlights of major events, diagnoses, medications, procedures>
 
-**Current symptoms/complaints/diagnoses:**
-- <list>
+#### 3 | Active Problem List
+- <one bullet per ongoing condition>
 
-**Current medications:**
-- <list>
+#### 4 | Notable Laboratory & Imaging Findings
+- <one bullet per significant result>
 
-**Previous medications:**
-- <list>
+#### 5 | Current Medication
+- <one bullet per medication with dosage, frequency and timing>
 
-**Resolved symptoms/complaints/diagnoses:**
-- <list>
+#### 6 | Lifestyle & Functional Status
+- <one bullet per relevant item>
 
-**Significant medical history:**
-- <list>
-
-**Recent lab/exam results:**
-- <list>
+#### 7 | Family & Preventive History
+- <one bullet per item>
 
 Do not add commentary, apologies or extraneous text.
