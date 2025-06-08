@@ -1,0 +1,5 @@
+- Move output to google drive
+- Store logs in logs folder
+- Store reports in reports folder
+- Store log as well
+- Fix mix between labs and existing content
