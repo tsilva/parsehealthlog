@@ -385,10 +385,13 @@ class HealthLogProcessor:
     def _split_sections(self) -> tuple[str, list[str]]:
         text = self.path.read_text(encoding="utf-8")
 
-        # Locate the first dated section header (### YYYY-MM-DD)
-        match = re.search(r"^###\s*\d{4}-\d{2}-\d{2}", text, flags=re.MULTILINE)
+        # Locate the first dated section header (supports YYYY-MM-DD or YYYY/MM/DD)
+        date_regex = r"^###\s*\d{4}[-/]\d{2}[-/]\d{2}"
+        match = re.search(date_regex, text, flags=re.MULTILINE)
         if not match:
-            raise ValueError("No dated sections found (expected '### YYYY-MM-DD').")
+            raise ValueError(
+                "No dated sections found (expected '### YYYY-MM-DD' or '### YYYY/MM/DD')."
+            )
 
         intro_text = text[: match.start()].strip()
         body = text[match.start() :]
@@ -396,7 +399,7 @@ class HealthLogProcessor:
         # Split the remainder on dated section headers
         sections = [
             s.strip()
-            for s in re.split(r"(?=^###\s*\d{4}-\d{2}-\d{2})", body, flags=re.MULTILINE)
+            for s in re.split(fr"(?={date_regex})", body, flags=re.MULTILINE)
             if s.strip()
         ]
 
