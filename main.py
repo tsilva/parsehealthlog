@@ -326,7 +326,7 @@ class HealthLogProcessor:
         system_prompt_or_name: str,
         *,
         role: str,
-        max_tokens: int = 2048,
+        max_tokens: int = 8096,
         temperature: float = 0.0,
         calls: int = 1,
         extra_messages: Iterable[dict[str, str]] | None = None,
