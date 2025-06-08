@@ -322,15 +322,22 @@ def process(input_path):
     # Only keep sections that contain "[ANALISES]"
     sections = [section for section in sections if "[ANALISES]" in section]
 
-    # Separate intro sections that don't have a parseable date
+    # Separate intro sections that come before the first dated section
     intro_sections = []
     dated_sections = []
+    found_first_date = False
     for section in sections:
         try:
             extract_date_from_section(section)
             dated_sections.append(section)
+            found_first_date = True
         except ValueError:
-            intro_sections.append(section)
+            if not found_first_date:
+                intro_sections.append(section)
+            else:
+                logger.warning(
+                    "Skipping section without parseable date after first dated section"
+                )
 
     sections = dated_sections
 
