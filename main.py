@@ -67,7 +67,9 @@ def setup_logging() -> None:
     out_hdlr = logging.StreamHandler(sys.stdout)
     out_hdlr.setFormatter(logging.Formatter(fmt, datefmt=datefmt))
 
-    err_hdlr = logging.FileHandler("error.log", encoding="utf-8")
+    logs_dir = Path("logs")
+    logs_dir.mkdir(exist_ok=True)
+    err_hdlr = logging.FileHandler(logs_dir / "error.log", encoding="utf-8")
     err_hdlr.setLevel(logging.ERROR)
     err_hdlr.setFormatter(logging.Formatter(fmt, datefmt=datefmt))
 
