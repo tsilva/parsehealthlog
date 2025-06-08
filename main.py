@@ -343,7 +343,22 @@ class HealthLogProcessor:
         extra_messages = list(extra_messages or [])
 
         outputs: list[str] = []
-        for i in range(calls):
+        base = Path(filename).stem
+        suffix = Path(filename).suffix
+        if calls > 1:
+            desc = (description or base).capitalize()
+            with tqdm(total=calls, desc=desc) as bar:
+                for i in range(calls):
+                    out = self.llm[role](
+                        [{"role": "system", "content": system_prompt}, *extra_messages],
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                    )
+                    outputs.append(out)
+                    variant_path = self.output_dir / f"{base}_{i+1}{suffix}"
+                    variant_path.write_text(out, encoding="utf-8")
+                    bar.update(1)
+        else:
             out = self.llm[role](
                 [{"role": "system", "content": system_prompt}, *extra_messages],
                 max_tokens=max_tokens,
