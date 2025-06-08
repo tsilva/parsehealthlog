@@ -238,6 +238,7 @@ class HealthLogProcessor:
             if not lab_path.exists() and not df.empty:
                 lab_path.write_text(f"{LAB_SECTION_HEADER}\n{format_labs(df)}\n", encoding="utf-8")
 
+        self.logger.info("Assembling final output and generating summary...")
         final_markdown = self._assemble_output(header_text)
         (self.output_dir / "output.md").write_text(final_markdown, encoding="utf-8")
         self.logger.info("Saved full log to %s", self.output_dir / "output.md")
@@ -251,6 +252,7 @@ class HealthLogProcessor:
             temperature=1.0,
             calls=q_runs,
             extra_messages=[{"role": "user", "content": final_markdown}],
+            description="clarifying questions",
         )
 
         # Specialist next steps + consensus
@@ -265,6 +267,7 @@ class HealthLogProcessor:
                     role="next_steps",
                     temperature=0.25,
                     extra_messages=[{"role": "user", "content": final_markdown}],
+                    description=f"{spec} next steps",
                 )
             )
 
@@ -275,6 +278,7 @@ class HealthLogProcessor:
             role="next_steps",
             temperature=0.25,
             extra_messages=[{"role": "user", "content": "\n\n".join(spec_outputs)}],
+            description="consensus next steps",
         )
 
     # ------------------------------------------------------------------
@@ -300,10 +304,16 @@ class HealthLogProcessor:
         temperature: float = 0.0,
         calls: int = 1,
         extra_messages: Iterable[dict[str, str]] | None = None,
+        description: str | None = None,
     ) -> str:
         path = self.output_dir / filename
         if path.exists():
+            if description:
+                self.logger.info("%s already exists at %s", description.capitalize(), path)
             return path.read_text(encoding="utf-8")
+
+        if description:
+            self.logger.info("Generating %s...", description)
 
         system_prompt = (
             system_prompt_or_name
@@ -323,6 +333,8 @@ class HealthLogProcessor:
 
         content = outputs[0] if calls == 1 else self._merge_outputs(outputs)
         path.write_text(content, encoding="utf-8")
+        if description:
+            self.logger.info("Saved %s to %s", description, path)
         return content
 
     def _merge_outputs(self, variants: list[str]) -> str:
@@ -464,6 +476,7 @@ class HealthLogProcessor:
             "summary.system_prompt",
             role="summary",
             extra_messages=[{"role": "user", "content": "\n\n".join(filter(None, [header_text, processed_text]))}],
+            description="summary",
         )
         return summary + "\n\n" + processed_text
 
