@@ -95,6 +95,7 @@ def setup_logging() -> None:
 PROMPTS_DIR: Final = Path(__file__).with_suffix("").parent / "prompts"
 LAB_SECTION_HEADER: Final = "Lab test results:"
 SPECIALTIES: Final[list[str]] = [
+    "endocrinology",
     "gastroenterology",
     "neurology",
     "psychiatry",
