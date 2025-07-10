@@ -16,10 +16,13 @@ Keep the entire summary under **500 words**. Use the following section headers a
 #### 5 | Current Medication
 - <one bullet per medication with dosage, frequency and timing>
 
-#### 6 | Lifestyle & Functional Status
+#### 6 | Past Medications
+- <one bullet per past medication with notable effects or reasons for discontinuation>
+
+#### 7 | Lifestyle & Functional Status
 - <one bullet per relevant item>
 
-#### 7 | Family & Preventive History
+#### 8 | Family & Preventive History
 - <one bullet per item>
 
 Do not add commentary, apologies or extraneous text.
