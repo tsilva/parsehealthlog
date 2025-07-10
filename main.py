@@ -97,13 +97,19 @@ LAB_SECTION_HEADER: Final = "Lab test results:"
 SPECIALTIES: Final[list[str]] = [
     "endocrinology",
     "gastroenterology",
+    "cardiology",
+    "dermatology",
+    "pulmonology",
+    "urology",
+    "hematology",
+    "neurogastroenterology",
     "neurology",
     "psychiatry",
     "nutrition",
     "rheumatology",
     "internal medicine",
+    "genetics"
 ]
-
 
 def load_prompt(name: str) -> str:
     path = PROMPTS_DIR / f"{name}.md"
@@ -320,6 +326,17 @@ class HealthLogProcessor:
             description="consensus next steps",
         )
 
+        # Next labs
+        prompt = self._prompt("next_labs.system_prompt")
+        self._generate_file(
+            "next_labs.md",
+            prompt,
+            role="next_steps",
+            temperature=0.25,
+            extra_messages=[{"role": "user", "content": final_markdown}],
+            description=f"{spec} next steps",
+        )
+    
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
