@@ -21,18 +21,20 @@ from __future__ import annotations
           ├─ next_steps.md
           └─ output.md          # summary + all processed sections (reverse-chronological)
 
-The code assumes these environment variables:
+Configuration is managed through the Config dataclass (see config.py), which loads
+and validates these environment variables:
     OPENROUTER_API_KEY           – mandatory (forwarded to openrouter.ai)
-    MODEL_ID                     – default model (fallback for all roles)
+    HEALTH_LOG_PATH              – mandatory (path to the markdown health log)
+    OUTPUT_PATH                  – mandatory (base directory for generated output)
+    MODEL_ID                     – default model (fallback for all roles, default: gpt-4o-mini)
     PROCESS_MODEL_ID             – (optional) override for PROCESS stage
     VALIDATE_MODEL_ID            – (optional) override for VALIDATE stage
     QUESTIONS_MODEL_ID           – (optional) override for questions
     SUMMARY_MODEL_ID             – (optional) override for summary
     NEXT_STEPS_MODEL_ID          – (optional) override for next-steps generation
-    OUTPUT_PATH                   – (optional) base directory for generated output
     LABS_PARSER_OUTPUT_PATH      – (optional) path to aggregated lab CSVs
     MAX_WORKERS                  – (optional) ThreadPoolExecutor size (default 4)
-    QUESTIONS_RUNS               – how many diverse question sets to generate (default 3)
+    QUESTIONS_RUNS               – (optional) how many diverse question sets to generate (default 3)
 
 The implementation is ~50 % shorter than the original (~350 → ~170 LoC) while
 maintaining identical behaviour.
@@ -47,16 +49,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
 import logging
-import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, Final
+from typing import Final
 
 import pandas as pd
 from dateutil.parser import parse as date_parse
 from openai import OpenAI
 from tqdm import tqdm
+
+from config import Config
 
 # --------------------------------------------------------------------------------------
 # Logging helpers
@@ -197,13 +200,14 @@ class LLM:
 class HealthLogProcessor:
     """End-to-end processor that orchestrates all steps."""
 
-    def __init__(self, health_log_path: str | Path) -> None:
-        self.path = Path(health_log_path)
+    def __init__(self, config: Config) -> None:
+        self.config = config
+        self.path = config.health_log_path
         if not self.path.exists():
             raise FileNotFoundError(self.path)
 
-        print(os.getenv("OUTPUT_PATH"))
-        output_base = Path(os.getenv("OUTPUT_PATH"))
+        print(config.output_path)
+        output_base = config.output_path
         print(f"Output base path: {output_base}")
         self.OUTPUT_PATH = output_base
         self.OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
@@ -218,14 +222,13 @@ class HealthLogProcessor:
         self.prompts: dict[str, str] = {}
 
         # OpenAI client + per-role models
-        self.client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=os.getenv("OPENROUTER_API_KEY"))
-        default_model = os.environ.get("MODEL_ID", "gpt-4o-mini")
+        self.client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=config.openrouter_api_key)
         self.models = {
-            "process": os.getenv("PROCESS_MODEL_ID", default_model),
-            "validate": os.getenv("VALIDATE_MODEL_ID", default_model),
-            "summary": os.getenv("SUMMARY_MODEL_ID", default_model),
-            "questions": os.getenv("QUESTIONS_MODEL_ID", default_model),
-            "next_steps": os.getenv("NEXT_STEPS_MODEL_ID", default_model),
+            "process": config.process_model_id,
+            "validate": config.validate_model_id,
+            "summary": config.summary_model_id,
+            "questions": config.questions_model_id,
+            "next_steps": config.next_steps_model_id,
         }
         self.llm = {k: LLM(self.client, v) for k, v in self.models.items()}
 
@@ -258,7 +261,7 @@ class HealthLogProcessor:
             to_process.append(sec)
 
         # Process (potentially in parallel)
-        max_workers = int(os.getenv("MAX_WORKERS", "4")) or 1
+        max_workers = self.config.max_workers
         failed: list[str] = []
         with ThreadPoolExecutor(max_workers=max_workers) as ex, tqdm(total=len(to_process), desc="Processing") as bar:
             futures = {ex.submit(self._process_section, sec): sec for sec in to_process}
@@ -289,7 +292,7 @@ class HealthLogProcessor:
         self.logger.info("Saved full log to %s", self.reports_dir / "output.md")
 
         # Clarifying questions
-        q_runs = int(os.getenv("QUESTIONS_RUNS", "3"))
+        q_runs = self.config.questions_runs
         self._generate_file(
             "clarifying_questions.md",
             "questions.system_prompt",
@@ -502,8 +505,8 @@ class HealthLogProcessor:
             lab_dfs.append(pd.read_csv(csv_local))
 
         # aggregated labs
-        if (p := os.getenv("LABS_PARSER_OUTPUT_PATH")):
-            agg_csv = Path(p) / "all.csv"
+        if self.config.labs_parser_output_path:
+            agg_csv = self.config.labs_parser_output_path / "all.csv"
             if agg_csv.exists():
                 lab_dfs.append(pd.read_csv(agg_csv))
 
@@ -558,14 +561,16 @@ class HealthLogProcessor:
 
 
 def main() -> None:
-    """Run the processor using the path from ``HEALTH_LOG_PATH``."""
+    """Run the processor using configuration from environment variables."""
     setup_logging()
-    health_log_path = os.getenv("HEALTH_LOG_PATH")
-    if not health_log_path:
-        raise SystemExit("HEALTH_LOG_PATH environment variable is not set")
+
+    try:
+        config = Config.from_env()
+    except ValueError as e:
+        raise SystemExit(f"Configuration error: {e}")
 
     start = datetime.now()
-    HealthLogProcessor(health_log_path).run()
+    HealthLogProcessor(config).run()
     logging.getLogger(__name__).info(
         "Finished in %.1fs",
         (datetime.now() - start).total_seconds(),

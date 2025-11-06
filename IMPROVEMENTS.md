@@ -21,26 +21,6 @@ health_log_parser/
 └── config.py           # Configuration management
 ```
 
-### 2. Add configuration management
-
-**Issue:** Environment variables scattered throughout code.
-
-**Recommendation:** Create a `Config` dataclass:
-```python
-@dataclass
-class Config:
-    openrouter_api_key: str
-    model_id: str
-    health_log_path: Path
-    output_path: Path
-    max_workers: int = 4
-    questions_runs: int = 3
-    # ...
-
-    @classmethod
-    def from_env(cls) -> Config:
-        # Load and validate all env vars in one place
-```
 
 ### 3. Type hints are incomplete
 
