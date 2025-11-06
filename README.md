@@ -14,27 +14,39 @@ This project is ideal for patients, caregivers, or clinicians who want to organi
 
 ## 🚀 Installation
 
+This project uses [uv](https://docs.astral.sh/uv/) for fast, reliable Python package management.
+
+**Install uv** (if you haven't already):
 ```bash
-pipx install . --force
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-To work in a local development environment you can use the helper scripts
-provided in this repo:
+**Install the project:**
+```bash
+uv sync
+```
 
-- **Linux/macOS:** `./activate-env.sh`
-- **Windows (PowerShell):** `./activate-env.ps1`
+This will create a virtual environment and install all dependencies from `pyproject.toml`.
 
-Running either script will create a `.venv` directory managed by `uv` if one
-does not already exist and install packages from `requirements.txt`.
-
- - Requires Python 3.8+
- - Set up your `.env` file (see `.env.example`) with your OpenRouter API key, preferred model, and health log path
+**Requirements:**
+- Python 3.8+
+- Set up your `.env` file (see `.env.example`) with your OpenRouter API key, preferred model, and health log path
 
 ## 🛠️ Usage
 
 **Basic usage:**
 
 ```bash
+uv run python main.py
+```
+
+Or activate the virtual environment and run directly:
+
+```bash
+source .venv/bin/activate  # On Unix/macOS
+# or
+.venv\Scripts\activate     # On Windows
+
 python main.py
 ```
 
@@ -74,7 +86,7 @@ python main.py
 1. Prepare your `.env` file with API credentials and the path to your health log.
 2. Run the tool:
    ```bash
-   python main.py
+   uv run python main.py
    ```
 3. Review the structured log and reports in the `OUTPUT_PATH/<LOG>/` directory (defaults to `output/<LOG>/`).
 
