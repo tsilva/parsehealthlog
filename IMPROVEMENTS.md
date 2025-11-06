@@ -67,27 +67,6 @@ if attempt == 3:
     )
 ```
 
-### 6. Handle missing prompt files gracefully
-
-**Issue:** Currently raises `FileNotFoundError` when prompt is missing.
-
-**Location:** `main.py:114-118`
-
-**Recommendation:** Validate all required prompts at startup:
-```python
-def validate_prompts(self):
-    required = [
-        "process.system_prompt",
-        "validate.system_prompt",
-        "summary.system_prompt",
-        "questions.system_prompt",
-        # ... all required prompts
-    ]
-    missing = [p for p in required if not (PROMPTS_DIR / f"{p}.md").exists()]
-    if missing:
-        raise ValueError(f"Missing prompts: {missing}")
-```
-
 ## Testing
 
 ### 7. Add comprehensive tests

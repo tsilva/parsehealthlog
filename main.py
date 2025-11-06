@@ -235,6 +235,33 @@ class HealthLogProcessor:
         # Lab data per date – populated lazily
         self.labs_by_date: dict[str, pd.DataFrame] = {}
 
+        # Validate all required prompts exist at startup
+        self._validate_prompts()
+
+    # ------------------------------------------------------------------
+    # Validation
+    # ------------------------------------------------------------------
+
+    def _validate_prompts(self) -> None:
+        """Validate that all required prompt files exist before processing begins."""
+        required_prompts = [
+            "process.system_prompt",
+            "validate.system_prompt",
+            "validate.user_prompt",
+            "summary.system_prompt",
+            "questions.system_prompt",
+            "specialist_next_steps.system_prompt",
+            "consensus_next_steps.system_prompt",
+            "next_labs.system_prompt",
+            "merge_bullets.system_prompt",
+        ]
+
+        missing = [p for p in required_prompts if not (PROMPTS_DIR / f"{p}.md").exists()]
+        if missing:
+            raise ValueError(f"Missing required prompt files: {', '.join(missing)}")
+
+        self.logger.info("All required prompt files validated successfully")
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
