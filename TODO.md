@@ -1,6 +1,3 @@
-- Move output to google drive
-- Store logs in logs folder
-- Store reports in reports folder
-- Store log as well
-- Fix mix between labs and existing content
-- Use o3 pro in labs
+- Output final report to target
+- Review final log for issues and iterate
+- Add easy way to run for multiple profiles
