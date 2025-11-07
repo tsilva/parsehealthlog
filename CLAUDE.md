@@ -122,10 +122,28 @@ Logs are written to `logs/error.log` (errors only) and echoed to console (all le
 
 ### Caching Strategy
 
-- **Section processing**: Cached if `<date>.processed.md` exists and first line matches `short_hash(section)` (8-char SHA-256 prefix)
-  - **IMPORTANT**: Hash-based caching is REQUIRED and should NOT be simplified. Since sections are re-extracted from the source markdown on every run, file timestamps are useless for cache invalidation. The content hash is the only reliable way to detect if a section has changed without reprocessing everything.
-- **Report generation**: Cached if report file exists (regenerate by deleting the file)
+**Recursive Dependency Tracking** - All generated files use hash-based dependency tracking to ensure correct regeneration:
+
+- **Hash Storage**: All generated files store dependencies in first line as HTML comment:
+  ```html
+  <!-- DEPS: key1:hash1,key2:hash2,... -->
+  ```
+
+- **Section processing** (`<date>.processed.md`):
+  - Dependencies: `raw` (section content), `labs` (labs data), `process_prompt`, `validate_prompt`
+  - Regenerates if: Section content changes, labs data changes, or prompts change
+  - **IMPORTANT**: Hash-based caching is REQUIRED and should NOT be simplified. Since sections are re-extracted from the source markdown on every run, file timestamps are useless for cache invalidation.
+
+- **Report generation** (summary, questions, next_steps, etc.):
+  - Dependencies: `processed` (all processed sections), `intro` (intro.md), `prompt` (specific prompt)
+  - Regenerates if: Any processed section changes, intro changes, or prompt changes
+  - Specialized tracking for consensus reports (depends on specialist reports) and output.md (depends on summary + next_steps + next_labs)
+
 - **Prompt loading**: Lazy-loaded and cached in `self.prompts` dict
+
+- **Migration**: Old format files (single hash) are automatically detected and regenerated with new dependency tracking
+
+See `IMPLEMENTATION_SUMMARY.md` and `TEST_REGENERATION.md` for details on the dependency tracking system.
 
 ### Specialties
 

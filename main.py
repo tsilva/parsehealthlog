@@ -50,6 +50,7 @@ from datetime import datetime
 from hashlib import sha256
 import logging
 import re
+import shutil
 import sys
 from pathlib import Path
 from typing import Final
@@ -125,6 +126,47 @@ def short_hash(text: str) -> str:  # 8-char SHA-256 hex prefix
     return sha256(text.encode()).hexdigest()[:8]
 
 
+# --------------------------------------------------------------------------------------
+# Dependency tracking utilities
+# --------------------------------------------------------------------------------------
+
+
+def hash_content(content: str) -> str:
+    """Compute 8-char SHA-256 hash of content."""
+    return short_hash(content)
+
+
+def hash_file(path: Path) -> str | None:
+    """Compute hash of file content, return None if file doesn't exist."""
+    if not path.exists():
+        return None
+    return hash_content(path.read_text(encoding="utf-8"))
+
+
+def parse_deps_comment(line: str) -> dict[str, str]:
+    """Parse dependency hash comment from first line.
+
+    Expected format: <!-- DEPS: key1:hash1,key2:hash2,... -->
+    Returns empty dict if format doesn't match.
+    """
+    match = re.match(r"<!--\s*DEPS:\s*(.+?)\s*-->", line.strip())
+    if not match:
+        return {}
+
+    deps = {}
+    for pair in match.group(1).split(","):
+        if ":" in pair:
+            key, value = pair.split(":", 1)
+            deps[key.strip()] = value.strip()
+    return deps
+
+
+def format_deps_comment(deps: dict[str, str]) -> str:
+    """Format dependencies as HTML comment for first line of output file."""
+    pairs = [f"{k}:{v}" for k, v in sorted(deps.items())]
+    return f"<!-- DEPS: {','.join(pairs)} -->"
+
+
 def extract_date(section: str) -> str:
     """Return YYYY-MM-DD from the section header line (first token that parses)."""
     header = section.strip().splitlines()[0].lstrip("#").replace("–", "-").replace("—", "-")
@@ -139,10 +181,10 @@ def extract_date(section: str) -> str:
 def format_labs(df: pd.DataFrame) -> str:
     out: list[str] = []
     for row in df.itertuples():
-        name = str(row.lab_name_enum).strip()
-        value = row.lab_value_final
-        unit = str(getattr(row, "lab_unit_final", "")).strip()
-        rmin, rmax = row.lab_range_min_final, row.lab_range_max_final
+        name = str(row.lab_name_standardized).strip()
+        value = row.value_normalized
+        unit = str(getattr(row, "unit_normalized", "")).strip()
+        rmin, rmax = row.reference_min_normalized, row.reference_max_normalized
 
         is_bool = unit.lower() in {"boolean", "bool"}
         if is_bool:
@@ -270,10 +312,8 @@ class HealthLogProcessor:
         header_text, sections = self._split_sections()
         self._load_labs()
 
-        log_dates = {extract_date(sec) for sec in sections}
-        missing = sorted(set(self.labs_by_date) - log_dates)
-        for date in missing:
-            self.logger.error("Labs found for %s but no health log entry exists", date)
+        # Create placeholder sections for dates with labs but no entries
+        sections = self._create_placeholder_sections(sections)
 
         # Write raw sections & compute which ones need processing
         to_process: list[str] = []
@@ -282,10 +322,16 @@ class HealthLogProcessor:
             raw_path = self.entries_dir / f"{date}.raw.md"
             raw_path.write_text(sec, encoding="utf-8")
 
+            # Check if processing needed based on dependencies
+            labs_content = ""
+            if date in self.labs_by_date and not self.labs_by_date[date].empty:
+                labs_content = f"{LAB_SECTION_HEADER}\n{format_labs(self.labs_by_date[date])}\n"
+
             processed_path = self.entries_dir / f"{date}.processed.md"
-            if processed_path.exists() and processed_path.read_text().splitlines()[0].strip() == short_hash(sec):
-                continue  # up-to-date
-            to_process.append(sec)
+            deps = self._get_section_dependencies(sec, labs_content)
+
+            if self._check_needs_regeneration(processed_path, deps):
+                to_process.append(sec)
 
         # Process (potentially in parallel)
         max_workers = self.config.max_workers
@@ -304,6 +350,7 @@ class HealthLogProcessor:
             self.logger.info("All sections processed successfully")
 
         # Always regenerate lab markdown files
+        # This includes both regular entries and lab-only entries
         for date, df in self.labs_by_date.items():
             if df.empty:
                 continue
@@ -315,8 +362,8 @@ class HealthLogProcessor:
 
         self.logger.info("Assembling final output and generating summary...")
         final_markdown = self._assemble_output(header_text)
-        (self.reports_dir / "output.md").write_text(final_markdown, encoding="utf-8")
-        self.logger.info("Saved full log to %s", self.reports_dir / "output.md")
+        # Note: final_markdown is used as input for generating other reports
+        # but output.md will be assembled at the end with additional sections
 
         # Clarifying questions
         q_runs = self.config.questions_runs
@@ -328,6 +375,7 @@ class HealthLogProcessor:
             calls=q_runs,
             extra_messages=[{"role": "user", "content": final_markdown}],
             description="clarifying questions",
+            dependencies=self._get_standard_report_deps("questions.system_prompt"),
         )
 
         # Specialist next steps + consensus
@@ -335,6 +383,14 @@ class HealthLogProcessor:
         for spec in SPECIALTIES:
             spec_file = f"next_steps_{spec.replace(' ', '_')}.md"
             prompt = self._prompt("specialist_next_steps.system_prompt").format(specialty=spec)
+
+            # Dependencies include formatted prompt (with specialty)
+            deps = {
+                "processed": self._hash_all_processed(),
+                "intro": self._hash_intro(),
+                "prompt": hash_content(prompt),  # Hash the formatted prompt
+            }
+
             spec_outputs.append(
                 self._generate_file(
                     spec_file,
@@ -343,6 +399,7 @@ class HealthLogProcessor:
                     temperature=0.25,
                     extra_messages=[{"role": "user", "content": final_markdown}],
                     description=f"{spec} next steps",
+                    dependencies=deps,
                 )
             )
 
@@ -354,6 +411,7 @@ class HealthLogProcessor:
             temperature=0.25,
             extra_messages=[{"role": "user", "content": "\n\n".join(spec_outputs)}],
             description="consensus next steps",
+            dependencies=self._get_consensus_report_deps(),
         )
 
         # Next labs
@@ -364,8 +422,30 @@ class HealthLogProcessor:
             role="next_steps",
             temperature=0.25,
             extra_messages=[{"role": "user", "content": final_markdown}],
-            description=f"{spec} next steps",
+            description="next labs",
+            dependencies=self._get_standard_report_deps("next_labs.system_prompt"),
         )
+
+        # Assemble final output.md with all reports
+        self.logger.info("Assembling final output.md with all reports...")
+        output_path = self.reports_dir / "output.md"
+        output_deps = self._get_output_deps()
+
+        # Check if output.md needs regeneration
+        if not self._check_needs_regeneration(output_path, output_deps):
+            self.logger.info("output.md is up-to-date")
+        else:
+            output_markdown = self._assemble_final_output(header_text)
+            deps_comment = format_deps_comment(output_deps)
+            output_path.write_text(f"{deps_comment}\n{output_markdown}", encoding="utf-8")
+            self.logger.info("Saved full report to %s", output_path)
+
+        # Copy to REPORT_OUTPUT_PATH if configured
+        if self.config.report_output_path:
+            # Ensure parent directory exists
+            self.config.report_output_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(output_path, self.config.report_output_path)
+            self.logger.info("Copied report to %s", self.config.report_output_path)
     
     # ------------------------------------------------------------------
     # Internal helpers
@@ -375,6 +455,110 @@ class HealthLogProcessor:
         if name not in self.prompts:
             self.prompts[name] = load_prompt(name)
         return self.prompts[name]
+
+    # --------------------------------------------------------------
+    # Dependency tracking helpers
+    # --------------------------------------------------------------
+
+    def _hash_prompt(self, name: str) -> str:
+        """Compute hash of a prompt file."""
+        return hash_file(PROMPTS_DIR / f"{name}.md") or ""
+
+    def _hash_intro(self) -> str:
+        """Compute hash of intro.md if it exists."""
+        intro_path = self.OUTPUT_PATH / "intro.md"
+        return hash_file(intro_path) or ""
+
+    def _hash_all_processed(self) -> str:
+        """Compute combined hash of all processed sections (excluding hash lines)."""
+        contents = []
+        for processed_path in sorted(self.entries_dir.glob("*.processed.md")):
+            lines = processed_path.read_text(encoding="utf-8").splitlines()
+            # Skip first line (hash comment) and join the rest
+            body = "\n".join(lines[1:]) if len(lines) > 1 else ""
+            contents.append(body)
+        return hash_content("\n\n".join(contents)) if contents else ""
+
+    def _hash_all_specialist_reports(self) -> str:
+        """Compute combined hash of all specialist next steps reports."""
+        contents = []
+        for spec in SPECIALTIES:
+            spec_file = self.reports_dir / f"next_steps_{spec.replace(' ', '_')}.md"
+            if spec_file.exists():
+                lines = spec_file.read_text(encoding="utf-8").splitlines()
+                # Skip first line (hash comment) if present
+                body = "\n".join(lines[1:]) if len(lines) > 1 else ""
+                contents.append(body)
+        return hash_content("\n\n".join(contents)) if contents else ""
+
+    def _get_section_dependencies(self, section: str, labs_content: str) -> dict[str, str]:
+        """Compute all dependencies for a processed section."""
+        return {
+            "raw": hash_content(section),
+            "labs": hash_content(labs_content) if labs_content else "none",
+            "process_prompt": self._hash_prompt("process.system_prompt"),
+            "validate_prompt": self._hash_prompt("validate.system_prompt"),
+        }
+
+    def _check_needs_regeneration(self, path: Path, expected_deps: dict[str, str]) -> bool:
+        """Check if a file needs regeneration based on its dependencies.
+
+        Returns True if file doesn't exist or dependencies have changed.
+        """
+        if not path.exists():
+            return True
+
+        first_line = path.read_text(encoding="utf-8").splitlines()[0] if path.exists() else ""
+        existing_deps = parse_deps_comment(first_line)
+
+        # If no deps comment found (old format), regenerate
+        if not existing_deps:
+            return True
+
+        # Check if any dependency changed
+        for key, expected_hash in expected_deps.items():
+            if existing_deps.get(key) != expected_hash:
+                return True
+
+        return False
+
+    def _get_standard_report_deps(self, prompt_name: str) -> dict[str, str]:
+        """Get standard dependencies for reports that use all processed sections + intro.
+
+        Used by: summary, questions, next_labs, specialist next steps
+        """
+        return {
+            "processed": self._hash_all_processed(),
+            "intro": self._hash_intro(),
+            "prompt": self._hash_prompt(prompt_name),
+        }
+
+    def _get_consensus_report_deps(self) -> dict[str, str]:
+        """Get dependencies for consensus next steps report.
+
+        Depends on all specialist reports + consensus prompt.
+        """
+        return {
+            "specialist_reports": self._hash_all_specialist_reports(),
+            "prompt": self._hash_prompt("consensus_next_steps.system_prompt"),
+        }
+
+    def _get_output_deps(self) -> dict[str, str]:
+        """Get dependencies for final output.md.
+
+        Depends on summary, next_steps, next_labs, and all processed sections.
+        """
+        deps = {
+            "processed": self._hash_all_processed(),
+        }
+
+        # Add hashes of key reports
+        for report_name in ["summary", "next_steps", "next_labs"]:
+            report_path = self.reports_dir / f"{report_name}.md"
+            report_hash = hash_file(report_path) or "missing"
+            deps[report_name] = report_hash
+
+        return deps
 
     # --------------------------------------------------------------
     # File generation with caching & merging (for multi-call variants)
@@ -391,12 +575,27 @@ class HealthLogProcessor:
         calls: int = 1,
         extra_messages: Iterable[dict[str, str]] | None = None,
         description: str | None = None,
+        dependencies: dict[str, str] | None = None,
     ) -> str:
         path = self.reports_dir / filename
+
+        # Check if file exists and is up-to-date
         if path.exists():
-            if description:
-                self.logger.info("%s already exists at %s", description.capitalize(), path)
-            return path.read_text(encoding="utf-8")
+            # If no dependencies provided, use old behavior (file exists = skip)
+            if dependencies is None:
+                if description:
+                    self.logger.info("%s already exists at %s", description.capitalize(), path)
+                lines = path.read_text(encoding="utf-8").splitlines()
+                # Skip deps comment if present, return rest
+                return "\n".join(lines[1:]) if lines and lines[0].startswith("<!--") else "\n".join(lines)
+
+            # Check if dependencies changed
+            if not self._check_needs_regeneration(path, dependencies):
+                if description:
+                    self.logger.info("%s already exists at %s", description.capitalize(), path)
+                lines = path.read_text(encoding="utf-8").splitlines()
+                # Skip deps comment, return rest
+                return "\n".join(lines[1:]) if lines and lines[0].startswith("<!--") else "\n".join(lines)
 
         if description:
             self.logger.info("Generating %s...", description)
@@ -433,7 +632,14 @@ class HealthLogProcessor:
             outputs.append(out)
 
         content = outputs[0] if calls == 1 else self._merge_outputs(outputs)
-        path.write_text(content, encoding="utf-8")
+
+        # Write with dependencies comment if provided
+        if dependencies:
+            deps_comment = format_deps_comment(dependencies)
+            path.write_text(f"{deps_comment}\n{content}", encoding="utf-8")
+        else:
+            path.write_text(content, encoding="utf-8")
+
         if description:
             self.logger.info("Saved %s to %s", description, path)
         return content
@@ -456,7 +662,14 @@ class HealthLogProcessor:
     def _process_section(self, section: str) -> tuple[str, bool]:
         date = extract_date(section)
         processed_path = self.entries_dir / f"{date}.processed.md"
-        raw_digest = short_hash(section)
+
+        # Get labs content for this date
+        labs_content = ""
+        if date in self.labs_by_date and not self.labs_by_date[date].empty:
+            labs_content = f"{LAB_SECTION_HEADER}\n{format_labs(self.labs_by_date[date])}\n"
+
+        # Compute dependencies for this section
+        deps = self._get_section_dependencies(section, labs_content)
 
         for attempt in range(1, 4):
             # 1) PROCESS
@@ -480,12 +693,19 @@ class HealthLogProcessor:
                 ]
             )
             if "$OK$" in validation:
-                processed_path.write_text(f"{raw_digest}\n{processed}", encoding="utf-8")
+                # Include labs in processed file if they exist
+                final_content = processed
+                if labs_content:
+                    final_content = f"{processed}\n\n{labs_content}"
 
-                # Write labs for this date (if any)
+                # Write with dependency hash in first line
+                deps_comment = format_deps_comment(deps)
+                processed_path.write_text(f"{deps_comment}\n{final_content}", encoding="utf-8")
+
+                # Labs are also written to separate .labs.md file
                 if (df := self.labs_by_date.get(date)) is not None and not df.empty:
                     lab_path = self.entries_dir / f"{date}.labs.md"
-                    lab_path.write_text(f"{LAB_SECTION_HEADER}\n{format_labs(df)}\n", encoding="utf-8")
+                    lab_path.write_text(labs_content, encoding="utf-8")
                 return date, True
 
             self.logger.error("Validation failed (%s attempt %d): %s", date, attempt, validation)
@@ -545,41 +765,141 @@ class HealthLogProcessor:
             labs_df["date"] = pd.to_datetime(labs_df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
         keep_cols = [
             "date",
-            "lab_name_enum",
-            "lab_value_final",
-            "lab_unit_final",
-            "lab_range_min_final",
-            "lab_range_max_final",
+            "lab_name_standardized",
+            "value_normalized",
+            "unit_normalized",
+            "reference_min_normalized",
+            "reference_max_normalized",
         ]
+        # Handle multiple column naming conventions
+        column_mappings = {
+            "lab_name_enum": "lab_name_standardized",
+            "lab_value_final": "value_normalized",
+            "lab_unit_final": "unit_normalized",
+            "lab_range_min_final": "reference_min_normalized",
+            "lab_range_max_final": "reference_max_normalized",
+            # Additional mappings for different CSV formats
+            "value": "value_normalized",
+            "unit": "unit_normalized",
+            "reference_min": "reference_min_normalized",
+            "reference_max": "reference_max_normalized",
+            "lab_unit_standardized": "unit_normalized",
+        }
+        # Rename columns if they exist
+        labs_df = labs_df.rename(columns={k: v for k, v in column_mappings.items() if k in labs_df.columns})
         labs_df = labs_df[[c for c in keep_cols if c in labs_df.columns]]
         self.labs_by_date = {d: df for d, df in labs_df.groupby("date")}
+
+    def _create_placeholder_sections(self, sections: list[str]) -> list[str]:
+        """Create entry files directly for dates with labs but no health log entries.
+
+        Creates .processed.md (just date header) and .labs.md (lab results) files.
+        No .raw.md is created since there's no raw health log content.
+        Uses dependency tracking to detect when labs data changes.
+
+        Returns the original sections list unchanged.
+        """
+        # Extract dates from existing sections
+        log_dates = {extract_date(sec) for sec in sections}
+
+        # Find dates with labs but no entries
+        missing_dates = sorted(set(self.labs_by_date) - log_dates)
+
+        if not missing_dates:
+            return sections
+
+        # Create entry files directly for dates with only labs
+        for date in missing_dates:
+            df = self.labs_by_date[date]
+            if df.empty:
+                continue
+
+            # Format labs content
+            labs_content = f"{LAB_SECTION_HEADER}\n{format_labs(df)}\n"
+
+            # Dependencies for lab-only entries (no raw content, no LLM processing)
+            deps = {
+                "raw": "none",  # No raw health log content
+                "labs": hash_content(labs_content),
+                "process_prompt": "none",  # Not processed by LLM
+                "validate_prompt": "none",  # Not validated
+            }
+
+            # Check if processed file exists and is up-to-date
+            processed_path = self.entries_dir / f"{date}.processed.md"
+            if not self._check_needs_regeneration(processed_path, deps):
+                continue  # up-to-date
+
+            # Write processed file (deps comment + date header + labs)
+            # No raw file needed - there's no raw content to store
+            # Labs are written to both .labs.md (separate) and .processed.md (for output)
+            processed_content = f"### {date}\n\n{labs_content}"
+            deps_comment = format_deps_comment(deps)
+            processed_path.write_text(f"{deps_comment}\n{processed_content}", encoding="utf-8")
+
+            self.logger.info("Created entry for %s (labs only, no health log entry)", date)
+
+        # Return original sections unchanged (placeholder files were created directly)
+        return sections
 
     # --------------------------------------------------------------
     # Output assembly
     # --------------------------------------------------------------
 
     def _assemble_output(self, header_text: str) -> str:
-        # Gather all processed + lab files, newest first
+        """Assemble summary + processed entries (used as input for other reports)."""
+        # Gather all processed files, newest first
+        # Processed files already include labs content, so no need to read .labs.md separately
         items: list[tuple[str, str]] = []  # date → markdown chunk
         for processed_path in self.entries_dir.glob("*.processed.md"):
             date = processed_path.stem.split(".")[0]
             body = "\n".join(processed_path.read_text(encoding="utf-8").splitlines()[1:])
-            parts = [body]
-            lab_path = self.entries_dir / f"{date}.labs.md"
-            if lab_path.exists():
-                parts.append(lab_path.read_text(encoding="utf-8").strip())
-            items.append((date, "\n".join(parts)))
+            items.append((date, body))
 
         processed_text = "\n\n".join(v for _d, v in sorted(items, key=lambda t: t[0], reverse=True))
 
+        # Generate summary with dependency tracking
         summary = self._generate_file(
             "summary.md",
             "summary.system_prompt",
             role="summary",
             extra_messages=[{"role": "user", "content": "\n\n".join(filter(None, [header_text, processed_text]))}],
             description="summary",
+            dependencies=self._get_standard_report_deps("summary.system_prompt"),
         )
         return summary + "\n\n" + processed_text
+
+    def _assemble_final_output(self, header_text: str) -> str:
+        """Assemble final output.md with summary, next steps, next labs, and all entries."""
+        sections = []
+
+        # 1. Summary
+        summary_path = self.reports_dir / "summary.md"
+        if summary_path.exists():
+            sections.append(f"# Summary\n\n{summary_path.read_text(encoding='utf-8').strip()}")
+
+        # 2. Next Steps (consensus)
+        next_steps_path = self.reports_dir / "next_steps.md"
+        if next_steps_path.exists():
+            sections.append(f"# Next Steps\n\n{next_steps_path.read_text(encoding='utf-8').strip()}")
+
+        # 3. Next Labs
+        next_labs_path = self.reports_dir / "next_labs.md"
+        if next_labs_path.exists():
+            sections.append(f"# Next Labs\n\n{next_labs_path.read_text(encoding='utf-8').strip()}")
+
+        # 4. All processed entries (newest first)
+        items: list[tuple[str, str]] = []
+        for processed_path in self.entries_dir.glob("*.processed.md"):
+            date = processed_path.stem.split(".")[0]
+            body = "\n".join(processed_path.read_text(encoding="utf-8").splitlines()[1:])
+            items.append((date, body))
+
+        processed_text = "\n\n".join(v for _d, v in sorted(items, key=lambda t: t[0], reverse=True))
+        if processed_text:
+            sections.append(f"# Health Log Entries\n\n{processed_text}")
+
+        return "\n\n---\n\n".join(sections)
 
 
 # --------------------------------------------------------------------------------------

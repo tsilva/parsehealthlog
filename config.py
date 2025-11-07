@@ -31,6 +31,7 @@ class Config:
     health_log_path: Path
     output_path: Path
     labs_parser_output_path: Path | None
+    report_output_path: Path | None
 
     # Processing Configuration
     max_workers: int
@@ -71,6 +72,9 @@ class Config:
         labs_parser_output_path_str = os.getenv("LABS_PARSER_OUTPUT_PATH")
         labs_parser_output_path = Path(labs_parser_output_path_str) if labs_parser_output_path_str else None
 
+        report_output_path_str = os.getenv("REPORT_OUTPUT_PATH")
+        report_output_path = Path(report_output_path_str) if report_output_path_str else None
+
         # Load processing configuration with defaults
         max_workers = int(os.getenv("MAX_WORKERS", "4")) or 1
         questions_runs = int(os.getenv("QUESTIONS_RUNS", "3"))
@@ -86,6 +90,7 @@ class Config:
             health_log_path=Path(health_log_path),
             output_path=Path(output_path),
             labs_parser_output_path=labs_parser_output_path,
+            report_output_path=report_output_path,
             max_workers=max_workers,
             questions_runs=questions_runs,
         )
