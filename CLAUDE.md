@@ -123,6 +123,7 @@ Logs are written to `logs/error.log` (errors only) and echoed to console (all le
 ### Caching Strategy
 
 - **Section processing**: Cached if `<date>.processed.md` exists and first line matches `short_hash(section)` (8-char SHA-256 prefix)
+  - **IMPORTANT**: Hash-based caching is REQUIRED and should NOT be simplified. Since sections are re-extracted from the source markdown on every run, file timestamps are useless for cache invalidation. The content hash is the only reliable way to detect if a section has changed without reprocessing everything.
 - **Report generation**: Cached if report file exists (regenerate by deleting the file)
 - **Prompt loading**: Lazy-loaded and cached in `self.prompts` dict
 
@@ -159,19 +160,23 @@ All prompts are external markdown files in `prompts/` directory:
 
 ## Known Issues & Improvements
 
-See IMPROVEMENTS.md for detailed improvement recommendations. Key items:
+See IMPROVEMENTS.md for detailed simplification opportunities. Major areas:
 
-**Priority fixes:**
+**High-impact simplifications:**
+- Remove validation step (50% API call reduction)
+- Consolidate specialist reports (15 calls → 1 call)
+- Single questions run instead of multi-run + merge (4 calls → 1 call)
+
+**Code cleanup:**
 - Remove debug print statements (main.py:209, 211)
 - Add API retry logic for transient failures
-- Sanitize filenames from user input (security risk)
+- Sanitize filenames from user input (security risk at main.py:128)
 - Fix broad exception handling (main.py:166)
 
-**Architecture improvements:**
-- Split monolithic main.py into modules (577 lines → multiple focused files)
-- Add comprehensive unit tests (currently none exist)
-- Add caching for prompt changes detection
-- Parallelize specialist report generation (currently sequential)
+**Do NOT suggest:**
+- Removing hash-based caching (required for correct cache invalidation since sections are re-extracted each run)
+- Removing parallel processing (essential for fast regeneration of large logs with hundreds of entries)
+- Timestamp-based caching (won't work since sections are re-extracted each run)
 
 ## Common Development Tasks
 
