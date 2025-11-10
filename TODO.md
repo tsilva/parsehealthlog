@@ -1,3 +1,0 @@
-- Output final report to target
-- Review final log for issues and iterate
-- Add easy way to run for multiple profiles
