@@ -784,6 +784,11 @@ class HealthLogProcessor:
             "reference_min": "reference_min_normalized",
             "reference_max": "reference_max_normalized",
             "lab_unit_standardized": "unit_normalized",
+            # Mappings for _primary suffix columns
+            "value_primary": "value_normalized",
+            "lab_unit_primary": "unit_normalized",
+            "reference_min_primary": "reference_min_normalized",
+            "reference_max_primary": "reference_max_normalized",
         }
         # Rename columns if they exist
         labs_df = labs_df.rename(columns={k: v for k, v in column_mappings.items() if k in labs_df.columns})
