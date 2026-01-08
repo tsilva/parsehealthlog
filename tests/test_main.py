@@ -11,6 +11,7 @@ from main import (
     short_hash,
     format_labs,
 )
+from exceptions import DateExtractionError
 
 
 class TestExtractDate:
@@ -47,23 +48,23 @@ class TestExtractDate:
         assert extract_date(section) == "2024-01-15"
 
     def test_empty_section_raises(self):
-        """Empty section raises ValueError."""
-        with pytest.raises(ValueError, match="empty section"):
+        """Empty section raises DateExtractionError."""
+        with pytest.raises(DateExtractionError, match="empty section"):
             extract_date("")
 
     def test_whitespace_only_raises(self):
-        """Whitespace-only section raises ValueError."""
-        with pytest.raises(ValueError, match="empty section"):
+        """Whitespace-only section raises DateExtractionError."""
+        with pytest.raises(DateExtractionError, match="empty section"):
             extract_date("   \n\n   ")
 
     def test_no_date_raises(self):
-        """Section without date raises ValueError."""
-        with pytest.raises(ValueError, match="No valid date found"):
+        """Section without date raises DateExtractionError."""
+        with pytest.raises(DateExtractionError, match="No valid date found"):
             extract_date("### Just a title\n\nContent")
 
     def test_malformed_date_raises(self):
-        """Section with malformed date raises ValueError."""
-        with pytest.raises(ValueError, match="No valid date found"):
+        """Section with malformed date raises DateExtractionError."""
+        with pytest.raises(DateExtractionError, match="No valid date found"):
             extract_date("### 2024-99-99\n\nContent")
 
 

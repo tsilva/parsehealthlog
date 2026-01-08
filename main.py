@@ -48,6 +48,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
+import json
 import logging
 import re
 import shutil
@@ -62,6 +63,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 from tqdm import tqdm
 
 from config import Config
+from exceptions import DateExtractionError, PromptError, LabParsingError
 
 # --------------------------------------------------------------------------------------
 # Logging helpers
@@ -133,7 +135,7 @@ SPECIALTIES: Final[list[str]] = [
 def load_prompt(name: str) -> str:
     path = PROMPTS_DIR / f"{name}.md"
     if not path.exists():
-        raise FileNotFoundError(path)
+        raise PromptError(f"Prompt file not found: {path}", prompt_name=name)
     return path.read_text(encoding="utf-8")
 
 
@@ -186,18 +188,18 @@ def extract_date(section: str) -> str:
     """Return YYYY-MM-DD from the section header line (first token that parses).
 
     Raises:
-        ValueError: If section is empty or no valid date found in header.
+        DateExtractionError: If section is empty or no valid date found in header.
     """
     lines = section.strip().splitlines()
     if not lines:
-        raise ValueError("Cannot extract date from empty section")
+        raise DateExtractionError("Cannot extract date from empty section", section=section)
     header = lines[0].lstrip("#").replace("–", "-").replace("—", "-")
     for token in re.split(r"\s+", header):
         try:
             return date_parse(token, fuzzy=False).strftime("%Y-%m-%d")
         except ValueError:
             continue
-    raise ValueError(f"No valid date found in header: {header}")
+    raise DateExtractionError(f"No valid date found in header: {header}", section=section)
 
 
 def format_labs(df: pd.DataFrame) -> str:
@@ -308,6 +310,9 @@ class HealthLogProcessor:
         # Lab data per date – populated lazily
         self.labs_by_date: dict[str, pd.DataFrame] = {}
 
+        # State file for progress tracking
+        self.state_file = self.OUTPUT_PATH / ".state.json"
+
         # Validate all required prompts exist at startup
         self._validate_prompts()
 
@@ -331,20 +336,85 @@ class HealthLogProcessor:
 
         missing = [p for p in required_prompts if not (PROMPTS_DIR / f"{p}.md").exists()]
         if missing:
-            raise ValueError(f"Missing required prompt files: {', '.join(missing)}")
+            raise PromptError(f"Missing required prompt files: {', '.join(missing)}")
 
         self.logger.info("All required prompt files validated successfully")
+
+    # ------------------------------------------------------------------
+    # State management for resumable runs
+    # ------------------------------------------------------------------
+
+    def _load_state(self) -> dict:
+        """Load state from state file, or return empty state if not exists."""
+        if not self.state_file.exists():
+            return {}
+        try:
+            return json.loads(self.state_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, IOError) as e:
+            self.logger.warning("Could not load state file: %s", e)
+            return {}
+
+    def _save_state(self, state: dict) -> None:
+        """Save state to state file."""
+        try:
+            self.state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        except IOError as e:
+            self.logger.warning("Could not save state file: %s", e)
+
+    def _update_state(self, **updates) -> None:
+        """Update specific fields in state file."""
+        state = self._load_state()
+        state.update(updates)
+        self._save_state(state)
+
+    def get_progress(self) -> dict:
+        """Get current processing progress.
+
+        Returns a dict with:
+        - status: 'not_started', 'in_progress', 'completed', 'failed'
+        - started_at: ISO timestamp when run started
+        - completed_at: ISO timestamp when run completed (if completed)
+        - sections_total: Total number of sections to process
+        - sections_processed: Number of successfully processed sections
+        - sections_failed: List of failed section dates
+        - reports_generated: List of generated report names
+        """
+        state = self._load_state()
+
+        # Count processed sections from filesystem
+        processed_files = list(self.entries_dir.glob("*.processed.md"))
+        failed_files = list(self.entries_dir.glob("*.failed.md"))
+
+        return {
+            "status": state.get("status", "not_started"),
+            "started_at": state.get("started_at"),
+            "completed_at": state.get("completed_at"),
+            "sections_total": state.get("sections_total", 0),
+            "sections_processed": len(processed_files),
+            "sections_failed": [f.stem.replace(".failed", "") for f in failed_files],
+            "reports_generated": state.get("reports_generated", []),
+        }
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     def run(self) -> None:  # noqa: C901 – single orchestrator method is clearer here
+        # Track run start
+        self._update_state(
+            status="in_progress",
+            started_at=datetime.now().isoformat(),
+            completed_at=None,
+        )
+
         header_text, sections = self._split_sections()
         self._load_labs()
 
         # Create placeholder sections for dates with labs but no entries
         sections = self._create_placeholder_sections(sections)
+
+        # Update state with total sections count
+        self._update_state(sections_total=len(sections))
 
         # Write raw sections & compute which ones need processing
         to_process: list[str] = []
@@ -487,7 +557,15 @@ class HealthLogProcessor:
             self.config.report_output_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(output_path, self.config.report_output_path)
             self.logger.info("Copied report to %s", self.config.report_output_path)
-    
+
+        # Track run completion
+        reports = [f.name for f in self.reports_dir.glob("*.md")]
+        self._update_state(
+            status="completed" if not failed else "completed_with_errors",
+            completed_at=datetime.now().isoformat(),
+            reports_generated=reports,
+        )
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
