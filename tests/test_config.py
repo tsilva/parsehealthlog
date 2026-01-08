@@ -158,7 +158,7 @@ class TestConfigFromEnv:
             assert config.max_workers == 1
 
     def test_invalid_max_workers_raises(self):
-        """Non-integer MAX_WORKERS raises ValueError."""
+        """Non-integer MAX_WORKERS raises ValueError with clear message."""
         env = {
             "OPENROUTER_API_KEY": "test-key",
             "HEALTH_LOG_PATH": "/path/to/log.md",
@@ -166,11 +166,11 @@ class TestConfigFromEnv:
             "MAX_WORKERS": "not-a-number",
         }
         with patch.dict(os.environ, env, clear=True):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="MAX_WORKERS must be an integer"):
                 Config.from_env()
 
     def test_invalid_questions_runs_raises(self):
-        """Non-integer QUESTIONS_RUNS raises ValueError."""
+        """Non-integer QUESTIONS_RUNS raises ValueError with clear message."""
         env = {
             "OPENROUTER_API_KEY": "test-key",
             "HEALTH_LOG_PATH": "/path/to/log.md",
@@ -178,5 +178,43 @@ class TestConfigFromEnv:
             "QUESTIONS_RUNS": "abc",
         }
         with patch.dict(os.environ, env, clear=True):
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="QUESTIONS_RUNS must be an integer"):
                 Config.from_env()
+
+    def test_negative_max_workers_becomes_one(self):
+        """Negative MAX_WORKERS is clamped to 1."""
+        env = {
+            "OPENROUTER_API_KEY": "test-key",
+            "HEALTH_LOG_PATH": "/path/to/log.md",
+            "OUTPUT_PATH": "/path/to/output",
+            "MAX_WORKERS": "-5",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = Config.from_env()
+            assert config.max_workers == 1
+
+    def test_negative_questions_runs_becomes_one(self):
+        """Negative QUESTIONS_RUNS is clamped to 1."""
+        env = {
+            "OPENROUTER_API_KEY": "test-key",
+            "HEALTH_LOG_PATH": "/path/to/log.md",
+            "OUTPUT_PATH": "/path/to/output",
+            "QUESTIONS_RUNS": "-3",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = Config.from_env()
+            assert config.questions_runs == 1
+
+    def test_large_max_workers_clamped_to_cpu_count(self):
+        """Very large MAX_WORKERS is clamped to CPU count."""
+        env = {
+            "OPENROUTER_API_KEY": "test-key",
+            "HEALTH_LOG_PATH": "/path/to/log.md",
+            "OUTPUT_PATH": "/path/to/output",
+            "MAX_WORKERS": "9999",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = Config.from_env()
+            import os as os_module
+            max_cpu = os_module.cpu_count() or 8
+            assert config.max_workers == max_cpu

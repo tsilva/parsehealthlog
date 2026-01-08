@@ -677,6 +677,9 @@ class HealthLogProcessor:
         # Compute dependencies for this section
         deps = self._get_section_dependencies(section, labs_content)
 
+        last_processed = ""
+        last_validation = ""
+
         for attempt in range(1, 4):
             # 1) PROCESS
             processed = self.llm["process"](
@@ -685,6 +688,7 @@ class HealthLogProcessor:
                     {"role": "user", "content": section},
                 ]
             )
+            last_processed = processed
 
             # 2) VALIDATE
             validation = self.llm["validate"](
@@ -698,6 +702,8 @@ class HealthLogProcessor:
                     },
                 ]
             )
+            last_validation = validation
+
             if "$OK$" in validation:
                 # Include labs in processed file if they exist
                 final_content = processed
@@ -715,6 +721,34 @@ class HealthLogProcessor:
                 return date, True
 
             self.logger.error("Validation failed (%s attempt %d): %s", date, attempt, validation)
+
+        # Save diagnostic info for failed validation
+        failed_path = self.entries_dir / f"{date}.failed.md"
+        diagnostic = f"""# Validation Failed: {date}
+
+## Raw Section (Input)
+```
+{section}
+```
+
+## Last Processed Output
+```
+{last_processed}
+```
+
+## Last Validation Response
+```
+{last_validation}
+```
+
+## Notes
+- All 3 validation attempts failed
+- Review the validation response to understand what's missing or incorrect
+- Consider adjusting the raw input or prompts
+"""
+        failed_path.write_text(diagnostic, encoding="utf-8")
+        self.logger.error("Saved diagnostic info to %s", failed_path)
+
         return date, False
 
     # --------------------------------------------------------------
