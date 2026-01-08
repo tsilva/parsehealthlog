@@ -80,9 +80,21 @@ class Config:
         labs_parser_output_path = get_optional_path("LABS_PARSER_OUTPUT_PATH")
         report_output_path = get_optional_path("REPORT_OUTPUT_PATH")
 
-        # Load processing configuration with defaults
-        max_workers = int(os.getenv("MAX_WORKERS", "4")) or 1
-        questions_runs = int(os.getenv("QUESTIONS_RUNS", "3"))
+        # Load processing configuration with defaults and validation
+        try:
+            max_workers_raw = int(os.getenv("MAX_WORKERS", "4"))
+        except ValueError as e:
+            raise ValueError(f"MAX_WORKERS must be an integer: {e}")
+        # Clamp to valid range: 1 to CPU count (or 8 if unavailable)
+        max_cpu = os.cpu_count() or 8
+        max_workers = max(1, min(max_workers_raw, max_cpu))
+
+        try:
+            questions_runs = int(os.getenv("QUESTIONS_RUNS", "3"))
+        except ValueError as e:
+            raise ValueError(f"QUESTIONS_RUNS must be an integer: {e}")
+        # Ensure at least 1 run
+        questions_runs = max(1, questions_runs)
 
         return cls(
             openrouter_api_key=openrouter_api_key,
