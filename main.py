@@ -57,7 +57,8 @@ from typing import Final
 
 import pandas as pd
 from dateutil.parser import parse as date_parse
-from openai import OpenAI
+from openai import OpenAI, APIError, APIConnectionError, RateLimitError, APITimeoutError
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from tqdm import tqdm
 
 from config import Config
@@ -122,8 +123,8 @@ def load_prompt(name: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def short_hash(text: str) -> str:  # 8-char SHA-256 hex prefix
-    return sha256(text.encode()).hexdigest()[:8]
+def short_hash(text: str) -> str:  # 12-char SHA-256 hex prefix (48 bits, collision-resistant)
+    return sha256(text.encode()).hexdigest()[:12]
 
 
 # --------------------------------------------------------------------------------------
@@ -212,8 +213,12 @@ def format_labs(df: pd.DataFrame) -> str:
                 lo, hi = map(float, (rmin, rmax))
                 status = "BELOW RANGE" if v < lo else "ABOVE RANGE" if v > hi else "OK"
                 line += f" [{status}]"
-            except Exception:  # noqa: BLE001
-                pass
+            except (ValueError, TypeError) as e:
+                # Log conversion failures (e.g., non-numeric values) at debug level
+                logging.getLogger(__name__).debug(
+                    "Could not compute range status for %s (value=%r, range=%r-%r): %s",
+                    name, value, rmin, rmax, e
+                )
 
         out.append(line)
     return "\n".join(out)
@@ -226,17 +231,24 @@ def format_labs(df: pd.DataFrame) -> str:
 
 @dataclass(slots=True)
 class LLM:
-    """Lightweight wrapper around OpenAI chat completions to minimise boilerplate."""
+    """Lightweight wrapper around OpenAI chat completions with retry logic."""
 
     client: OpenAI
     model: str
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=60),
+        retry=retry_if_exception_type((APIError, APIConnectionError, RateLimitError, APITimeoutError)),
+        reraise=True,
+    )
     def __call__(self, messages: list[dict[str, str]], *, max_tokens: int = 2048, temperature: float = 0.0) -> str:
         resp = self.client.chat.completions.create(
             model=self.model,
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
+            timeout=120.0,  # 2 minute timeout per request
         )
         return resp.choices[0].message.content.strip()
 
@@ -467,6 +479,11 @@ class HealthLogProcessor:
     # ------------------------------------------------------------------
 
     def _prompt(self, name: str) -> str:
+        """Load and cache a prompt by name.
+
+        Prompts are cached for the lifetime of the processor to ensure
+        consistency between content used and content hashed.
+        """
         if name not in self.prompts:
             self.prompts[name] = load_prompt(name)
         return self.prompts[name]
@@ -483,8 +500,12 @@ class HealthLogProcessor:
         return "\n".join(lines)
 
     def _hash_prompt(self, name: str) -> str:
-        """Compute hash of a prompt file."""
-        return hash_file(PROMPTS_DIR / f"{name}.md") or ""
+        """Compute hash of a prompt's content.
+
+        Uses cached content from _prompt() to ensure hash matches
+        the actual content being used (not file on disk which may have changed).
+        """
+        return hash_content(self._prompt(name))
 
     def _hash_intro(self) -> str:
         """Compute hash of intro.md if it exists."""

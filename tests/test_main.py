@@ -116,9 +116,9 @@ class TestHashFunctions:
     """Tests for hash utility functions."""
 
     def test_short_hash_length(self):
-        """short_hash returns 8 characters."""
+        """short_hash returns 12 characters (48 bits for collision resistance)."""
         result = short_hash("test content")
-        assert len(result) == 8
+        assert len(result) == 12
 
     def test_short_hash_deterministic(self):
         """Same input produces same hash."""
