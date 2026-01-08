@@ -69,25 +69,39 @@ from config import Config
 
 
 def setup_logging() -> None:
-    """Configure a root logger that prints to stdout and also persists errors."""
+    """Configure logging for the application.
+
+    Sets up console output (INFO+) and error file logging.
+    Uses a named logger to avoid interfering with other libraries' root handlers.
+    """
     fmt = "%(asctime)s | %(levelname)-8s | %(message)s"
     datefmt = "%Y-%m-%d %H:%M:%S"
+    formatter = logging.Formatter(fmt, datefmt=datefmt)
 
-    root = logging.getLogger()
-    root.setLevel(logging.INFO)
+    # Use named logger for this application
+    logger = logging.getLogger(__name__)
 
-    out_hdlr = logging.StreamHandler(sys.stdout)
-    out_hdlr.setFormatter(logging.Formatter(fmt, datefmt=datefmt))
+    # Skip if already configured (prevents duplicate handlers on re-import)
+    if logger.handlers:
+        return
 
+    logger.setLevel(logging.INFO)
+    logger.propagate = False  # Don't propagate to root logger
+
+    # Console handler for all messages
+    console_hdlr = logging.StreamHandler(sys.stdout)
+    console_hdlr.setFormatter(formatter)
+    logger.addHandler(console_hdlr)
+
+    # File handler for errors only
     logs_dir = Path("logs")
     logs_dir.mkdir(exist_ok=True)
-    err_hdlr = logging.FileHandler(logs_dir / "error.log", encoding="utf-8")
-    err_hdlr.setLevel(logging.ERROR)
-    err_hdlr.setFormatter(logging.Formatter(fmt, datefmt=datefmt))
+    error_hdlr = logging.FileHandler(logs_dir / "error.log", encoding="utf-8")
+    error_hdlr.setLevel(logging.ERROR)
+    error_hdlr.setFormatter(formatter)
+    logger.addHandler(error_hdlr)
 
-    root.handlers = [out_hdlr, err_hdlr]
-
-    # Quiet noisy deps
+    # Quiet noisy dependencies
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("openai").setLevel(logging.WARNING)
 
@@ -818,13 +832,19 @@ class HealthLogProcessor:
 
         # aggregated labs
         if self.config.labs_parser_output_path:
-            agg_csv = self.config.labs_parser_output_path / "all.csv"
-            if agg_csv.exists():
-                try:
-                    lab_dfs.append(pd.read_csv(agg_csv))
-                    self.logger.info("Loaded aggregated labs from %s", agg_csv)
-                except (pd.errors.ParserError, pd.errors.EmptyDataError) as e:
-                    self.logger.error("Failed to parse aggregated labs CSV %s: %s", agg_csv, e)
+            labs_path = self.config.labs_parser_output_path
+            if not labs_path.exists():
+                self.logger.warning("LABS_PARSER_OUTPUT_PATH does not exist: %s", labs_path)
+            elif not labs_path.is_dir():
+                self.logger.warning("LABS_PARSER_OUTPUT_PATH is not a directory: %s", labs_path)
+            else:
+                agg_csv = labs_path / "all.csv"
+                if agg_csv.exists():
+                    try:
+                        lab_dfs.append(pd.read_csv(agg_csv))
+                        self.logger.info("Loaded aggregated labs from %s", agg_csv)
+                    except (pd.errors.ParserError, pd.errors.EmptyDataError) as e:
+                        self.logger.error("Failed to parse aggregated labs CSV %s: %s", agg_csv, e)
 
         if not lab_dfs:
             self.logger.info("No lab CSV files found")
