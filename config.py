@@ -62,18 +62,23 @@ class Config:
 
         # Load model configuration with defaults
         default_model = os.getenv("MODEL_ID", "gpt-4o-mini")
-        process_model_id = os.getenv("PROCESS_MODEL_ID", default_model)
-        validate_model_id = os.getenv("VALIDATE_MODEL_ID", default_model)
-        summary_model_id = os.getenv("SUMMARY_MODEL_ID", default_model)
-        questions_model_id = os.getenv("QUESTIONS_MODEL_ID", default_model)
-        next_steps_model_id = os.getenv("NEXT_STEPS_MODEL_ID", default_model)
+
+        def get_model_id(role: str) -> str:
+            return os.getenv(f"{role.upper()}_MODEL_ID", default_model)
+
+        process_model_id = get_model_id("process")
+        validate_model_id = get_model_id("validate")
+        summary_model_id = get_model_id("summary")
+        questions_model_id = get_model_id("questions")
+        next_steps_model_id = get_model_id("next_steps")
 
         # Load optional path configuration
-        labs_parser_output_path_str = os.getenv("LABS_PARSER_OUTPUT_PATH")
-        labs_parser_output_path = Path(labs_parser_output_path_str) if labs_parser_output_path_str else None
+        def get_optional_path(env_var: str) -> Path | None:
+            val = os.getenv(env_var)
+            return Path(val) if val else None
 
-        report_output_path_str = os.getenv("REPORT_OUTPUT_PATH")
-        report_output_path = Path(report_output_path_str) if report_output_path_str else None
+        labs_parser_output_path = get_optional_path("LABS_PARSER_OUTPUT_PATH")
+        report_output_path = get_optional_path("REPORT_OUTPUT_PATH")
 
         # Load processing configuration with defaults
         max_workers = int(os.getenv("MAX_WORKERS", "4")) or 1

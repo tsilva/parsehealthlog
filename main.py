@@ -460,6 +460,13 @@ class HealthLogProcessor:
     # Dependency tracking helpers
     # --------------------------------------------------------------
 
+    def _read_without_deps_comment(self, path: Path) -> str:
+        """Read file content, skipping dependency comment on line 1 if present."""
+        lines = path.read_text(encoding="utf-8").splitlines()
+        if lines and lines[0].startswith("<!--"):
+            return "\n".join(lines[1:])
+        return "\n".join(lines)
+
     def _hash_prompt(self, name: str) -> str:
         """Compute hash of a prompt file."""
         return hash_file(PROMPTS_DIR / f"{name}.md") or ""
@@ -469,27 +476,22 @@ class HealthLogProcessor:
         intro_path = self.OUTPUT_PATH / "intro.md"
         return hash_file(intro_path) or ""
 
-    def _hash_all_processed(self) -> str:
-        """Compute combined hash of all processed sections (excluding hash lines)."""
+    def _hash_files_without_deps(self, paths: Iterable[Path]) -> str:
+        """Compute combined hash of multiple files, excluding deps comments."""
         contents = []
-        for processed_path in sorted(self.entries_dir.glob("*.processed.md")):
-            lines = processed_path.read_text(encoding="utf-8").splitlines()
-            # Skip first line (hash comment) and join the rest
-            body = "\n".join(lines[1:]) if len(lines) > 1 else ""
-            contents.append(body)
+        for path in sorted(paths):
+            if path.exists():
+                contents.append(self._read_without_deps_comment(path))
         return hash_content("\n\n".join(contents)) if contents else ""
+
+    def _hash_all_processed(self) -> str:
+        """Compute combined hash of all processed sections."""
+        return self._hash_files_without_deps(self.entries_dir.glob("*.processed.md"))
 
     def _hash_all_specialist_reports(self) -> str:
         """Compute combined hash of all specialist next steps reports."""
-        contents = []
-        for spec in SPECIALTIES:
-            spec_file = self.reports_dir / f"next_steps_{spec.replace(' ', '_')}.md"
-            if spec_file.exists():
-                lines = spec_file.read_text(encoding="utf-8").splitlines()
-                # Skip first line (hash comment) if present
-                body = "\n".join(lines[1:]) if len(lines) > 1 else ""
-                contents.append(body)
-        return hash_content("\n\n".join(contents)) if contents else ""
+        paths = [self.reports_dir / f"next_steps_{s.replace(' ', '_')}.md" for s in SPECIALTIES]
+        return self._hash_files_without_deps(paths)
 
     def _get_section_dependencies(self, section: str, labs_content: str) -> dict[str, str]:
         """Compute all dependencies for a processed section."""
@@ -581,21 +583,11 @@ class HealthLogProcessor:
 
         # Check if file exists and is up-to-date
         if path.exists():
-            # If no dependencies provided, use old behavior (file exists = skip)
-            if dependencies is None:
+            needs_regen = dependencies is not None and self._check_needs_regeneration(path, dependencies)
+            if not needs_regen:
                 if description:
                     self.logger.info("%s already exists at %s", description.capitalize(), path)
-                lines = path.read_text(encoding="utf-8").splitlines()
-                # Skip deps comment if present, return rest
-                return "\n".join(lines[1:]) if lines and lines[0].startswith("<!--") else "\n".join(lines)
-
-            # Check if dependencies changed
-            if not self._check_needs_regeneration(path, dependencies):
-                if description:
-                    self.logger.info("%s already exists at %s", description.capitalize(), path)
-                lines = path.read_text(encoding="utf-8").splitlines()
-                # Skip deps comment, return rest
-                return "\n".join(lines[1:]) if lines and lines[0].startswith("<!--") else "\n".join(lines)
+                return self._read_without_deps_comment(path)
 
         if description:
             self.logger.info("Generating %s...", description)
@@ -607,6 +599,13 @@ class HealthLogProcessor:
         )
         extra_messages = list(extra_messages or [])
 
+        def make_call() -> str:
+            return self.llm[role](
+                [{"role": "system", "content": system_prompt}, *extra_messages],
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+
         outputs: list[str] = []
         base = Path(filename).stem
         suffix = Path(filename).suffix
@@ -614,22 +613,13 @@ class HealthLogProcessor:
             desc = (description or base).capitalize()
             with tqdm(total=calls, desc=desc) as bar:
                 for i in range(calls):
-                    out = self.llm[role](
-                        [{"role": "system", "content": system_prompt}, *extra_messages],
-                        max_tokens=max_tokens,
-                        temperature=temperature,
-                    )
+                    out = make_call()
                     outputs.append(out)
                     variant_path = self.reports_dir / f"{base}_{i+1}{suffix}"
                     variant_path.write_text(out, encoding="utf-8")
                     bar.update(1)
         else:
-            out = self.llm[role](
-                [{"role": "system", "content": system_prompt}, *extra_messages],
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
-            outputs.append(out)
+            outputs.append(make_call())
 
         content = outputs[0] if calls == 1 else self._merge_outputs(outputs)
 
@@ -851,17 +841,17 @@ class HealthLogProcessor:
     # Output assembly
     # --------------------------------------------------------------
 
+    def _get_processed_entries_text(self) -> str:
+        """Read all processed entries, return them sorted newest-first."""
+        items: list[tuple[str, str]] = []
+        for path in self.entries_dir.glob("*.processed.md"):
+            date = path.stem.split(".")[0]
+            items.append((date, self._read_without_deps_comment(path)))
+        return "\n\n".join(v for _, v in sorted(items, key=lambda t: t[0], reverse=True))
+
     def _assemble_output(self, header_text: str) -> str:
         """Assemble summary + processed entries (used as input for other reports)."""
-        # Gather all processed files, newest first
-        # Processed files already include labs content, so no need to read .labs.md separately
-        items: list[tuple[str, str]] = []  # date → markdown chunk
-        for processed_path in self.entries_dir.glob("*.processed.md"):
-            date = processed_path.stem.split(".")[0]
-            body = "\n".join(processed_path.read_text(encoding="utf-8").splitlines()[1:])
-            items.append((date, body))
-
-        processed_text = "\n\n".join(v for _d, v in sorted(items, key=lambda t: t[0], reverse=True))
+        processed_text = self._get_processed_entries_text()
 
         # Generate summary with dependency tracking
         summary = self._generate_file(
@@ -894,13 +884,7 @@ class HealthLogProcessor:
             sections.append(f"# Next Labs\n\n{next_labs_path.read_text(encoding='utf-8').strip()}")
 
         # 4. All processed entries (newest first)
-        items: list[tuple[str, str]] = []
-        for processed_path in self.entries_dir.glob("*.processed.md"):
-            date = processed_path.stem.split(".")[0]
-            body = "\n".join(processed_path.read_text(encoding="utf-8").splitlines()[1:])
-            items.append((date, body))
-
-        processed_text = "\n\n".join(v for _d, v in sorted(items, key=lambda t: t[0], reverse=True))
+        processed_text = self._get_processed_entries_text()
         if processed_text:
             sections.append(f"# Health Log Entries\n\n{processed_text}")
 
