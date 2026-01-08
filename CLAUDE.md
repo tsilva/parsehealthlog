@@ -44,7 +44,7 @@ Create a `.env` file with required environment variables (see `.env.example`):
 
 ### Core Components
 
-**main.py** (609 lines) - Monolithic implementation containing:
+**main.py** - Monolithic implementation containing:
 - `HealthLogProcessor` class: Orchestrates the entire processing pipeline
 - `LLM` dataclass: Lightweight wrapper around OpenAI chat completions
 - Utility functions: `load_prompt()`, `extract_date()`, `format_labs()`, `short_hash()`
@@ -58,6 +58,7 @@ Create a `.env` file with required environment variables (see `.env.example`):
 - `questions.system_prompt.md` - Generates clarifying questions
 - `specialist_next_steps.system_prompt.md` - Generates specialist-specific recommendations
 - `consensus_next_steps.system_prompt.md` - Merges specialist recommendations
+- `next_steps.system_prompt.md` - General next steps generation
 - `next_labs.system_prompt.md` - Suggests next lab tests
 - `merge_bullets.system_prompt.md` - Merges multiple bullet lists
 
@@ -143,25 +144,21 @@ Logs are written to `logs/error.log` (errors only) and echoed to console (all le
 
 - **Migration**: Old format files (single hash) are automatically detected and regenerated with new dependency tracking
 
-See `IMPLEMENTATION_SUMMARY.md` and `TEST_REGENERATION.md` for details on the dependency tracking system.
-
 ### Specialties
 
-The tool generates next steps for these 14 medical specialties (main.py:100-115):
+The tool generates next steps for these 14 medical specialties:
 endocrinology, gastroenterology, cardiology, dermatology, pulmonology, urology, hematology, neurogastroenterology, neurology, psychiatry, nutrition, rheumatology, internal medicine, genetics
 
 ## Important Implementation Details
 
 ### Date Extraction
-`extract_date()` (main.py:128) parses dates from section headers:
+`extract_date()` parses dates from section headers:
 - Supports `YYYY-MM-DD` and `YYYY/MM/DD` formats
 - Handles em-dash/en-dash replacements
 - Returns standardized `YYYY-MM-DD` format
-- **Security note**: Dates become filenames without sanitization (see IMPROVEMENTS.md #16)
 
 ### Validation Loop
-Processing retries up to 3 times if validation fails (main.py:461-492):
-- Failed sections are logged but not saved for debugging (see IMPROVEMENTS.md #5)
+Processing retries up to 3 times if validation fails:
 - Validation succeeds when response contains `$OK$` marker
 
 ### LLM Configuration
@@ -176,22 +173,8 @@ All prompts are external markdown files in `prompts/` directory:
 - Validated at startup via `_validate_prompts()` to fail fast
 - Some prompts support string formatting (e.g., specialist_next_steps uses `{specialty}`)
 
-## Known Issues & Improvements
+## Do NOT Suggest
 
-See IMPROVEMENTS.md for detailed simplification opportunities. Major areas:
-
-**High-impact simplifications:**
-- Remove validation step (50% API call reduction)
-- Consolidate specialist reports (15 calls → 1 call)
-- Single questions run instead of multi-run + merge (4 calls → 1 call)
-
-**Code cleanup:**
-- Remove debug print statements (main.py:209, 211)
-- Add API retry logic for transient failures
-- Sanitize filenames from user input (security risk at main.py:128)
-- Fix broad exception handling (main.py:166)
-
-**Do NOT suggest:**
 - Removing hash-based caching (required for correct cache invalidation since sections are re-extracted each run)
 - Removing parallel processing (essential for fast regeneration of large logs with hundreds of entries)
 - Timestamp-based caching (won't work since sections are re-extracted each run)
@@ -199,7 +182,7 @@ See IMPROVEMENTS.md for detailed simplification opportunities. Major areas:
 ## Common Development Tasks
 
 ### Adding a New Specialty
-1. Add specialty name to `SPECIALTIES` list (main.py:100-115)
+1. Add specialty name to `SPECIALTIES` list in main.py
 2. The system will automatically generate `next_steps_<specialty>.md` report
 
 ### Modifying Prompts
@@ -210,7 +193,6 @@ See IMPROVEMENTS.md for detailed simplification opportunities. Major areas:
 ### Changing Output Structure
 1. Modify `_assemble_output()` for final output format
 2. Modify `_generate_file()` for report generation behavior
-3. Consider versioning output format (see IMPROVEMENTS.md #24)
 
 ### Adding New Report Types
 Use `_generate_file()` method:
