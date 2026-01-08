@@ -7,6 +7,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from exceptions import ConfigurationError
+
 
 @dataclass
 class Config:
@@ -50,15 +52,15 @@ class Config:
         # Load required variables
         openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
         if not openrouter_api_key:
-            raise ValueError("OPENROUTER_API_KEY environment variable is required")
+            raise ConfigurationError("OPENROUTER_API_KEY environment variable is required")
 
         health_log_path = os.getenv("HEALTH_LOG_PATH")
         if not health_log_path:
-            raise ValueError("HEALTH_LOG_PATH environment variable is required")
+            raise ConfigurationError("HEALTH_LOG_PATH environment variable is required")
 
         output_path = os.getenv("OUTPUT_PATH")
         if not output_path:
-            raise ValueError("OUTPUT_PATH environment variable is required")
+            raise ConfigurationError("OUTPUT_PATH environment variable is required")
 
         # Load model configuration with defaults
         default_model = os.getenv("MODEL_ID", "gpt-4o-mini")
@@ -84,7 +86,7 @@ class Config:
         try:
             max_workers_raw = int(os.getenv("MAX_WORKERS", "4"))
         except ValueError as e:
-            raise ValueError(f"MAX_WORKERS must be an integer: {e}")
+            raise ConfigurationError(f"MAX_WORKERS must be an integer: {e}")
         # Clamp to valid range: 1 to CPU count (or 8 if unavailable)
         max_cpu = os.cpu_count() or 8
         max_workers = max(1, min(max_workers_raw, max_cpu))
@@ -92,7 +94,7 @@ class Config:
         try:
             questions_runs = int(os.getenv("QUESTIONS_RUNS", "3"))
         except ValueError as e:
-            raise ValueError(f"QUESTIONS_RUNS must be an integer: {e}")
+            raise ConfigurationError(f"QUESTIONS_RUNS must be an integer: {e}")
         # Ensure at least 1 run
         questions_runs = max(1, questions_runs)
 

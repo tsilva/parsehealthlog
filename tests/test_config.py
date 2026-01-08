@@ -6,39 +6,40 @@ from pathlib import Path
 from unittest.mock import patch
 
 from config import Config
+from exceptions import ConfigurationError
 
 
 class TestConfigFromEnv:
     """Tests for Config.from_env() method."""
 
     def test_missing_api_key_raises(self):
-        """Missing OPENROUTER_API_KEY raises ValueError."""
+        """Missing OPENROUTER_API_KEY raises ConfigurationError."""
         env = {
             "HEALTH_LOG_PATH": "/path/to/log.md",
             "OUTPUT_PATH": "/path/to/output",
         }
         with patch.dict(os.environ, env, clear=True):
-            with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
+            with pytest.raises(ConfigurationError, match="OPENROUTER_API_KEY"):
                 Config.from_env()
 
     def test_missing_health_log_path_raises(self):
-        """Missing HEALTH_LOG_PATH raises ValueError."""
+        """Missing HEALTH_LOG_PATH raises ConfigurationError."""
         env = {
             "OPENROUTER_API_KEY": "test-key",
             "OUTPUT_PATH": "/path/to/output",
         }
         with patch.dict(os.environ, env, clear=True):
-            with pytest.raises(ValueError, match="HEALTH_LOG_PATH"):
+            with pytest.raises(ConfigurationError, match="HEALTH_LOG_PATH"):
                 Config.from_env()
 
     def test_missing_output_path_raises(self):
-        """Missing OUTPUT_PATH raises ValueError."""
+        """Missing OUTPUT_PATH raises ConfigurationError."""
         env = {
             "OPENROUTER_API_KEY": "test-key",
             "HEALTH_LOG_PATH": "/path/to/log.md",
         }
         with patch.dict(os.environ, env, clear=True):
-            with pytest.raises(ValueError, match="OUTPUT_PATH"):
+            with pytest.raises(ConfigurationError, match="OUTPUT_PATH"):
                 Config.from_env()
 
     def test_valid_minimal_config(self):
@@ -158,7 +159,7 @@ class TestConfigFromEnv:
             assert config.max_workers == 1
 
     def test_invalid_max_workers_raises(self):
-        """Non-integer MAX_WORKERS raises ValueError with clear message."""
+        """Non-integer MAX_WORKERS raises ConfigurationError with clear message."""
         env = {
             "OPENROUTER_API_KEY": "test-key",
             "HEALTH_LOG_PATH": "/path/to/log.md",
@@ -166,11 +167,11 @@ class TestConfigFromEnv:
             "MAX_WORKERS": "not-a-number",
         }
         with patch.dict(os.environ, env, clear=True):
-            with pytest.raises(ValueError, match="MAX_WORKERS must be an integer"):
+            with pytest.raises(ConfigurationError, match="MAX_WORKERS must be an integer"):
                 Config.from_env()
 
     def test_invalid_questions_runs_raises(self):
-        """Non-integer QUESTIONS_RUNS raises ValueError with clear message."""
+        """Non-integer QUESTIONS_RUNS raises ConfigurationError with clear message."""
         env = {
             "OPENROUTER_API_KEY": "test-key",
             "HEALTH_LOG_PATH": "/path/to/log.md",
@@ -178,7 +179,7 @@ class TestConfigFromEnv:
             "QUESTIONS_RUNS": "abc",
         }
         with patch.dict(os.environ, env, clear=True):
-            with pytest.raises(ValueError, match="QUESTIONS_RUNS must be an integer"):
+            with pytest.raises(ConfigurationError, match="QUESTIONS_RUNS must be an integer"):
                 Config.from_env()
 
     def test_negative_max_workers_becomes_one(self):
