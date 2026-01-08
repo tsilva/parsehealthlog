@@ -168,8 +168,15 @@ def format_deps_comment(deps: dict[str, str]) -> str:
 
 
 def extract_date(section: str) -> str:
-    """Return YYYY-MM-DD from the section header line (first token that parses)."""
-    header = section.strip().splitlines()[0].lstrip("#").replace("–", "-").replace("—", "-")
+    """Return YYYY-MM-DD from the section header line (first token that parses).
+
+    Raises:
+        ValueError: If section is empty or no valid date found in header.
+    """
+    lines = section.strip().splitlines()
+    if not lines:
+        raise ValueError("Cannot extract date from empty section")
+    header = lines[0].lstrip("#").replace("–", "-").replace("—", "-")
     for token in re.split(r"\s+", header):
         try:
             return date_parse(token, fuzzy=False).strftime("%Y-%m-%d")
@@ -248,9 +255,7 @@ class HealthLogProcessor:
         if not self.path.exists():
             raise FileNotFoundError(self.path)
 
-        print(config.output_path)
         output_base = config.output_path
-        print(f"Output base path: {output_base}")
         self.OUTPUT_PATH = output_base
         self.OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
         self.entries_dir = self.OUTPUT_PATH / "entries"
@@ -339,8 +344,18 @@ class HealthLogProcessor:
         with ThreadPoolExecutor(max_workers=max_workers) as ex, tqdm(total=len(to_process), desc="Processing") as bar:
             futures = {ex.submit(self._process_section, sec): sec for sec in to_process}
             for fut in as_completed(futures):
-                date, ok = fut.result()
-                if not ok:
+                try:
+                    date, ok = fut.result()
+                    if not ok:
+                        failed.append(date)
+                except Exception as e:
+                    # Get the section that caused the error for context
+                    section = futures[fut]
+                    try:
+                        date = extract_date(section)
+                    except Exception:
+                        date = "(unknown date)"
+                    self.logger.error("Exception processing section %s: %s", date, e, exc_info=True)
                     failed.append(date)
                 bar.update(1)
 
@@ -510,7 +525,8 @@ class HealthLogProcessor:
         if not path.exists():
             return True
 
-        first_line = path.read_text(encoding="utf-8").splitlines()[0] if path.exists() else ""
+        lines = path.read_text(encoding="utf-8").splitlines()
+        first_line = lines[0] if lines else ""
         existing_deps = parse_deps_comment(first_line)
 
         # If no deps comment found (old format), regenerate
@@ -739,29 +755,30 @@ class HealthLogProcessor:
         # per-log labs.csv
         csv_local = self.path.parent / "labs.csv"
         if csv_local.exists():
-            lab_dfs.append(pd.read_csv(csv_local))
+            try:
+                lab_dfs.append(pd.read_csv(csv_local))
+                self.logger.info("Loaded labs from %s", csv_local)
+            except (pd.errors.ParserError, pd.errors.EmptyDataError) as e:
+                self.logger.error("Failed to parse labs CSV %s: %s", csv_local, e)
 
         # aggregated labs
         if self.config.labs_parser_output_path:
             agg_csv = self.config.labs_parser_output_path / "all.csv"
             if agg_csv.exists():
-                lab_dfs.append(pd.read_csv(agg_csv))
+                try:
+                    lab_dfs.append(pd.read_csv(agg_csv))
+                    self.logger.info("Loaded aggregated labs from %s", agg_csv)
+                except (pd.errors.ParserError, pd.errors.EmptyDataError) as e:
+                    self.logger.error("Failed to parse aggregated labs CSV %s: %s", agg_csv, e)
 
         if not lab_dfs:
+            self.logger.info("No lab CSV files found")
             return
 
         labs_df = pd.concat(lab_dfs, ignore_index=True)
-        if "date" in labs_df.columns:
-            labs_df["date"] = pd.to_datetime(labs_df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
-        keep_cols = [
-            "date",
-            "lab_name_standardized",
-            "value_normalized",
-            "unit_normalized",
-            "reference_min_normalized",
-            "reference_max_normalized",
-        ]
-        # Handle multiple column naming conventions
+        initial_count = len(labs_df)
+
+        # Handle multiple column naming conventions (before validation)
         column_mappings = {
             "lab_name_enum": "lab_name_standardized",
             "lab_value_final": "value_normalized",
@@ -782,7 +799,48 @@ class HealthLogProcessor:
         }
         # Rename columns if they exist
         labs_df = labs_df.rename(columns={k: v for k, v in column_mappings.items() if k in labs_df.columns})
+
+        # Validate required columns exist
+        required_cols = ["date", "lab_name_standardized"]
+        missing_cols = [c for c in required_cols if c not in labs_df.columns]
+        if missing_cols:
+            self.logger.error(
+                "Lab CSV missing required columns: %s. Available: %s",
+                missing_cols,
+                list(labs_df.columns),
+            )
+            return
+
+        # Parse dates with logging for coercion failures
+        original_dates = labs_df["date"].copy()
+        parsed_dates = pd.to_datetime(labs_df["date"], errors="coerce")
+        coercion_failures = labs_df[parsed_dates.isna() & original_dates.notna()]
+        if len(coercion_failures) > 0:
+            self.logger.warning(
+                "Dropped %d lab rows with unparseable dates. Sample bad dates: %s",
+                len(coercion_failures),
+                coercion_failures["date"].head(5).tolist(),
+            )
+        labs_df["date"] = parsed_dates.dt.strftime("%Y-%m-%d")
+
+        # Filter to relevant columns
+        keep_cols = [
+            "date",
+            "lab_name_standardized",
+            "value_normalized",
+            "unit_normalized",
+            "reference_min_normalized",
+            "reference_max_normalized",
+        ]
         labs_df = labs_df[[c for c in keep_cols if c in labs_df.columns]]
+
+        # Drop rows with empty dates (from coercion failures)
+        labs_df = labs_df[labs_df["date"].notna() & (labs_df["date"] != "")]
+        final_count = len(labs_df)
+
+        if initial_count != final_count:
+            self.logger.info("Lab data: %d rows loaded, %d after filtering", initial_count, final_count)
+
         self.labs_by_date = {d: df for d, df in labs_df.groupby("date")}
 
     def _create_placeholder_sections(self, sections: list[str]) -> list[str]:
