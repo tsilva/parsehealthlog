@@ -332,6 +332,8 @@ class HealthLogProcessor:
             "consensus_next_steps.system_prompt",
             "next_labs.system_prompt",
             "merge_bullets.system_prompt",
+            "action_plan.system_prompt",
+            "experiments.system_prompt",
         ]
 
         missing = [p for p in required_prompts if not (PROMPTS_DIR / f"{p}.md").exists()]
@@ -537,6 +539,26 @@ class HealthLogProcessor:
             dependencies=self._get_standard_report_deps("next_labs.system_prompt"),
         )
 
+        # Experiments tracker
+        today = datetime.now().strftime("%Y-%m-%d")
+        experiments_prompt = self._prompt("experiments.system_prompt").format(today=today)
+        self._generate_file(
+            "experiments.md",
+            experiments_prompt,
+            role="next_steps",
+            temperature=0.25,
+            extra_messages=[{"role": "user", "content": final_markdown}],
+            description="experiments tracker",
+            dependencies={
+                "processed": self._hash_all_processed(),
+                "intro": self._hash_intro(),
+                "prompt": hash_content(experiments_prompt),
+            },
+        )
+
+        # Action plan (synthesizes summary, next_steps, next_labs, experiments)
+        self._generate_action_plan(today)
+
         # Assemble final output.md with all reports
         self.logger.info("Assembling final output.md with all reports...")
         output_path = self.reports_dir / "output.md"
@@ -677,14 +699,14 @@ class HealthLogProcessor:
     def _get_output_deps(self) -> dict[str, str]:
         """Get dependencies for final output.md.
 
-        Depends on summary, next_steps, next_labs, and all processed sections.
+        Depends on summary, next_steps, next_labs, action_plan, experiments, and all processed sections.
         """
         deps = {
             "processed": self._hash_all_processed(),
         }
 
         # Add hashes of key reports
-        for report_name in ["summary", "next_steps", "next_labs"]:
+        for report_name in ["summary", "next_steps", "next_labs", "action_plan", "experiments"]:
             report_path = self.reports_dir / f"{report_name}.md"
             report_hash = hash_file(report_path) or "missing"
             deps[report_name] = report_hash
@@ -773,6 +795,64 @@ class HealthLogProcessor:
             max_tokens=4096,
         )
         return merged
+
+    def _generate_action_plan(self, today: str) -> str:
+        """Generate action plan by synthesizing summary, next_steps, next_labs, and experiments.
+
+        The action plan is the primary output - a time-bucketed, prioritized list of
+        actions the user should take (this week, this month, this quarter).
+        """
+        # Read the input reports
+        sections = []
+
+        summary_path = self.reports_dir / "summary.md"
+        if summary_path.exists():
+            sections.append(f"## Clinical Summary\n\n{self._read_without_deps_comment(summary_path)}")
+
+        next_steps_path = self.reports_dir / "next_steps.md"
+        if next_steps_path.exists():
+            sections.append(f"## Recommended Next Steps\n\n{self._read_without_deps_comment(next_steps_path)}")
+
+        next_labs_path = self.reports_dir / "next_labs.md"
+        if next_labs_path.exists():
+            sections.append(f"## Suggested Lab Tests\n\n{self._read_without_deps_comment(next_labs_path)}")
+
+        experiments_path = self.reports_dir / "experiments.md"
+        if experiments_path.exists():
+            sections.append(f"## Current Experiments\n\n{self._read_without_deps_comment(experiments_path)}")
+
+        combined_input = "\n\n---\n\n".join(sections)
+
+        # Find the most recent entry date
+        processed_files = sorted(self.entries_dir.glob("*.processed.md"), reverse=True)
+        last_entry_date = today
+        if processed_files:
+            last_entry_date = processed_files[0].stem.split(".")[0]
+
+        # Format the prompt with dates
+        action_prompt = self._prompt("action_plan.system_prompt").format(
+            today=today,
+            last_entry_date=last_entry_date,
+        )
+
+        # Dependencies include all input reports
+        deps = {
+            "summary": hash_file(summary_path) or "missing",
+            "next_steps": hash_file(next_steps_path) or "missing",
+            "next_labs": hash_file(next_labs_path) or "missing",
+            "experiments": hash_file(experiments_path) or "missing",
+            "prompt": hash_content(action_prompt),
+        }
+
+        return self._generate_file(
+            "action_plan.md",
+            action_prompt,
+            role="next_steps",
+            temperature=0.25,
+            extra_messages=[{"role": "user", "content": combined_input}],
+            description="action plan",
+            dependencies=deps,
+        )
 
     # --------------------------------------------------------------
     # Section processing (one dated section → validated markdown)
@@ -1076,25 +1156,35 @@ class HealthLogProcessor:
         return summary + "\n\n" + processed_text
 
     def _assemble_final_output(self, header_text: str) -> str:
-        """Assemble final output.md with summary, next steps, next labs, and all entries."""
+        """Assemble final output.md with action plan, experiments, summary, next steps, next labs, and all entries."""
         sections = []
 
-        # 1. Summary
+        # 1. Action Plan (PRIMARY OUTPUT - what to do next)
+        action_plan_path = self.reports_dir / "action_plan.md"
+        if action_plan_path.exists():
+            sections.append(self._read_without_deps_comment(action_plan_path).strip())
+
+        # 2. Experiments (active biohacking/N=1 experiments)
+        experiments_path = self.reports_dir / "experiments.md"
+        if experiments_path.exists():
+            sections.append(self._read_without_deps_comment(experiments_path).strip())
+
+        # 3. Summary (clinical overview)
         summary_path = self.reports_dir / "summary.md"
         if summary_path.exists():
-            sections.append(f"# Summary\n\n{summary_path.read_text(encoding='utf-8').strip()}")
+            sections.append(f"# Clinical Summary\n\n{self._read_without_deps_comment(summary_path).strip()}")
 
-        # 2. Next Steps (consensus)
+        # 4. Next Steps (detailed consensus recommendations)
         next_steps_path = self.reports_dir / "next_steps.md"
         if next_steps_path.exists():
-            sections.append(f"# Next Steps\n\n{next_steps_path.read_text(encoding='utf-8').strip()}")
+            sections.append(f"# Detailed Next Steps\n\n{self._read_without_deps_comment(next_steps_path).strip()}")
 
-        # 3. Next Labs
+        # 5. Next Labs (detailed lab recommendations)
         next_labs_path = self.reports_dir / "next_labs.md"
         if next_labs_path.exists():
-            sections.append(f"# Next Labs\n\n{next_labs_path.read_text(encoding='utf-8').strip()}")
+            sections.append(f"# Detailed Lab Recommendations\n\n{self._read_without_deps_comment(next_labs_path).strip()}")
 
-        # 4. All processed entries (newest first)
+        # 6. All processed entries (newest first)
         processed_text = self._get_processed_entries_text()
         if processed_text:
             sections.append(f"# Health Log Entries\n\n{processed_text}")
