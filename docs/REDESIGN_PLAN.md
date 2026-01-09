@@ -241,10 +241,13 @@ The current system processes sections independently — it doesn't build tempora
 - [x] Output `action_plan.md` and `experiments.md`
 - [x] Test on actual health log
 
-### Phase 2: Experiment Tracking
-- [ ] Add experiment detection in processing prompt
-- [ ] Track hypothesis, protocol, metrics, status
-- [ ] Integrate experiment results into action plan
+### Phase 2: Experiment Tracking ✅ COMPLETE
+- [x] Add experiment detection in processing prompt (EXPERIMENTS HTML comment blocks)
+- [x] Track hypothesis, protocol, metrics, status (START/UPDATE/END events)
+- [x] Integrate experiment results into action plan (stale detection, completed exclusion)
+- [x] Update experiments.system_prompt.md to parse structured blocks first
+
+**Note:** Changing prompts causes full reprocessing (all sections get new hash). This is expensive but ensures consistency. Future optimization: separate prompt hashes by type.
 
 ### Phase 3: State Model
 - [ ] Add entity extraction step after section processing

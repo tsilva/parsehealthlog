@@ -76,5 +76,8 @@ Bullet list of ongoing measurements the patient should log regularly.
 5. **Self-order options**: Include direct-to-consumer lab options (e.g., Quest, LabCorp walk-in, online services) with approximate costs
 6. **Decision points**: Flag when decisions need to be made (e.g., "If dairy elimination positive, plan reintroduction protocol")
 7. **Omit sections if empty**: Don't include headers with no content
+8. **Exclude completed experiments**: Do NOT include experiments marked as "Completed" or "END" in the Active Experiments table or action items - they are done
+9. **Flag stale experiments**: If an experiment is marked as "Stale" (no updates in 60+ days), add an action item to "Update or close stale experiment: [name]" rather than treating it as actively ongoing
+10. **Only actionable items**: The action plan should only contain things the user needs to DO, not things already completed or resolved
 
 **Output only the action plan. No introductory text, no sign-offs, no commentary.**
