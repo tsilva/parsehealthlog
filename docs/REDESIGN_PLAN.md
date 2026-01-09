@@ -249,16 +249,23 @@ The current system processes sections independently — it doesn't build tempora
 
 **Note:** Changing prompts causes full reprocessing (all sections get new hash). This is expensive but ensures consistency. Future optimization: separate prompt hashes by type.
 
-### Phase 3: State Model
-- [ ] Add entity extraction step after section processing
-- [ ] Build state.json from entities
-- [ ] Enable incremental updates
-- [ ] Add trend analysis
+### Phase 3: State Model ✅ MOSTLY COMPLETE
+- [x] Add entity extraction step after section processing (`_build_state_model()`)
+- [x] Build state_model.json from entities (`_aggregate_entities()`)
+- [x] Add trend analysis (`_compute_lab_trends()`, `_compute_symptom_trends()`)
+- [x] Hash-based caching to skip regeneration when unchanged
+- [ ] True incremental updates (optional/future)
 
-### Phase 4: Smart Specialists
-- [ ] Condition-to-specialty mapping
-- [ ] Dynamic specialist selection
-- [ ] Reduced processing cost, focused advice
+**Results:** 248/268 entries extracted successfully (92.5%)
+
+### Phase 4: Unified "Genius Doctor" Prompt ✅ COMPLETE
+Replace 14 specialist reports + consensus with single unified prompt:
+- [x] Create `prompts/next_steps_unified.system_prompt.md` - genius physician persona
+- [x] Modify main.py - remove specialist loop, add unified generation
+- [x] Remove unused prompts (specialist_next_steps, consensus_next_steps)
+- [x] Update CLAUDE.md documentation
+
+**Results:** 15 LLM calls → 1, unified coherent output with specialist recommendations integrated
 
 ### Phase 5: Full Integration
 - [ ] Unified dashboard view

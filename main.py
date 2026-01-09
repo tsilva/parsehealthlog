@@ -115,22 +115,6 @@ def setup_logging() -> None:
 
 PROMPTS_DIR: Final = Path(__file__).with_suffix("").parent / "prompts"
 LAB_SECTION_HEADER: Final = "Lab test results:"
-SPECIALTIES: Final[list[str]] = [
-    "endocrinology",
-    "gastroenterology",
-    "cardiology",
-    "dermatology",
-    "pulmonology",
-    "urology",
-    "hematology",
-    "neurogastroenterology",
-    "neurology",
-    "psychiatry",
-    "nutrition",
-    "rheumatology",
-    "internal medicine",
-    "genetics"
-]
 
 def load_prompt(name: str) -> str:
     path = PROMPTS_DIR / f"{name}.md"
@@ -328,8 +312,7 @@ class HealthLogProcessor:
             "validate.user_prompt",
             "summary.system_prompt",
             "questions.system_prompt",
-            "specialist_next_steps.system_prompt",
-            "consensus_next_steps.system_prompt",
+            "next_steps_unified.system_prompt",
             "next_labs.system_prompt",
             "merge_bullets.system_prompt",
             "action_plan.system_prompt",
@@ -505,40 +488,15 @@ class HealthLogProcessor:
             dependencies=self._get_standard_report_deps("questions.system_prompt"),
         )
 
-        # Specialist next steps + consensus
-        spec_outputs = []
-        for spec in SPECIALTIES:
-            spec_file = f"next_steps_{spec.replace(' ', '_')}.md"
-            prompt = self._prompt("specialist_next_steps.system_prompt").format(specialty=spec)
-
-            # Dependencies include formatted prompt (with specialty)
-            deps = {
-                "processed": self._hash_all_processed(),
-                "intro": self._hash_intro(),
-                "prompt": hash_content(prompt),  # Hash the formatted prompt
-            }
-
-            spec_outputs.append(
-                self._generate_file(
-                    spec_file,
-                    prompt,
-                    role="next_steps",
-                    temperature=0.25,
-                    extra_messages=[{"role": "user", "content": final_markdown}],
-                    description=f"{spec} next steps",
-                    dependencies=deps,
-                )
-            )
-
-        # Consensus next steps
+        # Unified next steps (genius doctor prompt - replaces 14 specialists + consensus)
         self._generate_file(
             "next_steps.md",
-            "consensus_next_steps.system_prompt",
+            "next_steps_unified.system_prompt",
             role="next_steps",
             temperature=0.25,
-            extra_messages=[{"role": "user", "content": "\n\n".join(spec_outputs)}],
-            description="consensus next steps",
-            dependencies=self._get_consensus_report_deps(),
+            extra_messages=[{"role": "user", "content": final_markdown}],
+            description="unified next steps",
+            dependencies=self._get_standard_report_deps("next_steps_unified.system_prompt"),
         )
 
         # Next labs
@@ -655,11 +613,6 @@ class HealthLogProcessor:
         """Compute combined hash of all processed sections."""
         return self._hash_files_without_deps(self.entries_dir.glob("*.processed.md"))
 
-    def _hash_all_specialist_reports(self) -> str:
-        """Compute combined hash of all specialist next steps reports."""
-        paths = [self.reports_dir / f"next_steps_{s.replace(' ', '_')}.md" for s in SPECIALTIES]
-        return self._hash_files_without_deps(paths)
-
     def _get_section_dependencies(self, section: str, labs_content: str) -> dict[str, str]:
         """Compute all dependencies for a processed section."""
         return {
@@ -695,22 +648,12 @@ class HealthLogProcessor:
     def _get_standard_report_deps(self, prompt_name: str) -> dict[str, str]:
         """Get standard dependencies for reports that use all processed sections + intro.
 
-        Used by: summary, questions, next_labs, specialist next steps
+        Used by: summary, questions, next_labs, next_steps_unified
         """
         return {
             "processed": self._hash_all_processed(),
             "intro": self._hash_intro(),
             "prompt": self._hash_prompt(prompt_name),
-        }
-
-    def _get_consensus_report_deps(self) -> dict[str, str]:
-        """Get dependencies for consensus next steps report.
-
-        Depends on all specialist reports + consensus prompt.
-        """
-        return {
-            "specialist_reports": self._hash_all_specialist_reports(),
-            "prompt": self._hash_prompt("consensus_next_steps.system_prompt"),
         }
 
     def _get_output_deps(self) -> dict[str, str]:
