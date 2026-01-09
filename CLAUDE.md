@@ -56,8 +56,7 @@ Create a `.env` file with required environment variables (see `.env.example`):
 - `validate.system_prompt.md` & `validate.user_prompt.md` - Validates processed sections
 - `summary.system_prompt.md` - Generates patient summaries
 - `questions.system_prompt.md` - Generates clarifying questions
-- `next_steps_unified.system_prompt.md` - Unified "genius doctor" prompt for comprehensive next steps
-- `next_labs.system_prompt.md` - Suggests next lab tests
+- `next_steps_unified.system_prompt.md` - Unified "genius doctor" prompt for comprehensive next steps (includes lab recommendations)
 - `action_plan.system_prompt.md` - Generates prioritized action plan
 - `experiments.system_prompt.md` - Tracks N=1 health experiments
 - `extract_entities.system_prompt.md` - Extracts entities for state model
@@ -97,8 +96,8 @@ Create a `.env` file with required environment variables (see `.env.example`):
    - Multi-call support: For diverse outputs (e.g., clarifying questions runs 3 times by default)
    - Merging: Uses `merge_bullets` prompt to consolidate multiple outputs
    - Clarifying questions: Runs `QUESTIONS_RUNS` times with temperature=1.0 for diversity
-   - Unified next steps: Single "genius doctor" prompt combining all medical specialties + biohacking
-   - Action plan: Synthesizes next_steps, next_labs, experiments into prioritized action items
+   - Unified next steps: Single "genius doctor" prompt combining all medical specialties + biohacking (includes lab recommendations)
+   - Action plan: Synthesizes next_steps and experiments into prioritized action items
    - State model: Extracts entities from all sections into `state_model.json`
 
 ### Output Structure
@@ -114,8 +113,7 @@ OUTPUT_PATH/<LOG>/
 └─ reports/
     ├─ summary.md               # Patient summary
     ├─ clarifying_questions.md  # Merged clarifying questions
-    ├─ next_steps.md            # Unified next steps (genius doctor)
-    ├─ next_labs.md             # Suggested lab tests
+    ├─ next_steps.md            # Unified next steps (genius doctor, includes lab recommendations)
     ├─ experiments.md           # N=1 experiment tracker
     ├─ action_plan.md           # Prioritized action items
     ├─ output.md                # Full compiled report
@@ -141,7 +139,7 @@ Logs are written to `logs/error.log` (errors only) and echoed to console (all le
 - **Report generation** (summary, questions, next_steps, etc.):
   - Dependencies: `processed` (all processed sections), `intro` (intro.md), `prompt` (specific prompt)
   - Regenerates if: Any processed section changes, intro changes, or prompt changes
-  - output.md depends on summary + next_steps + next_labs + action_plan + experiments
+  - output.md depends on summary + next_steps + action_plan + experiments
 
 - **Prompt loading**: Lazy-loaded and cached in `self.prompts` dict
 
