@@ -1,0 +1,63 @@
+# Self-Resolving Conditions Configuration
+#
+# Maps condition/symptom patterns to auto-resolution days.
+# If a condition matches a pattern and hasn't been mentioned for longer than
+# the specified days, it's assumed to have resolved naturally.
+#
+# Format: pattern: days_until_auto_resolved
+# Matching is case-insensitive and checks if pattern is contained in the condition name.
+
+# Infections (typically resolve in 1-4 weeks)
+flu: 30
+influenza: 30
+cold: 21
+common cold: 21
+covid: 60
+covid-19: 60
+coronavirus: 60
+stomach flu: 14
+gastroenteritis: 14
+food poisoning: 14
+strep throat: 14
+sinus infection: 21
+sinusitis: 21
+bronchitis: 30
+uti: 14
+urinary tract infection: 14
+ear infection: 14
+pink eye: 14
+conjunctivitis: 14
+
+# Minor injuries (typically heal in 2-8 weeks)
+sprain: 60
+strain: 45
+bruise: 21
+cut: 14
+scrape: 14
+minor burn: 21
+sunburn: 14
+pulled muscle: 45
+
+# Acute symptoms that typically resolve
+headache: 7
+migraine: 7
+nausea: 7
+vomiting: 7
+diarrhea: 14
+constipation: 14
+fever: 14
+sore throat: 14
+cough: 30
+runny nose: 14
+congestion: 14
+allergic reaction: 14
+hives: 14
+rash: 30
+
+# Temporary conditions
+jet lag: 14
+hangover: 3
+motion sickness: 1
+altitude sickness: 7
+insect bite: 14
+bee sting: 7
