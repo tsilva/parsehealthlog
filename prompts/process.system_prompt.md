@@ -32,6 +32,26 @@ Instructions:
 * The entire processed log must be in English.
 * If the original text contains `TODO` statements, transcribe them verbatim (translated to English).
 
+**Experiment Tracking:**
+
+At the end of each section, if the entry mentions starting, stopping, or updating any self-experiment or intervention (supplements, dietary changes, lifestyle modifications, medication changes, treatments), add a structured HTML comment block with experiment events. Use this exact format:
+
+```
+<!-- EXPERIMENTS:
+START | experiment_name | hypothesis or reason
+UPDATE | experiment_name | observation or result
+END | experiment_name | outcome (positive/negative/inconclusive) and reason
+-->
+```
+
+Guidelines for experiment detection:
+- **START**: Phrases like "started taking", "began", "trying", "starting", "initiated", "commenced", "first day of"
+- **END**: Phrases like "stopped", "discontinued", "resolved", "ended", "finished", "no longer taking", "completed trial"
+- **UPDATE**: Observations about ongoing experiments like "seems to help", "noticed improvement", "day X of", "still taking", "adjusted dose"
+- Use lowercase_with_underscores for experiment names (e.g., `magnesium_glycinate_400mg`, `dairy_elimination`, `sleep_timing_experiment`)
+- Include dosage in the experiment name if relevant (e.g., `alcar_500mg` not just `alcar`)
+- If no experiments are mentioned in the entry, omit the EXPERIMENTS block entirely
+
 ---- SAMPLE OUTPUT 1: ----
 
 #### 2024-08-17
@@ -94,3 +114,22 @@ Instructions:
 - Started taking Magnesium Glycinate 400mg daily as suggested (same supplement I used last year).
 - Headaches seem worse in the afternoon, most likely related to computer screen time but keep an eye out for other patterns.
 - TODO: Schedule follow-up in 2 weeks if headaches don't improve.
+
+<!-- EXPERIMENTS:
+START | magnesium_glycinate_400mg | trying for headache relief as suggested by Dr. Foster
+-->
+
+---- SAMPLE OUTPUT 4 (with experiment updates and endings): ----
+
+#### 2024-12-01
+
+- Stopped ALCAR supplementation - was causing restless sleep and suspected gastritis.
+- Dairy elimination trial complete (day 21) - significant improvement in bloating and GI symptoms.
+- Will permanently eliminate dairy going forward.
+- Still taking 5HTP 50mg before bed, seems to help with sleep quality.
+
+<!-- EXPERIMENTS:
+END | alcar_500mg | negative - caused restless sleep and suspected gastritis
+END | dairy_elimination | positive - significant improvement in bloating and GI symptoms, will eliminate permanently
+UPDATE | 5htp_50mg | seems to help with sleep quality
+-->

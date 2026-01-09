@@ -74,11 +74,34 @@ Based on the patient's symptoms, conditions, and goals, suggest 2-3 high-value e
 
 **Guidelines:**
 
-1. **Extract from the journal**: Look for mentions of "trying", "starting", "eliminating", "testing", "experimenting", dose changes, new supplements, diet modifications
-2. **Infer status**: If they mention starting something with a date, calculate current day. If they mention results, update the status
-3. **Be specific**: Vague "eat healthier" is not an experiment. "Eliminate gluten for 3 weeks, track bloating 1-10 daily" is
-4. **Connect to symptoms**: Link experiments to the conditions/symptoms they're targeting
-5. **Suggest based on gaps**: If they have symptoms with no active experiments, suggest evidence-based interventions
-6. **Include decision criteria**: What would make them continue vs. stop the intervention
+1. **Parse structured experiment blocks FIRST**: The journal entries may contain HTML comment blocks with explicit experiment events in this format:
+   ```
+   <!-- EXPERIMENTS:
+   START | experiment_name | hypothesis or reason
+   UPDATE | experiment_name | observation or result
+   END | experiment_name | outcome (positive/negative/inconclusive) and reason
+   -->
+   ```
+   These structured blocks are authoritative - use them to determine experiment lifecycle:
+   - **START** events mark when an experiment began (use the section date)
+   - **END** events mark when an experiment concluded (move to Completed Experiments)
+   - **UPDATE** events provide observations about ongoing experiments
+
+2. **Fall back to inference**: For entries without structured blocks, look for mentions of "trying", "starting", "eliminating", "testing", "experimenting", dose changes, new supplements, diet modifications
+
+3. **Determine experiment status**:
+   - If there's a START but no END → Active Experiment
+   - If there's an END → Completed Experiment
+   - If there's only UPDATE with no START → Infer it's active, started before the journal began
+
+4. **Handle stale experiments**: If an experiment has a START but no updates or END for a long time (60+ days since last mention), mark it as "Status: Stale (no updates since YYYY-MM-DD)" and suggest the user update or close it
+
+5. **Be specific**: Vague "eat healthier" is not an experiment. "Eliminate gluten for 3 weeks, track bloating 1-10 daily" is
+
+6. **Connect to symptoms**: Link experiments to the conditions/symptoms they're targeting
+
+7. **Suggest based on gaps**: If they have symptoms with no active experiments, suggest evidence-based interventions
+
+8. **Include decision criteria**: What would make them continue vs. stop the intervention
 
 **Output only the experiments tracker. No introductory text, no sign-offs.**
