@@ -334,6 +334,7 @@ class HealthLogProcessor:
             "merge_bullets.system_prompt",
             "action_plan.system_prompt",
             "experiments.system_prompt",
+            "extract_entities.system_prompt",
         ]
 
         missing = [p for p in required_prompts if not (PROMPTS_DIR / f"{p}.md").exists()]
@@ -396,6 +397,19 @@ class HealthLogProcessor:
             "sections_failed": [f.stem.replace(".failed", "") for f in failed_files],
             "reports_generated": state.get("reports_generated", []),
         }
+
+    # ------------------------------------------------------------------
+    # LLM response parsing
+    # ------------------------------------------------------------------
+
+    def _parse_json_response(self, text: str) -> dict:
+        """Parse JSON from LLM response, stripping markdown code blocks if present."""
+        text = text.strip()
+        # Match ```json ... ``` or ``` ... ```
+        match = re.match(r'^```(?:json)?\s*\n?(.*?)\n?```$', text, re.DOTALL)
+        if match:
+            text = match.group(1).strip()
+        return json.loads(text)
 
     # ------------------------------------------------------------------
     # Public API
@@ -558,6 +572,9 @@ class HealthLogProcessor:
 
         # Action plan (synthesizes summary, next_steps, next_labs, experiments)
         self._generate_action_plan(today)
+
+        # Build state model (entity extraction + aggregation + trend analysis)
+        self._build_state_model()
 
         # Assemble final output.md with all reports
         self.logger.info("Assembling final output.md with all reports...")
@@ -853,6 +870,338 @@ class HealthLogProcessor:
             description="action plan",
             dependencies=deps,
         )
+
+    # --------------------------------------------------------------
+    # State model building (entity extraction + aggregation)
+    # --------------------------------------------------------------
+
+    def _build_state_model(self) -> dict:
+        """Build comprehensive state model from all processed sections.
+
+        Extracts entities from each section, merges them into a single state,
+        and computes trends for labs and symptoms.
+
+        Returns the state dict and saves it to state_model.json.
+        """
+        self.logger.info("Building state model from processed sections...")
+
+        # Get all processed sections
+        processed_files = sorted(self.entries_dir.glob("*.processed.md"))
+        if not processed_files:
+            self.logger.warning("No processed sections found for state model")
+            return {}
+
+        # Check if state model is up-to-date
+        state_model_path = self.OUTPUT_PATH / "state_model.json"
+        processed_hash = self._hash_all_processed()
+        state_deps = {
+            "processed": processed_hash,
+            "prompt": self._hash_prompt("extract_entities.system_prompt"),
+        }
+
+        if state_model_path.exists():
+            try:
+                existing_state = json.loads(state_model_path.read_text(encoding="utf-8"))
+                if existing_state.get("_deps", {}) == state_deps:
+                    self.logger.info("State model is up-to-date")
+                    return existing_state
+            except (json.JSONDecodeError, IOError):
+                pass  # Regenerate
+
+        # Extract entities from each section
+        entity_prompt = self._prompt("extract_entities.system_prompt")
+        all_entities: list[dict] = []
+
+        # Process in batches for efficiency
+        with tqdm(total=len(processed_files), desc="Extracting entities") as bar:
+            for path in processed_files:
+                content = self._read_without_deps_comment(path)
+                date = path.stem.split(".")[0]
+
+                try:
+                    response = self.llm["process"](
+                        [
+                            {"role": "system", "content": entity_prompt},
+                            {"role": "user", "content": content},
+                        ],
+                        temperature=0.0,
+                    )
+
+                    # Parse JSON response
+                    entities = self._parse_json_response(response)
+                    entities["date"] = date  # Ensure date is set
+                    all_entities.append(entities)
+                except (json.JSONDecodeError, Exception) as e:
+                    self.logger.warning("Failed to extract entities from %s: %s", date, e)
+
+                bar.update(1)
+
+        # Aggregate entities into state model
+        state = self._aggregate_entities(all_entities)
+
+        # Add trend analysis
+        state["lab_trends"] = self._compute_lab_trends(all_entities)
+        state["symptom_trends"] = self._compute_symptom_trends(all_entities)
+
+        # Add metadata
+        state["_deps"] = state_deps
+        state["_generated_at"] = datetime.now().isoformat()
+        state["_entries_count"] = len(processed_files)
+
+        # Save state model
+        state_model_path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+        self.logger.info("Saved state model to %s", state_model_path)
+
+        return state
+
+    def _aggregate_entities(self, all_entities: list[dict]) -> dict:
+        """Aggregate entities from all sections into unified state."""
+        state = {
+            "conditions": {},
+            "medications": {"current": {}, "past": {}},
+            "supplements": {"current": {}, "past": {}},
+            "symptoms": {},
+            "providers": {},
+            "experiments": {"active": {}, "completed": {}},
+            "todos": [],
+        }
+
+        for entry in sorted(all_entities, key=lambda x: x.get("date", "")):
+            date = entry.get("date", "")
+
+            # Conditions
+            for cond in entry.get("conditions", []):
+                name = cond.get("name", "").lower()
+                if not name:
+                    continue
+                if name not in state["conditions"]:
+                    state["conditions"][name] = {
+                        "name": name,
+                        "status": cond.get("status", "active"),
+                        "first_noted": date,
+                        "last_updated": date,
+                        "history": [],
+                    }
+                state["conditions"][name]["last_updated"] = date
+                state["conditions"][name]["status"] = cond.get("status", state["conditions"][name]["status"])
+                state["conditions"][name]["history"].append({
+                    "date": date,
+                    "event": cond.get("event"),
+                    "details": cond.get("details"),
+                })
+
+            # Medications
+            for med in entry.get("medications", []):
+                name = med.get("name", "")
+                if not name:
+                    continue
+                event = med.get("event", "mentioned")
+                med_entry = {
+                    "name": name,
+                    "dose": med.get("dose"),
+                    "frequency": med.get("frequency"),
+                    "started": date if event == "started" else None,
+                    "stopped": date if event == "stopped" else None,
+                    "last_mentioned": date,
+                }
+                if event == "stopped":
+                    state["medications"]["past"][name] = med_entry
+                    state["medications"]["current"].pop(name, None)
+                elif event in ("started", "continued", "mentioned", "adjusted"):
+                    if name not in state["medications"]["current"]:
+                        state["medications"]["current"][name] = med_entry
+                    else:
+                        state["medications"]["current"][name]["last_mentioned"] = date
+                        if med.get("dose"):
+                            state["medications"]["current"][name]["dose"] = med.get("dose")
+
+            # Supplements (same logic as medications)
+            for supp in entry.get("supplements", []):
+                name = supp.get("name", "")
+                if not name:
+                    continue
+                event = supp.get("event", "mentioned")
+                supp_entry = {
+                    "name": name,
+                    "dose": supp.get("dose"),
+                    "frequency": supp.get("frequency"),
+                    "started": date if event == "started" else None,
+                    "stopped": date if event == "stopped" else None,
+                    "last_mentioned": date,
+                }
+                if event == "stopped":
+                    state["supplements"]["past"][name] = supp_entry
+                    state["supplements"]["current"].pop(name, None)
+                elif event in ("started", "continued", "mentioned", "adjusted"):
+                    if name not in state["supplements"]["current"]:
+                        state["supplements"]["current"][name] = supp_entry
+                    else:
+                        state["supplements"]["current"][name]["last_mentioned"] = date
+                        if supp.get("dose"):
+                            state["supplements"]["current"][name]["dose"] = supp.get("dose")
+
+            # Symptoms
+            for sym in entry.get("symptoms", []):
+                name = sym.get("name", "").lower()
+                if not name:
+                    continue
+                if name not in state["symptoms"]:
+                    state["symptoms"][name] = {
+                        "name": name,
+                        "first_noted": date,
+                        "last_noted": date,
+                        "observations": [],
+                    }
+                state["symptoms"][name]["last_noted"] = date
+                state["symptoms"][name]["observations"].append({
+                    "date": date,
+                    "severity": sym.get("severity"),
+                    "trend": sym.get("trend"),
+                    "details": sym.get("details"),
+                })
+
+            # Providers
+            for prov in entry.get("providers", []):
+                name = prov.get("name", "")
+                if not name:
+                    continue
+                if name not in state["providers"]:
+                    state["providers"][name] = {
+                        "name": name,
+                        "specialty": prov.get("specialty"),
+                        "location": prov.get("location"),
+                        "visits": [],
+                    }
+                state["providers"][name]["visits"].append({
+                    "date": date,
+                    "type": prov.get("visit_type"),
+                    "notes": prov.get("notes"),
+                })
+
+            # Experiments
+            for exp in entry.get("experiments", []):
+                name = exp.get("name", "")
+                if not name:
+                    continue
+                event = exp.get("event", "update")
+                if event == "end":
+                    if name in state["experiments"]["active"]:
+                        state["experiments"]["completed"][name] = state["experiments"]["active"].pop(name)
+                        state["experiments"]["completed"][name]["ended"] = date
+                        state["experiments"]["completed"][name]["outcome"] = exp.get("details")
+                elif event == "start":
+                    state["experiments"]["active"][name] = {
+                        "name": name,
+                        "started": date,
+                        "hypothesis": exp.get("details"),
+                        "updates": [],
+                    }
+                elif event == "update":
+                    if name in state["experiments"]["active"]:
+                        state["experiments"]["active"][name]["updates"].append({
+                            "date": date,
+                            "observation": exp.get("details"),
+                        })
+
+            # TODOs
+            for todo in entry.get("todos", []):
+                if todo and todo not in state["todos"]:
+                    state["todos"].append(todo)
+
+        return state
+
+    def _compute_lab_trends(self, all_entities: list[dict]) -> dict:
+        """Compute trends for lab values across all entries."""
+        labs_by_name: dict[str, list[dict]] = {}
+
+        for entry in all_entities:
+            date = entry.get("date", "")
+            for lab in entry.get("labs", []):
+                name = lab.get("name", "")
+                if not name:
+                    continue
+                if name not in labs_by_name:
+                    labs_by_name[name] = []
+                labs_by_name[name].append({
+                    "date": date,
+                    "value": lab.get("value"),
+                    "unit": lab.get("unit"),
+                    "status": lab.get("status"),
+                })
+
+        # Compute trends for each lab
+        trends = {}
+        for name, values in labs_by_name.items():
+            sorted_values = sorted(values, key=lambda x: x["date"])
+            if len(sorted_values) >= 2:
+                # Try to compute numeric trend
+                try:
+                    first_val = float(sorted_values[0]["value"])
+                    last_val = float(sorted_values[-1]["value"])
+                    change_pct = ((last_val - first_val) / first_val) * 100 if first_val != 0 else 0
+                    trend = "increasing" if change_pct > 5 else "decreasing" if change_pct < -5 else "stable"
+                except (ValueError, TypeError):
+                    trend = "unknown"
+                    change_pct = None
+            else:
+                trend = "insufficient_data"
+                change_pct = None
+
+            trends[name] = {
+                "values": sorted_values,
+                "trend": trend,
+                "change_pct": round(change_pct, 1) if change_pct is not None else None,
+                "latest": sorted_values[-1] if sorted_values else None,
+            }
+
+        return trends
+
+    def _compute_symptom_trends(self, all_entities: list[dict]) -> dict:
+        """Compute trends for symptoms across all entries."""
+        symptoms_by_name: dict[str, list[dict]] = {}
+
+        for entry in all_entities:
+            date = entry.get("date", "")
+            for sym in entry.get("symptoms", []):
+                name = sym.get("name", "").lower()
+                if not name:
+                    continue
+                if name not in symptoms_by_name:
+                    symptoms_by_name[name] = []
+                symptoms_by_name[name].append({
+                    "date": date,
+                    "severity": sym.get("severity"),
+                    "trend": sym.get("trend"),
+                })
+
+        # Compute overall trend for each symptom
+        trends = {}
+        for name, observations in symptoms_by_name.items():
+            sorted_obs = sorted(observations, key=lambda x: x["date"])
+
+            # Count trend directions
+            improving = sum(1 for o in sorted_obs if o.get("trend") == "improving")
+            worsening = sum(1 for o in sorted_obs if o.get("trend") == "worsening")
+            resolved = any(o.get("trend") == "resolved" for o in sorted_obs)
+
+            if resolved:
+                overall_trend = "resolved"
+            elif worsening > improving:
+                overall_trend = "worsening"
+            elif improving > worsening:
+                overall_trend = "improving"
+            else:
+                overall_trend = "stable"
+
+            trends[name] = {
+                "first_noted": sorted_obs[0]["date"] if sorted_obs else None,
+                "last_noted": sorted_obs[-1]["date"] if sorted_obs else None,
+                "mention_count": len(sorted_obs),
+                "overall_trend": overall_trend,
+                "latest_severity": sorted_obs[-1].get("severity") if sorted_obs else None,
+            }
+
+        return trends
 
     # --------------------------------------------------------------
     # Section processing (one dated section → validated markdown)
