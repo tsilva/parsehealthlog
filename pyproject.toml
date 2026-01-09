@@ -12,6 +12,7 @@ dependencies = [
     "pandas",
     "python-dateutil",
     "tenacity>=8.0.0",
+    "pyyaml>=6.0.3",
 ]
 
 [tool.uv]

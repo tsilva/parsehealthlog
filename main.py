@@ -56,6 +56,8 @@ import sys
 from pathlib import Path
 from typing import Final
 
+import yaml
+
 import pandas as pd
 from dateutil.parser import parse as date_parse
 from openai import OpenAI, APIError, APIConnectionError, RateLimitError, APITimeoutError
@@ -121,6 +123,22 @@ def load_prompt(name: str) -> str:
     if not path.exists():
         raise PromptError(f"Prompt file not found: {path}", prompt_name=name)
     return path.read_text(encoding="utf-8")
+
+
+def load_self_resolving_conditions() -> dict[str, int]:
+    """Load self-resolving conditions from YAML config.
+
+    Returns:
+        Dict mapping condition patterns to auto-resolution days.
+        Empty dict if file doesn't exist.
+    """
+    path = PROMPTS_DIR / "self_resolving_conditions.yaml"
+    if not path.exists():
+        return {}
+    with open(path, encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    # Ensure all keys are lowercase for matching
+    return {str(k).lower(): int(v) for k, v in data.items()} if data else {}
 
 
 def short_hash(text: str) -> str:  # 12-char SHA-256 hex prefix (48 bits, collision-resistant)
@@ -297,6 +315,9 @@ class HealthLogProcessor:
         # State file for progress tracking
         self.state_file = self.OUTPUT_PATH / ".state.json"
 
+        # Self-resolving conditions for smart staleness detection
+        self.self_resolving_conditions = load_self_resolving_conditions()
+
         # Validate all required prompts exist at startup
         self._validate_prompts()
 
@@ -311,7 +332,7 @@ class HealthLogProcessor:
             "validate.system_prompt",
             "validate.user_prompt",
             "summary.system_prompt",
-            "questions.system_prompt",
+            "targeted_questions.system_prompt",
             "next_steps_unified.system_prompt",
             "merge_bullets.system_prompt",
             "action_plan.system_prompt",
@@ -479,18 +500,39 @@ class HealthLogProcessor:
         state = self._build_state_model()
         state_markdown = self._state_model_to_markdown(state)
 
-        # Clarifying questions (uses full markdown for context)
-        q_runs = self.config.questions_runs
-        self._generate_file(
-            "clarifying_questions.md",
-            "questions.system_prompt",
-            role="questions",
-            temperature=1.0,
-            calls=q_runs,
-            extra_messages=[{"role": "user", "content": final_markdown}],
-            description="clarifying questions",
-            dependencies=self._get_standard_report_deps("questions.system_prompt"),
-        )
+        # Targeted clarifying questions (uses filtered stale items only)
+        # Pre-filter to only include items that truly need questions
+        filtered_stale = self._filter_stale_items_for_questions(state)
+        has_stale_items = any([
+            filtered_stale["stale_conditions"],
+            filtered_stale["stale_symptoms"],
+            filtered_stale["stale_medications"],
+            filtered_stale["stale_supplements"],
+            filtered_stale["stale_experiments"],
+        ])
+
+        if has_stale_items:
+            stale_json = json.dumps(filtered_stale, indent=2, ensure_ascii=False)
+            self._generate_file(
+                "targeted_clarifying_questions.md",
+                "targeted_questions.system_prompt",
+                role="questions",
+                temperature=0.0,  # Deterministic output to avoid duplicates
+                extra_messages=[{"role": "user", "content": stale_json}],
+                description="targeted clarifying questions",
+                dependencies=self._get_state_model_deps("targeted_questions.system_prompt"),
+            )
+        else:
+            # No stale items - write placeholder file
+            questions_path = self.reports_dir / "targeted_clarifying_questions.md"
+            deps = self._get_state_model_deps("targeted_questions.system_prompt")
+            deps_comment = format_deps_comment(deps)
+            questions_path.write_text(
+                f"{deps_comment}\nNo items require status updates at this time. "
+                "All tracked items have recent mentions or have auto-resolved.\n",
+                encoding="utf-8",
+            )
+            self.logger.info("No stale items found - skipping targeted questions generation")
 
         # Unified next steps (genius doctor prompt - uses state model for focused input)
         # This includes lab recommendations in the "Labs & Testing" section
@@ -925,6 +967,75 @@ class HealthLogProcessor:
     # State model building (entity extraction + aggregation)
     # --------------------------------------------------------------
 
+    def _filter_stale_items_for_questions(self, state: dict) -> dict:
+        """Extract only stale items from state model for targeted questions.
+
+        Returns a minimal dict containing only items marked potentially_stale=True,
+        organized by category for easy prompt consumption.
+        """
+        filtered = {
+            "stale_conditions": [],
+            "stale_symptoms": [],
+            "stale_medications": [],
+            "stale_supplements": [],
+            "stale_experiments": [],
+            "metadata": state.get("_staleness_metadata", {}),
+        }
+
+        # Conditions
+        for name, cond in state.get("conditions", {}).items():
+            if cond.get("potentially_stale"):
+                filtered["stale_conditions"].append({
+                    "name": name,
+                    "last_updated": cond.get("last_updated"),
+                    "days_since": cond.get("days_since_mention"),
+                })
+
+        # Symptoms
+        for name, sym in state.get("symptoms", {}).items():
+            if sym.get("potentially_stale"):
+                filtered["stale_symptoms"].append({
+                    "name": name,
+                    "last_noted": sym.get("last_noted"),
+                    "days_since": sym.get("days_since_mention"),
+                })
+
+        # Medications
+        for name, med in state.get("medications", {}).get("current", {}).items():
+            if med.get("potentially_stale"):
+                filtered["stale_medications"].append({
+                    "name": name,
+                    "dose": med.get("dose"),
+                    "last_mentioned": med.get("last_mentioned"),
+                    "days_since": med.get("days_since_mention"),
+                })
+
+        # Supplements
+        for name, supp in state.get("supplements", {}).get("current", {}).items():
+            if supp.get("potentially_stale"):
+                filtered["stale_supplements"].append({
+                    "name": name,
+                    "dose": supp.get("dose"),
+                    "last_mentioned": supp.get("last_mentioned"),
+                    "days_since": supp.get("days_since_mention"),
+                })
+
+        # Experiments
+        for name, exp in state.get("experiments", {}).get("active", {}).items():
+            if exp.get("potentially_stale"):
+                filtered["stale_experiments"].append({
+                    "name": name,
+                    "started": exp.get("started"),
+                    "days_since": exp.get("days_since_update"),
+                })
+
+        # Sort each list by days_since (oldest first)
+        for key in ["stale_conditions", "stale_symptoms", "stale_medications",
+                    "stale_supplements", "stale_experiments"]:
+            filtered[key].sort(key=lambda x: x.get("days_since") or 0, reverse=True)
+
+        return filtered
+
     def _state_model_to_markdown(self, state: dict) -> str:
         """Convert state model to structured markdown for report generation."""
         sections = []
@@ -1015,8 +1126,11 @@ class HealthLogProcessor:
     def _build_state_model(self) -> dict:
         """Build comprehensive state model from all processed sections.
 
-        Extracts entities from each section, merges them into a single state,
-        and computes trends for labs and symptoms.
+        Extracts entities from each section (with per-entry caching), merges them
+        into a single state, and computes trends for labs and symptoms.
+
+        Per-entry caching: Each entry's entities are cached in <date>.entities.json.
+        Only entries whose processed content or prompt changed get re-extracted.
 
         Returns the state dict and saves it to state_model.json.
         """
@@ -1028,12 +1142,13 @@ class HealthLogProcessor:
             self.logger.warning("No processed sections found for state model")
             return {}
 
-        # Check if state model is up-to-date
+        # Check if state model is up-to-date (fast path)
         state_model_path = self.OUTPUT_PATH / "state_model.json"
         processed_hash = self._hash_all_processed()
+        prompt_hash = self._hash_prompt("extract_entities.system_prompt")
         state_deps = {
             "processed": processed_hash,
-            "prompt": self._hash_prompt("extract_entities.system_prompt"),
+            "prompt": prompt_hash,
         }
 
         if state_model_path.exists():
@@ -1045,16 +1160,39 @@ class HealthLogProcessor:
             except (json.JSONDecodeError, IOError):
                 pass  # Regenerate
 
-        # Extract entities from each section
+        # Extract entities from each section (with per-entry caching)
         entity_prompt = self._prompt("extract_entities.system_prompt")
         all_entities: list[dict] = []
+        cache_hits = 0
+        cache_misses = 0
 
-        # Process in batches for efficiency
         with tqdm(total=len(processed_files), desc="Extracting entities") as bar:
             for path in processed_files:
-                content = self._read_without_deps_comment(path)
                 date = path.stem.split(".")[0]
+                entities_path = self.entries_dir / f"{date}.entities.json"
+                content = self._read_without_deps_comment(path)
+                content_hash = hash_content(content)
 
+                # Per-entry dependency check
+                entry_deps = {"processed": content_hash, "prompt": prompt_hash}
+
+                # Try to load cached entities
+                if entities_path.exists():
+                    try:
+                        cached = json.loads(entities_path.read_text(encoding="utf-8"))
+                        if cached.get("_deps") == entry_deps:
+                            # Cache hit - use cached entities
+                            entities = cached.get("entities", {})
+                            entities["date"] = date
+                            all_entities.append(entities)
+                            cache_hits += 1
+                            bar.update(1)
+                            continue
+                    except (json.JSONDecodeError, IOError):
+                        pass  # Re-extract
+
+                # Cache miss - extract entities via LLM
+                cache_misses += 1
                 try:
                     response = self.llm["process"](
                         [
@@ -1066,12 +1204,24 @@ class HealthLogProcessor:
 
                     # Parse JSON response
                     entities = self._parse_json_response(response)
-                    entities["date"] = date  # Ensure date is set
+                    entities["date"] = date
+
+                    # Save to per-entry cache
+                    cache_data = {"_deps": entry_deps, "entities": entities}
+                    entities_path.write_text(
+                        json.dumps(cache_data, indent=2, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
+
                     all_entities.append(entities)
                 except (json.JSONDecodeError, Exception) as e:
                     self.logger.warning("Failed to extract entities from %s: %s", date, e)
 
                 bar.update(1)
+
+        self.logger.info(
+            "Entity extraction: %d cached, %d extracted", cache_hits, cache_misses
+        )
 
         # Aggregate entities into state model
         state = self._aggregate_entities(all_entities)
@@ -1079,6 +1229,10 @@ class HealthLogProcessor:
         # Add trend analysis
         state["lab_trends"] = self._compute_lab_trends(all_entities)
         state["symptom_trends"] = self._compute_symptom_trends(all_entities)
+
+        # Compute staleness for targeted questions
+        today = datetime.now().strftime("%Y-%m-%d")
+        self._compute_staleness(state, today)
 
         # Add metadata
         state["_deps"] = state_deps
@@ -1339,6 +1493,191 @@ class HealthLogProcessor:
             }
 
         return trends
+
+    def _compute_staleness(self, state: dict, analysis_date: str) -> None:
+        """Add staleness metadata to state model items with smart filtering.
+
+        Modifies state in-place to add:
+        - days_since_mention: Days since item was last mentioned
+        - potentially_stale: True if needs user attention
+        - staleness_reason: Why marked stale or not (for debugging)
+
+        Filtering rules:
+        1. Must be >= threshold (default 90 days) to be considered stale
+        2. Must be <= max_age (default 365 days) - older items assumed resolved
+        3. Self-resolving conditions (flu, cold, etc.) auto-resolve after their period
+        4. Only "active" status items are considered for conditions
+
+        Args:
+            state: The aggregated state model
+            analysis_date: The date to compute staleness from (YYYY-MM-DD)
+        """
+        threshold = self.config.staleness_threshold_days
+        max_age = self.config.staleness_max_age_days
+
+        try:
+            today = datetime.strptime(analysis_date, "%Y-%m-%d")
+        except ValueError:
+            today = datetime.now()
+
+        def days_since(date_str: str | None) -> int | None:
+            """Compute days since a date string."""
+            if not date_str:
+                return None
+            try:
+                d = datetime.strptime(date_str, "%Y-%m-%d")
+                return (today - d).days
+            except ValueError:
+                return None
+
+        def is_self_resolving(name: str) -> tuple[bool, int]:
+            """Check if condition/symptom is self-resolving.
+
+            Returns (is_self_resolving, resolution_days).
+            """
+            name_lower = name.lower().strip()
+            for pattern, days in self.self_resolving_conditions.items():
+                if pattern in name_lower or name_lower in pattern:
+                    return True, days
+            return False, 0
+
+        # Conditions staleness
+        for name, cond in state.get("conditions", {}).items():
+            last = cond.get("last_updated")
+            days = days_since(last)
+            cond["days_since_mention"] = days
+            cond["potentially_stale"] = False
+            cond["staleness_reason"] = None
+
+            if days is None:
+                cond["staleness_reason"] = "no_date"
+                continue
+
+            if cond.get("status") != "active":
+                cond["staleness_reason"] = f"status_{cond.get('status', 'unknown')}"
+                continue
+
+            # Check if self-resolving
+            is_acute, resolution_days = is_self_resolving(name)
+            if is_acute and days > resolution_days:
+                cond["staleness_reason"] = f"self_resolved_{resolution_days}d"
+                continue
+
+            # Check upper age bound
+            if days > max_age:
+                cond["staleness_reason"] = f"too_old_{days}d"
+                continue
+
+            # Within stale window
+            if days >= threshold:
+                cond["potentially_stale"] = True
+                cond["staleness_reason"] = f"stale_{days}d"
+
+        # Symptoms staleness (use symptom_trends for latest data)
+        symptom_trends = state.get("symptom_trends", {})
+        for name, sym in state.get("symptoms", {}).items():
+            last = sym.get("last_noted")
+            days = days_since(last)
+            sym["days_since_mention"] = days
+            sym["potentially_stale"] = False
+            sym["staleness_reason"] = None
+
+            if days is None:
+                sym["staleness_reason"] = "no_date"
+                continue
+
+            # Check if resolved in symptom_trends
+            trend_data = symptom_trends.get(name, {})
+            if trend_data.get("overall_trend") == "resolved":
+                sym["staleness_reason"] = "trend_resolved"
+                continue
+
+            # Check if self-resolving symptom
+            is_acute, resolution_days = is_self_resolving(name)
+            if is_acute and days > resolution_days:
+                sym["staleness_reason"] = f"self_resolved_{resolution_days}d"
+                continue
+
+            # Upper age bound
+            if days > max_age:
+                sym["staleness_reason"] = f"too_old_{days}d"
+                continue
+
+            # Within stale window
+            if days >= threshold:
+                sym["potentially_stale"] = True
+                sym["staleness_reason"] = f"stale_{days}d"
+
+        # Current medications staleness
+        for name, med in state.get("medications", {}).get("current", {}).items():
+            last = med.get("last_mentioned")
+            days = days_since(last)
+            med["days_since_mention"] = days
+            med["potentially_stale"] = False
+            med["staleness_reason"] = None
+
+            if days is None:
+                med["staleness_reason"] = "no_date"
+                continue
+
+            if days > max_age:
+                med["staleness_reason"] = f"too_old_{days}d"
+                continue
+
+            if days >= threshold:
+                med["potentially_stale"] = True
+                med["staleness_reason"] = f"stale_{days}d"
+
+        # Current supplements staleness
+        for name, supp in state.get("supplements", {}).get("current", {}).items():
+            last = supp.get("last_mentioned")
+            days = days_since(last)
+            supp["days_since_mention"] = days
+            supp["potentially_stale"] = False
+            supp["staleness_reason"] = None
+
+            if days is None:
+                supp["staleness_reason"] = "no_date"
+                continue
+
+            if days > max_age:
+                supp["staleness_reason"] = f"too_old_{days}d"
+                continue
+
+            if days >= threshold:
+                supp["potentially_stale"] = True
+                supp["staleness_reason"] = f"stale_{days}d"
+
+        # Active experiments staleness
+        for name, exp in state.get("experiments", {}).get("active", {}).items():
+            updates = exp.get("updates", [])
+            if updates:
+                last = updates[-1].get("date")
+            else:
+                last = exp.get("started")
+            days = days_since(last)
+            exp["days_since_update"] = days
+            exp["potentially_stale"] = False
+            exp["staleness_reason"] = None
+
+            if days is None:
+                exp["staleness_reason"] = "no_date"
+                continue
+
+            if days > max_age:
+                exp["staleness_reason"] = f"too_old_{days}d"
+                continue
+
+            if days >= threshold:
+                exp["potentially_stale"] = True
+                exp["staleness_reason"] = f"stale_{days}d"
+
+        # Add metadata
+        state["_staleness_metadata"] = {
+            "threshold_days": threshold,
+            "max_age_days": max_age,
+            "analysis_date": analysis_date,
+        }
 
     # --------------------------------------------------------------
     # Section processing (one dated section → validated markdown)

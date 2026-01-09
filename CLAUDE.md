@@ -38,7 +38,8 @@ Create a `.env` file with required environment variables (see `.env.example`):
 - `PROCESS_MODEL_ID`, `VALIDATE_MODEL_ID`, `QUESTIONS_MODEL_ID`, `SUMMARY_MODEL_ID`, `NEXT_STEPS_MODEL_ID` - Optional model overrides for specific stages
 - `LABS_PARSER_OUTPUT_PATH` - Optional: Path to aggregated lab CSVs
 - `MAX_WORKERS` - Parallel processing threads (default: 4)
-- `QUESTIONS_RUNS` - Number of clarifying question generation runs (default: 3)
+- `STALENESS_THRESHOLD_DAYS` - Days before an item is considered stale (default: 90)
+- `STALENESS_MAX_AGE_DAYS` - Upper bound; items older than this are assumed resolved (default: 365)
 
 ## Architecture
 
@@ -55,12 +56,13 @@ Create a `.env` file with required environment variables (see `.env.example`):
 - `process.system_prompt.md` - Transforms raw sections into structured output
 - `validate.system_prompt.md` & `validate.user_prompt.md` - Validates processed sections
 - `summary.system_prompt.md` - Generates patient summaries
-- `questions.system_prompt.md` - Generates clarifying questions
+- `targeted_questions.system_prompt.md` - Generates concise questions about stale items
 - `next_steps_unified.system_prompt.md` - Unified "genius doctor" prompt for comprehensive next steps (includes lab recommendations)
 - `action_plan.system_prompt.md` - Generates prioritized action plan
 - `experiments.system_prompt.md` - Tracks N=1 health experiments
 - `extract_entities.system_prompt.md` - Extracts entities for state model
 - `merge_bullets.system_prompt.md` - Merges multiple bullet lists
+- `self_resolving_conditions.yaml` - Configuration for acute conditions that auto-resolve (flu, cold, headache, etc.)
 
 ### Processing Pipeline
 
@@ -93,12 +95,18 @@ Create a `.env` file with required environment variables (see `.env.example`):
 
 7. **Report Generation** (`_generate_file()`):
    - Caching: Skips generation if report already exists
-   - Multi-call support: For diverse outputs (e.g., clarifying questions runs 3 times by default)
-   - Merging: Uses `merge_bullets` prompt to consolidate multiple outputs
-   - Clarifying questions: Runs `QUESTIONS_RUNS` times with temperature=1.0 for diversity
+   - Targeted questions: Uses state model with staleness metadata to ask about items not mentioned in 90+ days
    - Unified next steps: Single "genius doctor" prompt combining all medical specialties + biohacking (includes lab recommendations)
    - Action plan: Synthesizes next_steps and experiments into prioritized action items
-   - State model: Extracts entities from all sections into `state_model.json`
+   - State model: Extracts entities from all sections into `state_model.json` with staleness tracking
+
+8. **Staleness Detection** (`_compute_staleness()`):
+   - Marks conditions/symptoms/medications as `potentially_stale` if not mentioned in `STALENESS_THRESHOLD_DAYS` (default 90 days)
+   - **Smart filtering with sensible defaults**:
+     - Self-resolving conditions (flu, cold, headache, etc.) auto-resolve after their typical resolution period
+     - Items older than `STALENESS_MAX_AGE_DAYS` (default 365) are assumed resolved
+     - Tracks `staleness_reason` for debugging (e.g., "self_resolved_30d", "too_old_400d")
+   - Enables targeted questions workflow: pipeline asks about stale items, user adds status update entry to log, next run updates state model
 
 ### Output Structure
 
@@ -107,12 +115,13 @@ OUTPUT_PATH/<LOG>/
 ├─ entries/
 │   ├─ <date>.raw.md           # Original section text
 │   ├─ <date>.processed.md     # Hash + validated LLM output
+│   ├─ <date>.entities.json    # Cached entity extraction (per-entry)
 │   └─ <date>.labs.md          # Structured lab results
 ├─ intro.md                     # Pre-dated content
-├─ state_model.json             # Extracted entities + trends
+├─ state_model.json             # Aggregated entities + trends + staleness metadata
 └─ reports/
     ├─ summary.md               # Patient summary
-    ├─ clarifying_questions.md  # Merged clarifying questions
+    ├─ targeted_clarifying_questions.md  # Questions about stale items
     ├─ next_steps.md            # Unified next steps (genius doctor, includes lab recommendations)
     ├─ experiments.md           # N=1 experiment tracker
     ├─ action_plan.md           # Prioritized action items
@@ -136,8 +145,15 @@ Logs are written to `logs/error.log` (errors only) and echoed to console (all le
   - Regenerates if: Section content changes, labs data changes, or prompts change
   - **IMPORTANT**: Hash-based caching is REQUIRED and should NOT be simplified. Since sections are re-extracted from the source markdown on every run, file timestamps are useless for cache invalidation.
 
-- **Report generation** (summary, questions, next_steps, etc.):
+- **Entity extraction** (`<date>.entities.json`):
+  - Per-entry caching for entity extraction (avoids re-extracting all entries when one changes)
+  - Dependencies: `processed` (processed section content hash), `prompt` (extract_entities prompt hash)
+  - Regenerates if: Processed content changes or entity extraction prompt changes
+  - Logs show "Entity extraction: X cached, Y extracted" to track cache performance
+
+- **Report generation** (summary, targeted_questions, next_steps, etc.):
   - Dependencies: `processed` (all processed sections), `intro` (intro.md), `prompt` (specific prompt)
+  - Targeted questions depend on: state_model.json (includes staleness metadata)
   - Regenerates if: Any processed section changes, intro changes, or prompt changes
   - output.md depends on summary + next_steps + action_plan + experiments
 
@@ -160,7 +176,7 @@ Processing retries up to 3 times if validation fails:
 ### LLM Configuration
 - OpenRouter base URL: `https://openrouter.ai/api/v1`
 - Separate model configs for each role (process, validate, summary, questions, next_steps)
-- Default temperature: 0.0 (except questions: 1.0, next steps: 0.25)
+- Default temperature: 0.0 (except next steps: 0.25)
 - Default max_tokens: 2048 (reports: 8096)
 
 ### Prompt System
