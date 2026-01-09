@@ -56,10 +56,11 @@ Create a `.env` file with required environment variables (see `.env.example`):
 - `validate.system_prompt.md` & `validate.user_prompt.md` - Validates processed sections
 - `summary.system_prompt.md` - Generates patient summaries
 - `questions.system_prompt.md` - Generates clarifying questions
-- `specialist_next_steps.system_prompt.md` - Generates specialist-specific recommendations
-- `consensus_next_steps.system_prompt.md` - Merges specialist recommendations
-- `next_steps.system_prompt.md` - General next steps generation
+- `next_steps_unified.system_prompt.md` - Unified "genius doctor" prompt for comprehensive next steps
 - `next_labs.system_prompt.md` - Suggests next lab tests
+- `action_plan.system_prompt.md` - Generates prioritized action plan
+- `experiments.system_prompt.md` - Tracks N=1 health experiments
+- `extract_entities.system_prompt.md` - Extracts entities for state model
 - `merge_bullets.system_prompt.md` - Merges multiple bullet lists
 
 ### Processing Pipeline
@@ -96,8 +97,9 @@ Create a `.env` file with required environment variables (see `.env.example`):
    - Multi-call support: For diverse outputs (e.g., clarifying questions runs 3 times by default)
    - Merging: Uses `merge_bullets` prompt to consolidate multiple outputs
    - Clarifying questions: Runs `QUESTIONS_RUNS` times with temperature=1.0 for diversity
-   - Specialist next steps: Generates for 14 specialties (endocrinology, gastroenterology, cardiology, dermatology, pulmonology, urology, hematology, neurogastroenterology, neurology, psychiatry, nutrition, rheumatology, internal medicine, genetics)
-   - Consensus next steps: Merges all specialist recommendations
+   - Unified next steps: Single "genius doctor" prompt combining all medical specialties + biohacking
+   - Action plan: Synthesizes next_steps, next_labs, experiments into prioritized action items
+   - State model: Extracts entities from all sections into `state_model.json`
 
 ### Output Structure
 
@@ -108,14 +110,15 @@ OUTPUT_PATH/<LOG>/
 │   ├─ <date>.processed.md     # Hash + validated LLM output
 │   └─ <date>.labs.md          # Structured lab results
 ├─ intro.md                     # Pre-dated content
+├─ state_model.json             # Extracted entities + trends
 └─ reports/
     ├─ summary.md               # Patient summary
-    ├─ clarifying_questions_<N>.md  # Raw questions from each run
-    ├─ clarifying_questions.md      # Merged questions
-    ├─ next_steps_<specialty>.md    # Per-specialty recommendations
-    ├─ next_steps.md            # Consensus recommendations
+    ├─ clarifying_questions.md  # Merged clarifying questions
+    ├─ next_steps.md            # Unified next steps (genius doctor)
     ├─ next_labs.md             # Suggested lab tests
-    ├─ output.md                # Summary + curated log
+    ├─ experiments.md           # N=1 experiment tracker
+    ├─ action_plan.md           # Prioritized action items
+    ├─ output.md                # Full compiled report
     └─ clinical_data_missing_report.md  # Missing data audit
 ```
 
@@ -138,16 +141,11 @@ Logs are written to `logs/error.log` (errors only) and echoed to console (all le
 - **Report generation** (summary, questions, next_steps, etc.):
   - Dependencies: `processed` (all processed sections), `intro` (intro.md), `prompt` (specific prompt)
   - Regenerates if: Any processed section changes, intro changes, or prompt changes
-  - Specialized tracking for consensus reports (depends on specialist reports) and output.md (depends on summary + next_steps + next_labs)
+  - output.md depends on summary + next_steps + next_labs + action_plan + experiments
 
 - **Prompt loading**: Lazy-loaded and cached in `self.prompts` dict
 
 - **Migration**: Old format files (single hash) are automatically detected and regenerated with new dependency tracking
-
-### Specialties
-
-The tool generates next steps for these 14 medical specialties:
-endocrinology, gastroenterology, cardiology, dermatology, pulmonology, urology, hematology, neurogastroenterology, neurology, psychiatry, nutrition, rheumatology, internal medicine, genetics
 
 ## Important Implementation Details
 
@@ -171,7 +169,6 @@ Processing retries up to 3 times if validation fails:
 All prompts are external markdown files in `prompts/` directory:
 - Loaded lazily via `load_prompt(name)`
 - Validated at startup via `_validate_prompts()` to fail fast
-- Some prompts support string formatting (e.g., specialist_next_steps uses `{specialty}`)
 
 ## Do NOT Suggest
 
@@ -180,10 +177,6 @@ All prompts are external markdown files in `prompts/` directory:
 - Timestamp-based caching (won't work since sections are re-extracted each run)
 
 ## Common Development Tasks
-
-### Adding a New Specialty
-1. Add specialty name to `SPECIALTIES` list in main.py
-2. The system will automatically generate `next_steps_<specialty>.md` report
 
 ### Modifying Prompts
 1. Edit the appropriate `.md` file in `prompts/` directory
