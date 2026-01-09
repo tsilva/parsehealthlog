@@ -313,7 +313,6 @@ class HealthLogProcessor:
             "summary.system_prompt",
             "questions.system_prompt",
             "next_steps_unified.system_prompt",
-            "next_labs.system_prompt",
             "merge_bullets.system_prompt",
             "action_plan.system_prompt",
             "experiments.system_prompt",
@@ -475,7 +474,12 @@ class HealthLogProcessor:
         # Note: final_markdown is used as input for generating other reports
         # but output.md will be assembled at the end with additional sections
 
-        # Clarifying questions
+        # Build state model FIRST (entity extraction + aggregation + trend analysis)
+        # This is used as input for next_steps, next_labs, experiments
+        state = self._build_state_model()
+        state_markdown = self._state_model_to_markdown(state)
+
+        # Clarifying questions (uses full markdown for context)
         q_runs = self.config.questions_runs
         self._generate_file(
             "clarifying_questions.md",
@@ -488,30 +492,19 @@ class HealthLogProcessor:
             dependencies=self._get_standard_report_deps("questions.system_prompt"),
         )
 
-        # Unified next steps (genius doctor prompt - replaces 14 specialists + consensus)
+        # Unified next steps (genius doctor prompt - uses state model for focused input)
+        # This includes lab recommendations in the "Labs & Testing" section
         self._generate_file(
             "next_steps.md",
             "next_steps_unified.system_prompt",
             role="next_steps",
             temperature=0.25,
-            extra_messages=[{"role": "user", "content": final_markdown}],
+            extra_messages=[{"role": "user", "content": state_markdown}],
             description="unified next steps",
-            dependencies=self._get_standard_report_deps("next_steps_unified.system_prompt"),
+            dependencies=self._get_state_model_deps("next_steps_unified.system_prompt"),
         )
 
-        # Next labs
-        prompt = self._prompt("next_labs.system_prompt")
-        self._generate_file(
-            "next_labs.md",
-            prompt,
-            role="next_steps",
-            temperature=0.25,
-            extra_messages=[{"role": "user", "content": final_markdown}],
-            description="next labs",
-            dependencies=self._get_standard_report_deps("next_labs.system_prompt"),
-        )
-
-        # Experiments tracker
+        # Experiments tracker (uses state model for experiment context)
         today = datetime.now().strftime("%Y-%m-%d")
         experiments_prompt = self._prompt("experiments.system_prompt").format(today=today)
         self._generate_file(
@@ -519,11 +512,10 @@ class HealthLogProcessor:
             experiments_prompt,
             role="next_steps",
             temperature=0.25,
-            extra_messages=[{"role": "user", "content": final_markdown}],
+            extra_messages=[{"role": "user", "content": state_markdown}],
             description="experiments tracker",
             dependencies={
-                "processed": self._hash_all_processed(),
-                "intro": self._hash_intro(),
+                "state_model": self._get_state_model_deps("experiments.system_prompt")["state_model"],
                 "prompt": hash_content(experiments_prompt),
             },
         )
@@ -531,8 +523,8 @@ class HealthLogProcessor:
         # Action plan (synthesizes summary, next_steps, next_labs, experiments)
         self._generate_action_plan(today)
 
-        # Build state model (entity extraction + aggregation + trend analysis)
-        self._build_state_model()
+        # Generate dashboard (unified view of state model)
+        self._generate_dashboard(state, today)
 
         # Assemble final output.md with all reports
         self.logger.info("Assembling final output.md with all reports...")
@@ -648,7 +640,7 @@ class HealthLogProcessor:
     def _get_standard_report_deps(self, prompt_name: str) -> dict[str, str]:
         """Get standard dependencies for reports that use all processed sections + intro.
 
-        Used by: summary, questions, next_labs, next_steps_unified
+        Used by: summary, questions
         """
         return {
             "processed": self._hash_all_processed(),
@@ -656,17 +648,29 @@ class HealthLogProcessor:
             "prompt": self._hash_prompt(prompt_name),
         }
 
+    def _get_state_model_deps(self, prompt_name: str) -> dict[str, str]:
+        """Get dependencies for reports that use state model.
+
+        Used by: next_steps_unified, next_labs, experiments
+        """
+        state_path = self.OUTPUT_PATH / "state_model.json"
+        state_hash = hash_file(state_path) if state_path.exists() else "missing"
+        return {
+            "state_model": state_hash,
+            "prompt": self._hash_prompt(prompt_name),
+        }
+
     def _get_output_deps(self) -> dict[str, str]:
         """Get dependencies for final output.md.
 
-        Depends on summary, next_steps, next_labs, action_plan, experiments, and all processed sections.
+        Depends on summary, next_steps, action_plan, experiments, and all processed sections.
         """
         deps = {
             "processed": self._hash_all_processed(),
         }
 
         # Add hashes of key reports
-        for report_name in ["summary", "next_steps", "next_labs", "action_plan", "experiments"]:
+        for report_name in ["summary", "next_steps", "action_plan", "experiments"]:
             report_path = self.reports_dir / f"{report_name}.md"
             report_hash = hash_file(report_path) or "missing"
             deps[report_name] = report_hash
@@ -757,7 +761,7 @@ class HealthLogProcessor:
         return merged
 
     def _generate_action_plan(self, today: str) -> str:
-        """Generate action plan by synthesizing summary, next_steps, next_labs, and experiments.
+        """Generate action plan by synthesizing summary, next_steps, and experiments.
 
         The action plan is the primary output - a time-bucketed, prioritized list of
         actions the user should take (this week, this month, this quarter).
@@ -771,11 +775,7 @@ class HealthLogProcessor:
 
         next_steps_path = self.reports_dir / "next_steps.md"
         if next_steps_path.exists():
-            sections.append(f"## Recommended Next Steps\n\n{self._read_without_deps_comment(next_steps_path)}")
-
-        next_labs_path = self.reports_dir / "next_labs.md"
-        if next_labs_path.exists():
-            sections.append(f"## Suggested Lab Tests\n\n{self._read_without_deps_comment(next_labs_path)}")
+            sections.append(f"## Recommended Next Steps (includes lab recommendations)\n\n{self._read_without_deps_comment(next_steps_path)}")
 
         experiments_path = self.reports_dir / "experiments.md"
         if experiments_path.exists():
@@ -799,7 +799,6 @@ class HealthLogProcessor:
         deps = {
             "summary": hash_file(summary_path) or "missing",
             "next_steps": hash_file(next_steps_path) or "missing",
-            "next_labs": hash_file(next_labs_path) or "missing",
             "experiments": hash_file(experiments_path) or "missing",
             "prompt": hash_content(action_prompt),
         }
@@ -814,9 +813,204 @@ class HealthLogProcessor:
             dependencies=deps,
         )
 
+    def _generate_dashboard(self, state: dict, today: str) -> None:
+        """Generate unified dashboard view from state model."""
+        self.logger.info("Generating dashboard...")
+
+        dashboard = []
+
+        # Header
+        dashboard.append(f"# Health Dashboard")
+        dashboard.append(f"*Generated: {today}*\n")
+
+        # Quick stats
+        conditions = state.get("conditions", {})
+        active_count = sum(1 for c in conditions.values() if c.get("status") in ("active", "suspected"))
+        resolved_count = sum(1 for c in conditions.values() if c.get("status") == "resolved")
+
+        meds = state.get("medications", {})
+        current_meds = len(meds.get("current", {}))
+
+        supps = state.get("supplements", {})
+        current_supps = len(supps.get("current", {}))
+
+        experiments = state.get("experiments", {})
+        active_experiments = len(experiments.get("active", {}))
+
+        dashboard.append("## Quick Stats")
+        dashboard.append(f"- **Active conditions**: {active_count}")
+        dashboard.append(f"- **Resolved conditions**: {resolved_count}")
+        dashboard.append(f"- **Current medications**: {current_meds}")
+        dashboard.append(f"- **Current supplements**: {current_supps}")
+        dashboard.append(f"- **Active experiments**: {active_experiments}")
+        dashboard.append("")
+
+        # Key alerts from action plan (if exists)
+        action_plan_path = self.reports_dir / "action_plan.md"
+        if action_plan_path.exists():
+            action_content = action_plan_path.read_text(encoding="utf-8")
+            # Extract priority actions (first section after header)
+            lines = action_content.split("\n")
+            in_priority = False
+            priority_lines = []
+            for line in lines:
+                if "Priority" in line or "This Week" in line or "Urgent" in line:
+                    in_priority = True
+                    continue
+                if in_priority:
+                    if line.startswith("##"):
+                        break
+                    if line.strip():
+                        priority_lines.append(line)
+            if priority_lines:
+                dashboard.append("## Priority Actions")
+                dashboard.extend(priority_lines[:10])  # Limit to 10
+                dashboard.append("")
+
+        # Active conditions
+        active_conds = [(n, d) for n, d in conditions.items() if d.get("status") in ("active", "suspected")]
+        if active_conds:
+            dashboard.append("## Active Conditions")
+            for name, data in sorted(active_conds, key=lambda x: x[1].get("first_noted", "")):
+                status = data.get("status", "unknown")
+                first = data.get("first_noted", "?")
+                dashboard.append(f"- **{name}** ({status}) - since {first}")
+            dashboard.append("")
+
+        # Lab trends (highlights)
+        lab_trends = state.get("lab_trends", {})
+        concerning = [(n, d) for n, d in lab_trends.items()
+                      if d.get("trend") in ("increasing", "decreasing") and abs(d.get("change_pct", 0)) > 10]
+        if concerning:
+            dashboard.append("## Notable Lab Trends")
+            for name, data in concerning[:10]:
+                trend = data.get("trend", "?")
+                change = data.get("change_pct", 0)
+                latest = data.get("latest", "?")
+                dashboard.append(f"- **{name}**: {latest} ({trend}, {change:+.1f}%)")
+            dashboard.append("")
+
+        # Active experiments
+        active_exps = experiments.get("active", {})
+        if active_exps:
+            dashboard.append("## Active Experiments")
+            for name, data in active_exps.items():
+                started = data.get("started", "?")
+                dashboard.append(f"- **{name}** (started {started})")
+            dashboard.append("")
+
+        # Open todos
+        todos = state.get("todos", [])
+        if todos:
+            dashboard.append("## Open Items")
+            for item in todos[:15]:  # Limit to 15
+                dashboard.append(f"- [ ] {item}")
+            dashboard.append("")
+
+        # Links to detailed reports
+        dashboard.append("---")
+        dashboard.append("## Detailed Reports")
+        dashboard.append("- [Action Plan](action_plan.md)")
+        dashboard.append("- [Next Steps](next_steps.md)")
+        dashboard.append("- [Experiments](experiments.md)")
+        dashboard.append("- [Summary](summary.md)")
+        dashboard.append("- [Full Output](output.md)")
+
+        # Write dashboard
+        dashboard_path = self.reports_dir / "dashboard.md"
+        dashboard_path.write_text("\n".join(dashboard), encoding="utf-8")
+        self.logger.info("Saved dashboard to %s", dashboard_path)
+
     # --------------------------------------------------------------
     # State model building (entity extraction + aggregation)
     # --------------------------------------------------------------
+
+    def _state_model_to_markdown(self, state: dict) -> str:
+        """Convert state model to structured markdown for report generation."""
+        sections = []
+
+        # Current conditions
+        conditions = state.get("conditions", {})
+        active = [(name, data) for name, data in conditions.items()
+                  if data.get("status") in ("active", "suspected")]
+        if active:
+            cond_lines = [f"- **{name}** ({data['status']}, first noted: {data.get('first_noted', 'unknown')})"
+                         for name, data in sorted(active, key=lambda x: x[1].get("first_noted", ""))]
+            sections.append("## Active Conditions\n" + "\n".join(cond_lines))
+
+        # Current medications
+        meds = state.get("medications", {}).get("current", {})
+        if meds:
+            med_lines = [f"- **{name}**: {data.get('dose', 'unknown dose')} ({data.get('frequency', '')})"
+                        for name, data in meds.items()]
+            sections.append("## Current Medications\n" + "\n".join(med_lines))
+
+        # Current supplements
+        supps = state.get("supplements", {}).get("current", {})
+        if supps:
+            supp_lines = [f"- **{name}**: {data.get('dose', '')}" for name, data in supps.items()]
+            sections.append("## Current Supplements\n" + "\n".join(supp_lines))
+
+        # Symptoms with trends
+        symptoms = state.get("symptoms", {})
+        symptom_trends = state.get("symptom_trends", {})
+        if symptoms:
+            symptom_lines = []
+            for name, data in symptoms.items():
+                trend_info = symptom_trends.get(name, {})
+                trend = trend_info.get("overall_trend", "unknown")
+                severity = trend_info.get("latest_severity", "")
+                line = f"- **{name}**: {trend}"
+                if severity:
+                    line += f" (severity: {severity})"
+                symptom_lines.append(line)
+            sections.append("## Symptoms & Trends\n" + "\n".join(symptom_lines))
+
+        # Lab trends
+        lab_trends = state.get("lab_trends", {})
+        if lab_trends:
+            lab_lines = []
+            for name, data in lab_trends.items():
+                latest = data.get("latest", "?")
+                trend = data.get("trend", "unknown")
+                change = data.get("change_pct")
+                line = f"- **{name}**: {latest} ({trend}"
+                if change is not None:
+                    line += f", {change:+.1f}%"
+                line += ")"
+                lab_lines.append(line)
+            sections.append("## Lab Trends\n" + "\n".join(lab_lines))
+
+        # Active experiments
+        experiments = state.get("experiments", {}).get("active", {})
+        if experiments:
+            exp_lines = []
+            for name, data in experiments.items():
+                start = data.get("started", "unknown")
+                exp_lines.append(f"- **{name}**: started {start}")
+                if data.get("updates"):
+                    for update in data["updates"][-3:]:  # Last 3 updates
+                        exp_lines.append(f"  - {update.get('date', '?')}: {update.get('details', '')}")
+            sections.append("## Active Experiments\n" + "\n".join(exp_lines))
+
+        # Providers
+        providers = state.get("providers", {})
+        if providers:
+            prov_lines = []
+            for name, data in providers.items():
+                specialty = data.get("specialty", "unknown")
+                visits = data.get("visits", [])
+                last_visit = visits[-1].get("date", "unknown") if visits else "unknown"
+                prov_lines.append(f"- **{name}** ({specialty}) - last visit: {last_visit}")
+            sections.append("## Providers\n" + "\n".join(prov_lines))
+
+        # Todos
+        todos = state.get("todos", [])
+        if todos:
+            todo_lines = [f"- [ ] {item}" for item in todos[:20]]  # Limit to 20
+            sections.append("## Open Items\n" + "\n".join(todo_lines))
+
+        return "\n\n".join(sections)
 
     def _build_state_model(self) -> dict:
         """Build comprehensive state model from all processed sections.
@@ -1448,7 +1642,7 @@ class HealthLogProcessor:
         return summary + "\n\n" + processed_text
 
     def _assemble_final_output(self, header_text: str) -> str:
-        """Assemble final output.md with action plan, experiments, summary, next steps, next labs, and all entries."""
+        """Assemble final output.md with action plan, experiments, summary, next steps, and all entries."""
         sections = []
 
         # 1. Action Plan (PRIMARY OUTPUT - what to do next)
@@ -1466,17 +1660,12 @@ class HealthLogProcessor:
         if summary_path.exists():
             sections.append(f"# Clinical Summary\n\n{self._read_without_deps_comment(summary_path).strip()}")
 
-        # 4. Next Steps (detailed consensus recommendations)
+        # 4. Next Steps (detailed recommendations including labs)
         next_steps_path = self.reports_dir / "next_steps.md"
         if next_steps_path.exists():
             sections.append(f"# Detailed Next Steps\n\n{self._read_without_deps_comment(next_steps_path).strip()}")
 
-        # 5. Next Labs (detailed lab recommendations)
-        next_labs_path = self.reports_dir / "next_labs.md"
-        if next_labs_path.exists():
-            sections.append(f"# Detailed Lab Recommendations\n\n{self._read_without_deps_comment(next_labs_path).strip()}")
-
-        # 6. All processed entries (newest first)
+        # 5. All processed entries (newest first)
         processed_text = self._get_processed_entries_text()
         if processed_text:
             sections.append(f"# Health Log Entries\n\n{processed_text}")
