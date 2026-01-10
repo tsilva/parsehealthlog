@@ -1301,12 +1301,16 @@ class HealthLogProcessor:
                     state["conditions"][name] = {
                         "name": name,
                         "status": cond.get("status", "active"),
+                        "condition_type": cond.get("condition_type"),
                         "first_noted": date,
                         "last_updated": date,
                         "history": [],
                     }
                 state["conditions"][name]["last_updated"] = date
                 state["conditions"][name]["status"] = cond.get("status", state["conditions"][name]["status"])
+                # Update condition_type if newer extraction provides it
+                if cond.get("condition_type"):
+                    state["conditions"][name]["condition_type"] = cond.get("condition_type")
                 state["conditions"][name]["history"].append({
                     "date": date,
                     "event": cond.get("event"),
@@ -1585,8 +1589,16 @@ class HealthLogProcessor:
                 cond["staleness_reason"] = "no_date"
                 continue
 
-            if cond.get("status") != "active":
-                cond["staleness_reason"] = f"status_{cond.get('status', 'unknown')}"
+            # Skip permanent conditions - they don't need status updates
+            condition_type = cond.get("condition_type")
+            if condition_type == "permanent":
+                cond["staleness_reason"] = "type_permanent"
+                continue
+
+            # Skip non-active conditions (inactive, resolved, managed, suspected)
+            status = cond.get("status", "active")
+            if status not in ("active",):
+                cond["staleness_reason"] = f"status_{status}"
                 continue
 
             # Check if self-resolving
