@@ -935,14 +935,31 @@ class HealthLogProcessor:
                 dashboard.extend(priority_lines[:10])  # Limit to 10
                 dashboard.append("")
 
-        # Active conditions
-        active_conds = [(n, d) for n, d in conditions.items() if d.get("status") in ("active", "suspected")]
+        # Active conditions - only show recent ones (not stale or permanent)
+        max_age = self.config.staleness_max_age_days  # 365 days default
+        active_conds = []
+        for name, data in conditions.items():
+            if data.get("status") not in ("active", "suspected"):
+                continue
+            # Skip permanent conditions (structural/congenital)
+            if data.get("condition_type") == "permanent":
+                continue
+            # Skip stale conditions (not mentioned in > max_age days)
+            days_since = data.get("days_since_mention")
+            if days_since is not None and days_since > max_age:
+                continue
+            active_conds.append((name, data))
+
         if active_conds:
             dashboard.append("## Active Conditions")
-            for name, data in sorted(active_conds, key=lambda x: x[1].get("first_noted", "")):
+            for name, data in sorted(active_conds, key=lambda x: x[1].get("last_updated", "")):
                 status = data.get("status", "unknown")
-                first = data.get("first_noted", "?")
-                dashboard.append(f"- **{name}** ({status}) - since {first}")
+                last_updated = data.get("last_updated", "?")
+                days_since = data.get("days_since_mention")
+                if days_since is not None:
+                    dashboard.append(f"- **{name}** ({status}) - last mentioned {last_updated} ({days_since}d ago)")
+                else:
+                    dashboard.append(f"- **{name}** ({status}) - since {data.get('first_noted', '?')}")
             dashboard.append("")
 
         # Lab trends (highlights)
