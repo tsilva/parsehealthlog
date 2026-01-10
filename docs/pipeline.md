@@ -124,29 +124,25 @@ This document describes the data processing pipeline used by health-log-parser t
 
 ### Step 5: State Model Building
 
-**What it does:** Extracts structured entities (conditions, medications, symptoms, etc.) from all processed sections, aggregates them, and computes trends and staleness.
+**What it does:** Extracts structured entities (conditions, medications, symptoms, etc.) from all processed sections, aggregates them, and adds recency metadata.
 
 **Key files/APIs:**
 - `main.py:_build_state_model()` - Orchestration
 - `main.py:_aggregate_entities()` - Merge entities across dates
-- `main.py:_compute_lab_trends()` - Lab trend analysis
-- `main.py:_compute_symptom_trends()` - Symptom trend analysis
-- `main.py:_compute_staleness()` - Mark stale items
+- `main.py:_add_recency()` - Add days_since_mention to all items
 - `prompts/extract_entities.system_prompt.md` - Entity extraction prompt
 
 **Input:** All `entries/*.processed.md` files
 **Output:**
-- `state_model.json` - Aggregated entities with trends and staleness
+- `state_model.json` - Aggregated entities with recency metadata
 - `entries/<date>.entities.json` - Per-entry cached extractions
 
 **Behavior notes:**
 - Per-entry caching avoids re-extracting unchanged entries
 - Logs show "Entity extraction: X cached, Y extracted" for cache performance
-- Staleness detection uses configurable thresholds:
-  - `STALENESS_THRESHOLD_DAYS` (default: 90) - When to flag as stale
-  - `STALENESS_MAX_AGE_DAYS` (default: 365) - Upper bound, older items assumed resolved
-- Self-resolving conditions (flu, cold, etc.) auto-resolve after typical periods
-- Staleness enables targeted questions workflow
+- Items not mentioned in `STALENESS_THRESHOLD_DAYS` (default: 90) are flagged as potentially stale
+- LLM uses its medical knowledge to judge relevance based on recency
+- Recency tracking enables targeted questions workflow
 
 ---
 
@@ -266,7 +262,7 @@ This document describes the data processing pipeline used by health-log-parser t
 | `prompts/experiments.system_prompt.md` | N=1 experiment tracking |
 | `prompts/extract_entities.system_prompt.md` | JSON entity extraction for state model |
 | `prompts/merge_bullets.system_prompt.md` | Merges multiple LLM outputs |
-| `prompts/self_resolving_conditions.yaml` | Acute conditions that auto-resolve |
+| `prompts/standard_treatments.yaml` | Treatments excluded from experiment tracking |
 
 ## Configuration
 
@@ -285,7 +281,6 @@ This document describes the data processing pipeline used by health-log-parser t
 | `REPORT_OUTPUT_PATH` | No | - | Copy final report to this path |
 | `MAX_WORKERS` | No | `4` | Parallel processing threads |
 | `STALENESS_THRESHOLD_DAYS` | No | `90` | Days before item is considered stale |
-| `STALENESS_MAX_AGE_DAYS` | No | `365` | Upper bound; older items assumed resolved |
 
 ## Behavioral Notes
 

@@ -85,42 +85,12 @@ Your task: Analyze this patient's complete health data and provide comprehensive
 
 8. **Distinguish certainty levels** - Be clear about what's evidence-based vs experimental vs speculative
 
-## CRITICAL: Check Recency Before Making Recommendations
+## Recency Awareness
 
-**⚠️ STOP! Before making ANY recommendation, check the `last_noted` or `days_since_mention` field.**
+Each item in the state model includes `days_since_mention` showing how long ago it was last noted.
 
-Today's date is in the state model metadata. Calculate how many days ago each symptom was mentioned.
-
-### Recency Rules (MANDATORY)
-
-| Days Since Mention | Treatment | Action |
-|--------------------|-----------|--------|
-| 0-90 days | CURRENT | Include in recommendations |
-| 91-180 days | STALE | Only mention if trend was "worsening" when last noted |
-| 181-365 days | HISTORICAL | Do NOT recommend action - assume resolved |
-| >365 days | ANCIENT | IGNORE COMPLETELY |
-
-### What This Means In Practice
-
-**The state model contains ALL historical data from years of health logs.** A symptom listed as "severity: severe, last_noted: 2025-07-30" means it was severe **ON THAT DATE** - NOT that it's currently severe.
-
-**DO NOT recommend urgent consultations for symptoms that are 4+ months old.**
-
-### Example - What NOT to Do
-
-❌ WRONG: "You have worsening bloating (severe), stomach pain (severe), and hemorrhoidal bleeding. Schedule urgent GI consult."
-
-Why wrong? These symptoms are from July-September 2025, which is 4-6 months ago. If the patient hasn't mentioned them since, they've likely resolved.
-
-### Example - What TO Do
-
-✅ CORRECT: Look at symptoms from the LAST 90 DAYS and recommend based on those.
-
-If the most recent symptoms are "head scalp aches (19 days ago)", "migraines (20 days ago)", "hollow head feeling (20 days ago)" - then recommendations should address HEAD/NEUROLOGICAL issues, not GI issues from 6 months ago.
-
-### Priority Actions Should ONLY Include
-
-1. Symptoms mentioned in the LAST 90 DAYS with concerning severity/trends
-2. Labs with abnormal values from recent tests
-3. Active experiments needing follow-up
-4. Chronic conditions requiring regular management (hypothyroidism, etc.)
+**Use your medical judgment** to prioritize recent issues over historical ones:
+- Focus recommendations on items mentioned recently (last 90 days)
+- Older symptoms that weren't mentioned again have likely resolved
+- Chronic/managed conditions need ongoing attention regardless of recency
+- Don't recommend urgent action for symptoms from months ago that the patient hasn't mentioned since

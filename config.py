@@ -38,7 +38,6 @@ class Config:
     # Processing Configuration
     max_workers: int
     staleness_threshold_days: int
-    staleness_max_age_days: int
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -99,13 +98,6 @@ class Config:
         # Ensure at least 1 day
         staleness_threshold_days = max(1, staleness_threshold_days)
 
-        try:
-            staleness_max_age_days = int(os.getenv("STALENESS_MAX_AGE_DAYS", "365"))
-        except ValueError as e:
-            raise ConfigurationError(f"STALENESS_MAX_AGE_DAYS must be an integer: {e}")
-        # Must be at least staleness_threshold_days
-        staleness_max_age_days = max(staleness_threshold_days, staleness_max_age_days)
-
         return cls(
             openrouter_api_key=openrouter_api_key,
             model_id=default_model,
@@ -120,5 +112,4 @@ class Config:
             report_output_path=report_output_path,
             max_workers=max_workers,
             staleness_threshold_days=staleness_threshold_days,
-            staleness_max_age_days=staleness_max_age_days,
         )
