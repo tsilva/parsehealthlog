@@ -94,7 +94,11 @@ You are a clinical data extraction system. Your task is to extract structured en
    - Started medication → medication with event="started"
    - Symptom improved → symptom with trend="improving"
 
-3. **Experiments**: If the entry has an `<!-- EXPERIMENTS: -->` block, extract those events. Also detect experiment-related content in the text.
+3. **Experiments vs Standard Treatment**:
+   - **Experiments** are self-directed N=1 trials to test if something helps (supplements, lifestyle changes, elimination diets)
+   - **NOT experiments**: Prescribed medications (antibiotics, steroids), OTC pain relief (ibuprofen, paracetamol), standard medical treatments
+   - If the entry has an `<!-- EXPERIMENTS: -->` block, extract those events. Also detect experiment-related content in the text.
+   - Use your medical judgment: "Started levothyroxine" is standard treatment; "Started magnesium to see if it helps anxiety" is an experiment
 
 4. **Labs**: Only include labs explicitly mentioned with values in THIS entry (not historical references)
 

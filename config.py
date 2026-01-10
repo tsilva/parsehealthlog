@@ -37,7 +37,6 @@ class Config:
 
     # Processing Configuration
     max_workers: int
-    staleness_threshold_days: int
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -91,13 +90,6 @@ class Config:
         max_cpu = os.cpu_count() or 8
         max_workers = max(1, min(max_workers_raw, max_cpu))
 
-        try:
-            staleness_threshold_days = int(os.getenv("STALENESS_THRESHOLD_DAYS", "90"))
-        except ValueError as e:
-            raise ConfigurationError(f"STALENESS_THRESHOLD_DAYS must be an integer: {e}")
-        # Ensure at least 1 day
-        staleness_threshold_days = max(1, staleness_threshold_days)
-
         return cls(
             openrouter_api_key=openrouter_api_key,
             model_id=default_model,
@@ -111,5 +103,4 @@ class Config:
             labs_parser_output_path=labs_parser_output_path,
             report_output_path=report_output_path,
             max_workers=max_workers,
-            staleness_threshold_days=staleness_threshold_days,
         )

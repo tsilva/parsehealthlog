@@ -38,7 +38,6 @@ Create a `.env` file with required environment variables (see `.env.example`):
 - `PROCESS_MODEL_ID`, `VALIDATE_MODEL_ID`, `QUESTIONS_MODEL_ID`, `SUMMARY_MODEL_ID`, `NEXT_STEPS_MODEL_ID` - Optional model overrides for specific stages
 - `LABS_PARSER_OUTPUT_PATH` - Optional: Path to aggregated lab CSVs
 - `MAX_WORKERS` - Parallel processing threads (default: 4)
-- `STALENESS_THRESHOLD_DAYS` - Days before an item is considered stale (default: 90)
 
 ## Documentation
 
@@ -65,7 +64,6 @@ Create a `.env` file with required environment variables (see `.env.example`):
 - `experiments.system_prompt.md` - Tracks N=1 health experiments
 - `extract_entities.system_prompt.md` - Extracts entities for state model
 - `merge_bullets.system_prompt.md` - Merges multiple bullet lists
-- `standard_treatments.yaml` - Excludes standard prescriptions from experiment tracking
 
 ### Processing Pipeline
 
@@ -97,16 +95,16 @@ Create a `.env` file with required environment variables (see `.env.example`):
    - Generates summary using SUMMARY model
 
 7. **Report Generation** (`_generate_file()`):
-   - Caching: Skips generation if report already exists
-   - Targeted questions: Uses state model with staleness metadata to ask about items not mentioned in 90+ days
+   - Caching: Skips generation if report already exists (hash-based dependency tracking)
+   - Targeted questions: Sends full state model to LLM; LLM uses medical judgment to identify items needing follow-up
    - Unified next steps: Single "genius doctor" prompt combining all medical specialties + biohacking (includes lab recommendations)
    - Action plan: Synthesizes next_steps and experiments into prioritized action items
-   - State model: Extracts entities from all sections into `state_model.json` with staleness tracking
+   - State model: Extracts entities from all sections into `state_model.json` with recency metadata
 
 8. **Recency Tracking** (`_add_recency()`):
-   - Adds `days_since_mention` to all items in the state model
-   - Marks items as `potentially_stale` if not mentioned in `STALENESS_THRESHOLD_DAYS` (default 90 days)
-   - Enables targeted questions workflow: pipeline identifies stale items, LLM generates questions, user adds status update entry to log
+   - Adds `days_since_mention` to all items in the state model (pure computation, no hardcoded thresholds)
+   - LLM uses medical judgment to determine what needs follow-up questions based on recency
+   - Design principle: Defer medical knowledge to the LLM rather than encoding rules in Python
 
 ### Output Structure
 
@@ -118,7 +116,7 @@ OUTPUT_PATH/<LOG>/
 │   ├─ <date>.entities.json    # Cached entity extraction (per-entry)
 │   └─ <date>.labs.md          # Structured lab results
 ├─ intro.md                     # Pre-dated content
-├─ state_model.json             # Aggregated entities + recency metadata
+├─ state_model.json             # Aggregated entities + days_since_mention for each item
 └─ reports/
     ├─ output.md                # THE ONLY USER-FACING FILE - comprehensive report
     └─ .internal/               # Hidden intermediates for caching
@@ -168,7 +166,7 @@ Logs are written to `logs/error.log` (errors only) and echoed to console (all le
 
 - **Report generation** (summary, targeted_questions, next_steps, etc.):
   - Dependencies: `processed` (all processed sections), `intro` (intro.md), `prompt` (specific prompt)
-  - Targeted questions depend on: state_model.json (includes staleness metadata)
+  - Targeted questions depend on: state_model.json (includes recency metadata)
   - Regenerates if: Any processed section changes, intro changes, or prompt changes
   - output.md depends on summary + next_steps + action_plan + experiments
 
