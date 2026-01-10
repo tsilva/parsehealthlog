@@ -124,13 +124,28 @@ OUTPUT_PATH/<LOG>/
 ├─ intro.md                     # Pre-dated content
 ├─ state_model.json             # Aggregated entities + trends + staleness metadata
 └─ reports/
-    ├─ summary.md               # Patient summary
-    ├─ targeted_clarifying_questions.md  # Questions about stale items
-    ├─ next_steps.md            # Unified next steps (genius doctor, includes lab recommendations)
-    ├─ experiments.md           # N=1 experiment tracker
-    ├─ action_plan.md           # Prioritized action items
-    ├─ output.md                # Full compiled report
-    └─ clinical_data_missing_report.md  # Missing data audit
+    ├─ output.md                # THE ONLY USER-FACING FILE - comprehensive report
+    └─ .internal/               # Hidden intermediates for caching
+        ├─ summary.md           # Patient summary (included in output.md)
+        ├─ targeted_clarifying_questions.md  # Stale item questions
+        ├─ next_steps.md        # Unified next steps (genius doctor)
+        ├─ experiments.md       # N=1 experiment tracker
+        └─ action_plan.md       # Prioritized action items
+```
+
+**output.md structure:**
+```markdown
+# Health Report
+
+## Questions to Address        <!-- Only if stale items exist -->
+## Action Plan                  <!-- Prioritized what-to-do-next -->
+## Experiments                  <!-- N=1 tracking -->
+## Clinical Summary             <!-- Clinical overview -->
+
+---                             <!-- Clear demarcation -->
+<!-- FULL HEALTH LOG ENTRIES BELOW - clip here if sharing -->
+
+## Health Log Entries           <!-- All processed entries -->
 ```
 
 Logs are written to `logs/error.log` (errors only) and echoed to console (all levels).
@@ -198,7 +213,7 @@ All prompts are external markdown files in `prompts/` directory:
 
 ### Modifying Prompts
 1. Edit the appropriate `.md` file in `prompts/` directory
-2. Delete cached report files in `OUTPUT_PATH/<LOG>/reports/` to regenerate
+2. Delete cached files in `OUTPUT_PATH/<LOG>/reports/.internal/` to regenerate (or delete `output.md`)
 3. Processed sections will be revalidated only if raw content hash changes
 
 ### Changing Output Structure
@@ -214,9 +229,12 @@ self._generate_file(
     role="questions",  # which model config to use
     temperature=0.0,
     extra_messages=[{"role": "user", "content": content}],
-    description="human-readable description"
+    description="human-readable description",
+    hidden=True,  # True → .internal/, False → reports/
 )
 ```
+
+Note: Set `hidden=True` for intermediate reports (included in output.md), `hidden=False` for standalone user-facing files.
 
 ### Documentation Maintenance
 
