@@ -39,7 +39,6 @@ Create a `.env` file with required environment variables (see `.env.example`):
 - `LABS_PARSER_OUTPUT_PATH` - Optional: Path to aggregated lab CSVs
 - `MAX_WORKERS` - Parallel processing threads (default: 4)
 - `STALENESS_THRESHOLD_DAYS` - Days before an item is considered stale (default: 90)
-- `STALENESS_MAX_AGE_DAYS` - Upper bound; items older than this are assumed resolved (default: 365)
 
 ## Documentation
 
@@ -66,7 +65,7 @@ Create a `.env` file with required environment variables (see `.env.example`):
 - `experiments.system_prompt.md` - Tracks N=1 health experiments
 - `extract_entities.system_prompt.md` - Extracts entities for state model
 - `merge_bullets.system_prompt.md` - Merges multiple bullet lists
-- `self_resolving_conditions.yaml` - Configuration for acute conditions that auto-resolve (flu, cold, headache, etc.)
+- `standard_treatments.yaml` - Excludes standard prescriptions from experiment tracking
 
 ### Processing Pipeline
 
@@ -104,13 +103,10 @@ Create a `.env` file with required environment variables (see `.env.example`):
    - Action plan: Synthesizes next_steps and experiments into prioritized action items
    - State model: Extracts entities from all sections into `state_model.json` with staleness tracking
 
-8. **Staleness Detection** (`_compute_staleness()`):
-   - Marks conditions/symptoms/medications as `potentially_stale` if not mentioned in `STALENESS_THRESHOLD_DAYS` (default 90 days)
-   - **Smart filtering with sensible defaults**:
-     - Self-resolving conditions (flu, cold, headache, etc.) auto-resolve after their typical resolution period
-     - Items older than `STALENESS_MAX_AGE_DAYS` (default 365) are assumed resolved
-     - Tracks `staleness_reason` for debugging (e.g., "self_resolved_30d", "too_old_400d")
-   - Enables targeted questions workflow: pipeline asks about stale items, user adds status update entry to log, next run updates state model
+8. **Recency Tracking** (`_add_recency()`):
+   - Adds `days_since_mention` to all items in the state model
+   - Marks items as `potentially_stale` if not mentioned in `STALENESS_THRESHOLD_DAYS` (default 90 days)
+   - Enables targeted questions workflow: pipeline identifies stale items, LLM generates questions, user adds status update entry to log
 
 ### Output Structure
 
@@ -122,7 +118,7 @@ OUTPUT_PATH/<LOG>/
 │   ├─ <date>.entities.json    # Cached entity extraction (per-entry)
 │   └─ <date>.labs.md          # Structured lab results
 ├─ intro.md                     # Pre-dated content
-├─ state_model.json             # Aggregated entities + trends + staleness metadata
+├─ state_model.json             # Aggregated entities + recency metadata
 └─ reports/
     ├─ output.md                # THE ONLY USER-FACING FILE - comprehensive report
     └─ .internal/               # Hidden intermediates for caching

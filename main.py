@@ -135,22 +135,6 @@ def load_prompt(name: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def load_self_resolving_conditions() -> dict[str, int]:
-    """Load self-resolving conditions from YAML config.
-
-    Returns:
-        Dict mapping condition patterns to auto-resolution days.
-        Empty dict if file doesn't exist.
-    """
-    path = PROMPTS_DIR / "self_resolving_conditions.yaml"
-    if not path.exists():
-        return {}
-    with open(path, encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    # Ensure all keys are lowercase for matching
-    return {str(k).lower(): int(v) for k, v in data.items()} if data else {}
-
-
 def load_standard_treatments() -> set[str]:
     """Load standard treatments that should not be classified as experiments.
 
@@ -347,9 +331,6 @@ class HealthLogProcessor:
 
         # State file for progress tracking
         self.state_file = self.OUTPUT_PATH / ".state.json"
-
-        # Self-resolving conditions for smart staleness detection
-        self.self_resolving_conditions = load_self_resolving_conditions()
 
         # Standard treatments that should not be classified as experiments
         self.standard_treatments = load_standard_treatments()
@@ -927,7 +908,7 @@ class HealthLogProcessor:
             "stale_medications": [],
             "stale_supplements": [],
             "stale_experiments": [],
-            "metadata": state.get("_staleness_metadata", {}),
+            "metadata": state.get("_recency_metadata", {}),
         }
 
         # Conditions
@@ -1020,41 +1001,29 @@ class HealthLogProcessor:
             supp_lines = [f"- **{name}**: {data.get('dose', '')}" for name, data in supps.items()]
             sections.append("## Current Supplements\n" + "\n".join(supp_lines))
 
-        # Symptoms with trends - include last_noted and days_since_mention for recency checking
+        # Symptoms - show observations with recency (LLM will judge trends)
         symptoms = state.get("symptoms", {})
-        symptom_trends = state.get("symptom_trends", {})
         if symptoms:
             symptom_lines = []
             for name, data in symptoms.items():
-                trend_info = symptom_trends.get(name, {})
-                trend = trend_info.get("overall_trend", "unknown")
-                severity = trend_info.get("latest_severity", "")
                 last_noted = data.get("last_noted", "unknown")
                 days_since = data.get("days_since_mention")
+                obs = data.get("observations", [])
+                # Get latest observation for severity/trend
+                latest_obs = obs[-1] if obs else {}
+                severity = latest_obs.get("severity", "")
+                trend = latest_obs.get("trend", "")
 
-                line = f"- **{name}**: {trend}"
+                line = f"- **{name}**"
                 if severity:
                     line += f" (severity: {severity})"
+                if trend:
+                    line += f" [{trend}]"
                 line += f", last_noted: {last_noted}"
                 if days_since is not None:
                     line += f" ({days_since} days ago)"
                 symptom_lines.append(line)
-            sections.append("## Symptoms & Trends\n" + "\n".join(symptom_lines))
-
-        # Lab trends
-        lab_trends = state.get("lab_trends", {})
-        if lab_trends:
-            lab_lines = []
-            for name, data in lab_trends.items():
-                latest = data.get("latest", "?")
-                trend = data.get("trend", "unknown")
-                change = data.get("change_pct")
-                line = f"- **{name}**: {latest} ({trend}"
-                if change is not None:
-                    line += f", {change:+.1f}%"
-                line += ")"
-                lab_lines.append(line)
-            sections.append("## Lab Trends\n" + "\n".join(lab_lines))
+            sections.append("## Symptoms\n" + "\n".join(symptom_lines))
 
         # Active experiments
         experiments = state.get("experiments", {}).get("active", {})
@@ -1196,13 +1165,9 @@ class HealthLogProcessor:
         # Aggregate entities into state model
         state = self._aggregate_entities(all_entities)
 
-        # Add trend analysis
-        state["lab_trends"] = self._compute_lab_trends(all_entities)
-        state["symptom_trends"] = self._compute_symptom_trends(all_entities)
-
-        # Compute staleness for targeted questions
+        # Add recency metadata for all items (LLM will judge relevance)
         today = datetime.now().strftime("%Y-%m-%d")
-        self._compute_staleness(state, today)
+        self._add_recency(state, today)
 
         # Add metadata
         state["_deps"] = state_deps
@@ -1380,119 +1345,22 @@ class HealthLogProcessor:
 
         return state
 
-    def _compute_lab_trends(self, all_entities: list[dict]) -> dict:
-        """Compute trends for lab values across all entries."""
-        labs_by_name: dict[str, list[dict]] = {}
+    def _add_recency(self, state: dict, analysis_date: str) -> None:
+        """Add recency metadata to all state model items.
 
-        for entry in all_entities:
-            date = entry.get("date", "")
-            for lab in entry.get("labs", []):
-                name = lab.get("name", "")
-                if not name:
-                    continue
-                if name not in labs_by_name:
-                    labs_by_name[name] = []
-                labs_by_name[name].append({
-                    "date": date,
-                    "value": lab.get("value"),
-                    "unit": lab.get("unit"),
-                    "status": lab.get("status"),
-                })
+        Simple approach: Just add days_since_mention and a basic stale flag.
+        The LLM will use its medical knowledge to judge what's actually relevant.
 
-        # Compute trends for each lab
-        trends = {}
-        for name, values in labs_by_name.items():
-            sorted_values = sorted(values, key=lambda x: x["date"])
-            if len(sorted_values) >= 2:
-                # Try to compute numeric trend
-                try:
-                    first_val = float(sorted_values[0]["value"])
-                    last_val = float(sorted_values[-1]["value"])
-                    change_pct = ((last_val - first_val) / first_val) * 100 if first_val != 0 else 0
-                    trend = "increasing" if change_pct > 5 else "decreasing" if change_pct < -5 else "stable"
-                except (ValueError, TypeError):
-                    trend = "unknown"
-                    change_pct = None
-            else:
-                trend = "insufficient_data"
-                change_pct = None
-
-            trends[name] = {
-                "values": sorted_values,
-                "trend": trend,
-                "change_pct": round(change_pct, 1) if change_pct is not None else None,
-                "latest": sorted_values[-1] if sorted_values else None,
-            }
-
-        return trends
-
-    def _compute_symptom_trends(self, all_entities: list[dict]) -> dict:
-        """Compute trends for symptoms across all entries."""
-        symptoms_by_name: dict[str, list[dict]] = {}
-
-        for entry in all_entities:
-            date = entry.get("date", "")
-            for sym in entry.get("symptoms", []):
-                name = sym.get("name", "").lower()
-                if not name:
-                    continue
-                if name not in symptoms_by_name:
-                    symptoms_by_name[name] = []
-                symptoms_by_name[name].append({
-                    "date": date,
-                    "severity": sym.get("severity"),
-                    "trend": sym.get("trend"),
-                })
-
-        # Compute overall trend for each symptom
-        trends = {}
-        for name, observations in symptoms_by_name.items():
-            sorted_obs = sorted(observations, key=lambda x: x["date"])
-
-            # Count trend directions
-            improving = sum(1 for o in sorted_obs if o.get("trend") == "improving")
-            worsening = sum(1 for o in sorted_obs if o.get("trend") == "worsening")
-            resolved = any(o.get("trend") == "resolved" for o in sorted_obs)
-
-            if resolved:
-                overall_trend = "resolved"
-            elif worsening > improving:
-                overall_trend = "worsening"
-            elif improving > worsening:
-                overall_trend = "improving"
-            else:
-                overall_trend = "stable"
-
-            trends[name] = {
-                "first_noted": sorted_obs[0]["date"] if sorted_obs else None,
-                "last_noted": sorted_obs[-1]["date"] if sorted_obs else None,
-                "mention_count": len(sorted_obs),
-                "overall_trend": overall_trend,
-                "latest_severity": sorted_obs[-1].get("severity") if sorted_obs else None,
-            }
-
-        return trends
-
-    def _compute_staleness(self, state: dict, analysis_date: str) -> None:
-        """Add staleness metadata to state model items with smart filtering.
-
-        Modifies state in-place to add:
-        - days_since_mention: Days since item was last mentioned
-        - potentially_stale: True if needs user attention
-        - staleness_reason: Why marked stale or not (for debugging)
-
-        Filtering rules:
-        1. Must be >= threshold (default 90 days) to be considered stale
-        2. Must be <= max_age (default 365 days) - older items assumed resolved
-        3. Self-resolving conditions (flu, cold, etc.) auto-resolve after their period
-        4. Only "active" status items are considered for conditions
+        For targeted questions, we use potentially_stale flag:
+        - Items between threshold (90 days) and max_age (365 days) are marked stale
+        - Items older than max_age are assumed resolved (not worth asking about)
 
         Args:
             state: The aggregated state model
-            analysis_date: The date to compute staleness from (YYYY-MM-DD)
+            analysis_date: The date to compute recency from (YYYY-MM-DD)
         """
         threshold = self.config.staleness_threshold_days
-        max_age = self.config.staleness_max_age_days
+        max_age = 365  # Don't ask about items older than 1 year
 
         try:
             today = datetime.strptime(analysis_date, "%Y-%m-%d")
@@ -1500,185 +1368,56 @@ class HealthLogProcessor:
             today = datetime.now()
 
         def days_since(date_str: str | None) -> int | None:
-            """Compute days since a date string."""
             if not date_str:
                 return None
             try:
-                d = datetime.strptime(date_str, "%Y-%m-%d")
-                return (today - d).days
+                return (today - datetime.strptime(date_str, "%Y-%m-%d")).days
             except ValueError:
                 return None
 
-        def is_self_resolving(name: str) -> tuple[bool, int]:
-            """Check if condition/symptom is self-resolving.
+        def is_in_stale_window(days: int | None) -> bool:
+            """Check if days is in the stale window (threshold <= days <= max_age)."""
+            return days is not None and threshold <= days <= max_age
 
-            Returns (is_self_resolving, resolution_days).
-            """
-            name_lower = name.lower().strip()
-            for pattern, days in self.self_resolving_conditions.items():
-                if pattern in name_lower or name_lower in pattern:
-                    return True, days
-            return False, 0
-
-        # Conditions staleness
-        for name, cond in state.get("conditions", {}).items():
-            last = cond.get("last_updated")
-            days = days_since(last)
+        # Conditions - add recency, let LLM judge relevance based on status/type
+        for cond in state.get("conditions", {}).values():
+            days = days_since(cond.get("last_updated"))
             cond["days_since_mention"] = days
-            cond["potentially_stale"] = False
-            cond["staleness_reason"] = None
-
-            if days is None:
-                cond["staleness_reason"] = "no_date"
-                continue
-
-            # Skip permanent conditions - they don't need status updates
-            condition_type = cond.get("condition_type")
-            if condition_type == "permanent":
-                cond["staleness_reason"] = "type_permanent"
-                continue
-
-            # Skip non-active conditions (inactive, resolved, managed, suspected)
-            status = cond.get("status", "active")
-            if status not in ("active",):
-                cond["staleness_reason"] = f"status_{status}"
-                continue
-
-            # Check if self-resolving
-            is_acute, resolution_days = is_self_resolving(name)
-            if is_acute and days > resolution_days:
-                cond["staleness_reason"] = f"self_resolved_{resolution_days}d"
-                continue
-
-            # Check upper age bound
-            if days > max_age:
-                cond["staleness_reason"] = f"too_old_{days}d"
-                continue
-
-            # Within stale window
-            if days >= threshold:
-                cond["potentially_stale"] = True
-                cond["staleness_reason"] = f"stale_{days}d"
-
-        # Symptoms staleness (use symptom_trends for latest data)
-        symptom_trends = state.get("symptom_trends", {})
-        for name, sym in state.get("symptoms", {}).items():
-            last = sym.get("last_noted")
-            days = days_since(last)
-            sym["days_since_mention"] = days
-            sym["potentially_stale"] = False
-            sym["staleness_reason"] = None
-
-            if days is None:
-                sym["staleness_reason"] = "no_date"
-                continue
-
-            # Check if resolved in symptom_trends
-            trend_data = symptom_trends.get(name, {})
-            if trend_data.get("overall_trend") == "resolved":
-                sym["staleness_reason"] = "trend_resolved"
-                continue
-
-            # Check if self-resolving symptom
-            is_acute, resolution_days = is_self_resolving(name)
-            if is_acute and days > resolution_days:
-                sym["staleness_reason"] = f"self_resolved_{resolution_days}d"
-                continue
-
-            # Upper age bound
-            if days > max_age:
-                sym["staleness_reason"] = f"too_old_{days}d"
-                continue
-
-            # Within stale window
-            if days >= threshold:
-                sym["potentially_stale"] = True
-                sym["staleness_reason"] = f"stale_{days}d"
-
-        # Current medications staleness
-        for name, med in state.get("medications", {}).get("current", {}).items():
-            last = med.get("last_mentioned")
-            days = days_since(last)
-            med["days_since_mention"] = days
-            med["potentially_stale"] = False
-            med["staleness_reason"] = None
-
-            if days is None:
-                med["staleness_reason"] = "no_date"
-                continue
-
-            if days > max_age:
-                med["staleness_reason"] = f"too_old_{days}d"
-                continue
-
-            if days >= threshold:
-                med["potentially_stale"] = True
-                med["staleness_reason"] = f"stale_{days}d"
-
-        # Current supplements staleness
-        for name, supp in state.get("supplements", {}).get("current", {}).items():
-            last = supp.get("last_mentioned")
-            days = days_since(last)
-            supp["days_since_mention"] = days
-            supp["potentially_stale"] = False
-            supp["staleness_reason"] = None
-
-            if days is None:
-                supp["staleness_reason"] = "no_date"
-                continue
-
-            if days > max_age:
-                supp["staleness_reason"] = f"too_old_{days}d"
-                continue
-
-            if days >= threshold:
-                supp["potentially_stale"] = True
-                supp["staleness_reason"] = f"stale_{days}d"
-
-        # Active experiments staleness - auto-complete experiments older than max_age
-        experiments = state.get("experiments", {})
-        to_complete: list[str] = []  # Track experiments to move to completed
-
-        for name, exp in experiments.get("active", {}).items():
-            updates = exp.get("updates", [])
-            if updates:
-                last = updates[-1].get("date")
-            else:
-                last = exp.get("started")
-            days = days_since(last)
-            exp["days_since_update"] = days
-            exp["potentially_stale"] = False
-            exp["staleness_reason"] = None
-
-            if days is None:
-                exp["staleness_reason"] = "no_date"
-                continue
-
-            # If older than max_age, mark for auto-completion (assumed discontinued)
-            if days > max_age:
-                exp["staleness_reason"] = f"auto_completed_{days}d"
-                exp["auto_completed"] = True
-                exp["ended"] = analysis_date
-                exp["outcome"] = "discontinued (no updates for over a year)"
-                to_complete.append(name)
-                continue
-
-            if days >= threshold:
-                exp["potentially_stale"] = True
-                exp["staleness_reason"] = f"stale_{days}d"
-
-        # Move old experiments from active to completed
-        for name in to_complete:
-            exp = experiments["active"].pop(name)
-            experiments["completed"][name] = exp
-            self.logger.info(
-                "Auto-completed stale experiment: %s (%s days since last update)",
-                name,
-                exp.get("days_since_update"),
+            # Stale if active, not permanent, and in the stale window
+            cond["potentially_stale"] = (
+                is_in_stale_window(days)
+                and cond.get("status") == "active"
+                and cond.get("condition_type") != "permanent"
             )
 
-        # Add metadata
-        state["_staleness_metadata"] = {
+        # Symptoms - add recency
+        for sym in state.get("symptoms", {}).values():
+            days = days_since(sym.get("last_noted"))
+            sym["days_since_mention"] = days
+            sym["potentially_stale"] = is_in_stale_window(days)
+
+        # Current medications
+        for med in state.get("medications", {}).get("current", {}).values():
+            days = days_since(med.get("last_mentioned"))
+            med["days_since_mention"] = days
+            med["potentially_stale"] = is_in_stale_window(days)
+
+        # Current supplements
+        for supp in state.get("supplements", {}).get("current", {}).values():
+            days = days_since(supp.get("last_mentioned"))
+            supp["days_since_mention"] = days
+            supp["potentially_stale"] = is_in_stale_window(days)
+
+        # Active experiments
+        for exp in state.get("experiments", {}).get("active", {}).values():
+            updates = exp.get("updates", [])
+            last = updates[-1].get("date") if updates else exp.get("started")
+            days = days_since(last)
+            exp["days_since_update"] = days
+            exp["potentially_stale"] = is_in_stale_window(days)
+
+        # Metadata
+        state["_recency_metadata"] = {
             "threshold_days": threshold,
             "max_age_days": max_age,
             "analysis_date": analysis_date,
