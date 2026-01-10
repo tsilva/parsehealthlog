@@ -75,7 +75,9 @@ from exceptions import DateExtractionError, PromptError, LabParsingError
 def setup_logging() -> None:
     """Configure logging for the application.
 
-    Sets up console output (INFO+) and error file logging.
+    Sets up console output (INFO+) and file logging:
+    - logs/all.log: All log entries (INFO+)
+    - logs/warnings.log: Warnings and errors only (WARNING+)
     Uses a named logger to avoid interfering with other libraries' root handlers.
     """
     fmt = "%(asctime)s | %(levelname)-8s | %(message)s"
@@ -97,13 +99,21 @@ def setup_logging() -> None:
     console_hdlr.setFormatter(formatter)
     logger.addHandler(console_hdlr)
 
-    # File handler for errors only
+    # Create logs directory
     logs_dir = Path("logs")
     logs_dir.mkdir(exist_ok=True)
-    error_hdlr = logging.FileHandler(logs_dir / "error.log", encoding="utf-8")
-    error_hdlr.setLevel(logging.ERROR)
-    error_hdlr.setFormatter(formatter)
-    logger.addHandler(error_hdlr)
+
+    # File handler for all entries (INFO+)
+    all_hdlr = logging.FileHandler(logs_dir / "all.log", encoding="utf-8")
+    all_hdlr.setLevel(logging.INFO)
+    all_hdlr.setFormatter(formatter)
+    logger.addHandler(all_hdlr)
+
+    # File handler for warnings and errors only (WARNING+)
+    warn_hdlr = logging.FileHandler(logs_dir / "warnings.log", encoding="utf-8")
+    warn_hdlr.setLevel(logging.WARNING)
+    warn_hdlr.setFormatter(formatter)
+    logger.addHandler(warn_hdlr)
 
     # Quiet noisy dependencies
     logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -268,7 +278,8 @@ class LLM:
             temperature=temperature,
             timeout=120.0,  # 2 minute timeout per request
         )
-        return resp.choices[0].message.content.strip()
+        content = resp.choices[0].message.content
+        return content.strip() if content else ""
 
 
 # --------------------------------------------------------------------------------------
@@ -408,10 +419,25 @@ class HealthLogProcessor:
     def _parse_json_response(self, text: str) -> dict:
         """Parse JSON from LLM response, stripping markdown code blocks if present."""
         text = text.strip()
-        # Match ```json ... ``` or ``` ... ```
-        match = re.match(r'^```(?:json)?\s*\n?(.*?)\n?```$', text, re.DOTALL)
+        if not text:
+            raise json.JSONDecodeError("Empty response from LLM", "", 0)
+        # Match ```json ... ``` or ``` ... ``` (handles trailing whitespace/newlines)
+        match = re.match(r'^```(?:json)?\s*\n(.*)\n```\s*$', text, re.DOTALL)
         if match:
             text = match.group(1).strip()
+        # Fallback: try to extract JSON object if it starts with { and ends with }
+        elif text.startswith('```'):
+            # Code block without proper closing - try to extract JSON anyway
+            lines = text.split('\n')
+            if lines[0].startswith('```'):
+                lines = lines[1:]  # Skip opening fence
+            # Find where JSON ends (last closing brace)
+            json_text = '\n'.join(lines)
+            if '```' in json_text:
+                json_text = json_text.split('```')[0]
+            text = json_text.strip()
+        if not text:
+            raise json.JSONDecodeError("Empty JSON content after stripping code block", "", 0)
         return json.loads(text)
 
     # ------------------------------------------------------------------
@@ -1200,6 +1226,7 @@ class HealthLogProcessor:
                             {"role": "user", "content": content},
                         ],
                         temperature=0.0,
+                        max_tokens=8192,  # Lab-heavy entries need more tokens
                     )
 
                     # Parse JSON response
@@ -1215,7 +1242,12 @@ class HealthLogProcessor:
 
                     all_entities.append(entities)
                 except (json.JSONDecodeError, Exception) as e:
-                    self.logger.warning("Failed to extract entities from %s: %s", date, e)
+                    # Log actual response for debugging (truncated)
+                    response_preview = response[:200] if response else "(empty)"
+                    self.logger.warning(
+                        "Failed to extract entities from %s: %s. Response preview: %s",
+                        date, e, response_preview
+                    )
 
                 bar.update(1)
 
@@ -1699,13 +1731,21 @@ class HealthLogProcessor:
         last_validation = ""
 
         for attempt in range(1, 4):
-            # 1) PROCESS
-            processed = self.llm["process"](
-                [
-                    {"role": "system", "content": self._prompt("process.system_prompt")},
-                    {"role": "user", "content": section},
-                ]
-            )
+            # 1) PROCESS - include validation feedback on retries
+            messages = [
+                {"role": "system", "content": self._prompt("process.system_prompt")},
+                {"role": "user", "content": section},
+            ]
+            if attempt > 1 and last_validation:
+                messages.append({
+                    "role": "assistant",
+                    "content": last_processed,
+                })
+                messages.append({
+                    "role": "user",
+                    "content": f"Your output was rejected because it was missing details:\n{last_validation}\n\nPlease try again, preserving ALL details including dosages, brand names, and additional ingredients.",
+                })
+            processed = self.llm["process"](messages)
             last_processed = processed
 
             # 2) VALIDATE

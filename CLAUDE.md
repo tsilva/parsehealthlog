@@ -41,6 +41,10 @@ Create a `.env` file with required environment variables (see `.env.example`):
 - `STALENESS_THRESHOLD_DAYS` - Days before an item is considered stale (default: 90)
 - `STALENESS_MAX_AGE_DAYS` - Upper bound; items older than this are assumed resolved (default: 365)
 
+## Documentation
+
+- [`docs/pipeline.md`](docs/pipeline.md) - Detailed pipeline documentation with flow diagrams, step-by-step explanations, and data flow
+
 ## Architecture
 
 ### Core Components
@@ -213,3 +217,11 @@ self._generate_file(
     description="human-readable description"
 )
 ```
+
+### Documentation Maintenance
+
+**Important**: When modifying the data processing pipeline, update `docs/pipeline.md` to reflect the changes. This includes:
+- Adding/removing/reordering pipeline steps
+- Changing data flow between components
+- Modifying file formats or storage locations
+- Adding new integrations (APIs, storage backends, etc.)
