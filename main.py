@@ -1066,13 +1066,23 @@ class HealthLogProcessor:
         """Convert state model to structured markdown for report generation."""
         sections = []
 
-        # Current conditions
+        # Current conditions - include last_updated, days_since_mention, and condition_type for recency/classification
         conditions = state.get("conditions", {})
         active = [(name, data) for name, data in conditions.items()
                   if data.get("status") in ("active", "suspected")]
         if active:
-            cond_lines = [f"- **{name}** ({data['status']}, first noted: {data.get('first_noted', 'unknown')})"
-                         for name, data in sorted(active, key=lambda x: x[1].get("first_noted", ""))]
+            cond_lines = []
+            for name, data in sorted(active, key=lambda x: x[1].get("first_noted", "")):
+                status = data['status']
+                cond_type = data.get('condition_type', 'unknown')
+                last_updated = data.get('last_updated', 'unknown')
+                days_since = data.get('days_since_mention')
+
+                line = f"- **{name}** ({status}, type: {cond_type}, last_updated: {last_updated}"
+                if days_since is not None:
+                    line += f", {days_since} days ago"
+                line += ")"
+                cond_lines.append(line)
             sections.append("## Active Conditions\n" + "\n".join(cond_lines))
 
         # Current medications
@@ -1088,7 +1098,7 @@ class HealthLogProcessor:
             supp_lines = [f"- **{name}**: {data.get('dose', '')}" for name, data in supps.items()]
             sections.append("## Current Supplements\n" + "\n".join(supp_lines))
 
-        # Symptoms with trends
+        # Symptoms with trends - include last_noted and days_since_mention for recency checking
         symptoms = state.get("symptoms", {})
         symptom_trends = state.get("symptom_trends", {})
         if symptoms:
@@ -1097,9 +1107,15 @@ class HealthLogProcessor:
                 trend_info = symptom_trends.get(name, {})
                 trend = trend_info.get("overall_trend", "unknown")
                 severity = trend_info.get("latest_severity", "")
+                last_noted = data.get("last_noted", "unknown")
+                days_since = data.get("days_since_mention")
+
                 line = f"- **{name}**: {trend}"
                 if severity:
                     line += f" (severity: {severity})"
+                line += f", last_noted: {last_noted}"
+                if days_since is not None:
+                    line += f" ({days_since} days ago)"
                 symptom_lines.append(line)
             sections.append("## Symptoms & Trends\n" + "\n".join(symptom_lines))
 
