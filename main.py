@@ -56,8 +56,6 @@ import sys
 from pathlib import Path
 from typing import Final
 
-import yaml
-
 import pandas as pd
 from dateutil.parser import parse as date_parse
 from openai import OpenAI, APIError, APIConnectionError, RateLimitError, APITimeoutError
@@ -133,26 +131,6 @@ def load_prompt(name: str) -> str:
     if not path.exists():
         raise PromptError(f"Prompt file not found: {path}", prompt_name=name)
     return path.read_text(encoding="utf-8")
-
-
-def load_standard_treatments() -> set[str]:
-    """Load standard treatments that should not be classified as experiments.
-
-    Returns:
-        Set of lowercase medication/treatment patterns.
-        Empty set if file doesn't exist.
-    """
-    path = PROMPTS_DIR / "standard_treatments.yaml"
-    if not path.exists():
-        return set()
-    with open(path, encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    patterns: set[str] = set()
-    if data:
-        for category, items in data.items():
-            if isinstance(items, list):
-                patterns.update(str(m).lower() for m in items)
-    return patterns
 
 
 def short_hash(text: str) -> str:  # 12-char SHA-256 hex prefix (48 bits, collision-resistant)
@@ -331,9 +309,6 @@ class HealthLogProcessor:
 
         # State file for progress tracking
         self.state_file = self.OUTPUT_PATH / ".state.json"
-
-        # Standard treatments that should not be classified as experiments
-        self.standard_treatments = load_standard_treatments()
 
         # Validate all required prompts exist at startup
         self._validate_prompts()
@@ -532,40 +507,19 @@ class HealthLogProcessor:
         state = self._build_state_model()
         state_markdown = self._state_model_to_markdown(state)
 
-        # Targeted clarifying questions (uses filtered stale items only)
-        # Pre-filter to only include items that truly need questions
-        filtered_stale = self._filter_stale_items_for_questions(state)
-        has_stale_items = any([
-            filtered_stale["stale_conditions"],
-            filtered_stale["stale_symptoms"],
-            filtered_stale["stale_medications"],
-            filtered_stale["stale_supplements"],
-            filtered_stale["stale_experiments"],
-        ])
-
-        if has_stale_items:
-            stale_json = json.dumps(filtered_stale, indent=2, ensure_ascii=False)
-            self._generate_file(
-                "targeted_clarifying_questions.md",
-                "targeted_questions.system_prompt",
-                role="questions",
-                temperature=0.0,  # Deterministic output to avoid duplicates
-                extra_messages=[{"role": "user", "content": stale_json}],
-                description="targeted clarifying questions",
-                dependencies=self._get_state_model_deps("targeted_questions.system_prompt"),
-                hidden=True,
-            )
-        else:
-            # No stale items - write placeholder file (hidden in .internal/)
-            questions_path = self.internal_dir / "targeted_clarifying_questions.md"
-            deps = self._get_state_model_deps("targeted_questions.system_prompt")
-            deps_comment = format_deps_comment(deps)
-            questions_path.write_text(
-                f"{deps_comment}\nNo items require status updates at this time. "
-                "All tracked items have recent mentions or have auto-resolved.\n",
-                encoding="utf-8",
-            )
-            self.logger.info("No stale items found - skipping targeted questions generation")
+        # Targeted clarifying questions - LLM judges what needs follow-up
+        # Send full state model; LLM uses medical judgment to decide what's worth asking about
+        state_json = json.dumps(state, indent=2, ensure_ascii=False, default=str)
+        self._generate_file(
+            "targeted_clarifying_questions.md",
+            "targeted_questions.system_prompt",
+            role="questions",
+            temperature=0.0,  # Deterministic output to avoid duplicates
+            extra_messages=[{"role": "user", "content": state_json}],
+            description="targeted clarifying questions",
+            dependencies=self._get_state_model_deps("targeted_questions.system_prompt"),
+            hidden=True,
+        )
 
         # Unified next steps (genius doctor prompt - uses state model for focused input)
         # This includes lab recommendations in the "Labs & Testing" section
@@ -895,75 +849,6 @@ class HealthLogProcessor:
     # --------------------------------------------------------------
     # State model building (entity extraction + aggregation)
     # --------------------------------------------------------------
-
-    def _filter_stale_items_for_questions(self, state: dict) -> dict:
-        """Extract only stale items from state model for targeted questions.
-
-        Returns a minimal dict containing only items marked potentially_stale=True,
-        organized by category for easy prompt consumption.
-        """
-        filtered = {
-            "stale_conditions": [],
-            "stale_symptoms": [],
-            "stale_medications": [],
-            "stale_supplements": [],
-            "stale_experiments": [],
-            "metadata": state.get("_recency_metadata", {}),
-        }
-
-        # Conditions
-        for name, cond in state.get("conditions", {}).items():
-            if cond.get("potentially_stale"):
-                filtered["stale_conditions"].append({
-                    "name": name,
-                    "last_updated": cond.get("last_updated"),
-                    "days_since": cond.get("days_since_mention"),
-                })
-
-        # Symptoms
-        for name, sym in state.get("symptoms", {}).items():
-            if sym.get("potentially_stale"):
-                filtered["stale_symptoms"].append({
-                    "name": name,
-                    "last_noted": sym.get("last_noted"),
-                    "days_since": sym.get("days_since_mention"),
-                })
-
-        # Medications
-        for name, med in state.get("medications", {}).get("current", {}).items():
-            if med.get("potentially_stale"):
-                filtered["stale_medications"].append({
-                    "name": name,
-                    "dose": med.get("dose"),
-                    "last_mentioned": med.get("last_mentioned"),
-                    "days_since": med.get("days_since_mention"),
-                })
-
-        # Supplements
-        for name, supp in state.get("supplements", {}).get("current", {}).items():
-            if supp.get("potentially_stale"):
-                filtered["stale_supplements"].append({
-                    "name": name,
-                    "dose": supp.get("dose"),
-                    "last_mentioned": supp.get("last_mentioned"),
-                    "days_since": supp.get("days_since_mention"),
-                })
-
-        # Experiments
-        for name, exp in state.get("experiments", {}).get("active", {}).items():
-            if exp.get("potentially_stale"):
-                filtered["stale_experiments"].append({
-                    "name": name,
-                    "started": exp.get("started"),
-                    "days_since": exp.get("days_since_update"),
-                })
-
-        # Sort each list by days_since (oldest first)
-        for key in ["stale_conditions", "stale_symptoms", "stale_medications",
-                    "stale_supplements", "stale_experiments"]:
-            filtered[key].sort(key=lambda x: x.get("days_since") or 0, reverse=True)
-
-        return filtered
 
     def _state_model_to_markdown(self, state: dict) -> str:
         """Convert state model to structured markdown for report generation."""
@@ -1308,15 +1193,10 @@ class HealthLogProcessor:
                     "notes": prov.get("notes"),
                 })
 
-            # Experiments
+            # Experiments (LLM judges what's an experiment vs standard treatment)
             for exp in entry.get("experiments", []):
                 name = exp.get("name", "")
                 if not name:
-                    continue
-                # Skip standard treatments that were incorrectly classified as experiments
-                name_lower = name.lower()
-                if any(pattern in name_lower for pattern in self.standard_treatments):
-                    self.logger.debug("Skipping standard treatment from experiments: %s", name)
                     continue
                 event = exp.get("event", "update")
                 if event == "end":
@@ -1348,20 +1228,13 @@ class HealthLogProcessor:
     def _add_recency(self, state: dict, analysis_date: str) -> None:
         """Add recency metadata to all state model items.
 
-        Simple approach: Just add days_since_mention and a basic stale flag.
-        The LLM will use its medical knowledge to judge what's actually relevant.
-
-        For targeted questions, we use potentially_stale flag:
-        - Items between threshold (90 days) and max_age (365 days) are marked stale
-        - Items older than max_age are assumed resolved (not worth asking about)
+        This function ONLY does math (computing days_since_mention).
+        All medical judgment about what's relevant is deferred to the LLM.
 
         Args:
             state: The aggregated state model
             analysis_date: The date to compute recency from (YYYY-MM-DD)
         """
-        threshold = self.config.staleness_threshold_days
-        max_age = 365  # Don't ask about items older than 1 year
-
         try:
             today = datetime.strptime(analysis_date, "%Y-%m-%d")
         except ValueError:
@@ -1375,53 +1248,26 @@ class HealthLogProcessor:
             except ValueError:
                 return None
 
-        def is_in_stale_window(days: int | None) -> bool:
-            """Check if days is in the stale window (threshold <= days <= max_age)."""
-            return days is not None and threshold <= days <= max_age
-
-        # Conditions - add recency, let LLM judge relevance based on status/type
+        # Add days_since_mention to all items - LLM will judge relevance
         for cond in state.get("conditions", {}).values():
-            days = days_since(cond.get("last_updated"))
-            cond["days_since_mention"] = days
-            # Stale if active, not permanent, and in the stale window
-            cond["potentially_stale"] = (
-                is_in_stale_window(days)
-                and cond.get("status") == "active"
-                and cond.get("condition_type") != "permanent"
-            )
+            cond["days_since_mention"] = days_since(cond.get("last_updated"))
 
-        # Symptoms - add recency
         for sym in state.get("symptoms", {}).values():
-            days = days_since(sym.get("last_noted"))
-            sym["days_since_mention"] = days
-            sym["potentially_stale"] = is_in_stale_window(days)
+            sym["days_since_mention"] = days_since(sym.get("last_noted"))
 
-        # Current medications
         for med in state.get("medications", {}).get("current", {}).values():
-            days = days_since(med.get("last_mentioned"))
-            med["days_since_mention"] = days
-            med["potentially_stale"] = is_in_stale_window(days)
+            med["days_since_mention"] = days_since(med.get("last_mentioned"))
 
-        # Current supplements
         for supp in state.get("supplements", {}).get("current", {}).values():
-            days = days_since(supp.get("last_mentioned"))
-            supp["days_since_mention"] = days
-            supp["potentially_stale"] = is_in_stale_window(days)
+            supp["days_since_mention"] = days_since(supp.get("last_mentioned"))
 
-        # Active experiments
         for exp in state.get("experiments", {}).get("active", {}).values():
             updates = exp.get("updates", [])
             last = updates[-1].get("date") if updates else exp.get("started")
-            days = days_since(last)
-            exp["days_since_update"] = days
-            exp["potentially_stale"] = is_in_stale_window(days)
+            exp["days_since_update"] = days_since(last)
 
-        # Metadata
-        state["_recency_metadata"] = {
-            "threshold_days": threshold,
-            "max_age_days": max_age,
-            "analysis_date": analysis_date,
-        }
+        # Metadata - just the date, no arbitrary thresholds
+        state["_recency_metadata"] = {"analysis_date": analysis_date}
 
     # --------------------------------------------------------------
     # Section processing (one dated section → validated markdown)

@@ -140,9 +140,9 @@ This document describes the data processing pipeline used by health-log-parser t
 **Behavior notes:**
 - Per-entry caching avoids re-extracting unchanged entries
 - Logs show "Entity extraction: X cached, Y extracted" for cache performance
-- Items not mentioned in `STALENESS_THRESHOLD_DAYS` (default: 90) are flagged as potentially stale
+- `days_since_mention` is computed for all items (pure math, no hardcoded thresholds)
 - LLM uses its medical knowledge to judge relevance based on recency
-- Recency tracking enables targeted questions workflow
+- Design principle: Defer medical knowledge to the LLM rather than encoding rules in Python
 
 ---
 
@@ -222,8 +222,7 @@ This document describes the data processing pipeline used by health-log-parser t
                          v
                  +---------------+
                  |   AGGREGATE   |
-                 |   + TRENDS    |
-                 |   + STALENESS |
+                 |   + RECENCY   |
                  +---------------+
                          |
                          v
@@ -280,7 +279,6 @@ This document describes the data processing pipeline used by health-log-parser t
 | `LABS_PARSER_OUTPUT_PATH` | No | - | Path to aggregated lab CSVs |
 | `REPORT_OUTPUT_PATH` | No | - | Copy final report to this path |
 | `MAX_WORKERS` | No | `4` | Parallel processing threads |
-| `STALENESS_THRESHOLD_DAYS` | No | `90` | Days before item is considered stale |
 
 ## Behavioral Notes
 
