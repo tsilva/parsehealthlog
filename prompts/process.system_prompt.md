@@ -52,6 +52,14 @@ Guidelines for experiment detection:
 - Include dosage in the experiment name if relevant (e.g., `alcar_500mg` not just `alcar`)
 - If no experiments are mentioned in the entry, omit the EXPERIMENTS block entirely
 
+**NOT Experiments (omit EXPERIMENTS block for these):**
+- Standard prescribed medications: antibiotics (azithromycin, amoxicillin, etc.), antifungals (fluconazole, clotrimazole, etc.), antivirals, corticosteroids
+- Acute/short-course treatments prescribed for specific conditions (e.g., "7 days of antibiotics", "2 weeks of antifungal")
+- OTC pain relief used for immediate symptom relief (ibuprofen, acetaminophen, aspirin)
+- Topical creams/ointments for skin conditions (halibut, hydrocortisone, etc.)
+
+Experiments are ONLY for self-directed interventions with explicit hypothesis testing intent (supplements, dietary changes, lifestyle protocols).
+
 ---- SAMPLE OUTPUT 1: ----
 
 #### 2024-08-17

@@ -151,6 +151,26 @@ def load_self_resolving_conditions() -> dict[str, int]:
     return {str(k).lower(): int(v) for k, v in data.items()} if data else {}
 
 
+def load_standard_treatments() -> set[str]:
+    """Load standard treatments that should not be classified as experiments.
+
+    Returns:
+        Set of lowercase medication/treatment patterns.
+        Empty set if file doesn't exist.
+    """
+    path = PROMPTS_DIR / "standard_treatments.yaml"
+    if not path.exists():
+        return set()
+    with open(path, encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    patterns: set[str] = set()
+    if data:
+        for category, items in data.items():
+            if isinstance(items, list):
+                patterns.update(str(m).lower() for m in items)
+    return patterns
+
+
 def short_hash(text: str) -> str:  # 12-char SHA-256 hex prefix (48 bits, collision-resistant)
     return sha256(text.encode()).hexdigest()[:12]
 
@@ -303,6 +323,8 @@ class HealthLogProcessor:
         self.entries_dir.mkdir(exist_ok=True)
         self.reports_dir = self.OUTPUT_PATH / "reports"
         self.reports_dir.mkdir(exist_ok=True)
+        self.internal_dir = self.reports_dir / ".internal"
+        self.internal_dir.mkdir(exist_ok=True)
 
         self.logger = logging.getLogger(__name__)
 
@@ -328,6 +350,9 @@ class HealthLogProcessor:
 
         # Self-resolving conditions for smart staleness detection
         self.self_resolving_conditions = load_self_resolving_conditions()
+
+        # Standard treatments that should not be classified as experiments
+        self.standard_treatments = load_standard_treatments()
 
         # Validate all required prompts exist at startup
         self._validate_prompts()
@@ -547,10 +572,11 @@ class HealthLogProcessor:
                 extra_messages=[{"role": "user", "content": stale_json}],
                 description="targeted clarifying questions",
                 dependencies=self._get_state_model_deps("targeted_questions.system_prompt"),
+                hidden=True,
             )
         else:
-            # No stale items - write placeholder file
-            questions_path = self.reports_dir / "targeted_clarifying_questions.md"
+            # No stale items - write placeholder file (hidden in .internal/)
+            questions_path = self.internal_dir / "targeted_clarifying_questions.md"
             deps = self._get_state_model_deps("targeted_questions.system_prompt")
             deps_comment = format_deps_comment(deps)
             questions_path.write_text(
@@ -570,6 +596,7 @@ class HealthLogProcessor:
             extra_messages=[{"role": "user", "content": state_markdown}],
             description="unified next steps",
             dependencies=self._get_state_model_deps("next_steps_unified.system_prompt"),
+            hidden=True,
         )
 
         # Experiments tracker (uses state model for experiment context)
@@ -586,13 +613,11 @@ class HealthLogProcessor:
                 "state_model": self._get_state_model_deps("experiments.system_prompt")["state_model"],
                 "prompt": hash_content(experiments_prompt),
             },
+            hidden=True,
         )
 
         # Action plan (synthesizes summary, next_steps, next_labs, experiments)
         self._generate_action_plan(today)
-
-        # Generate dashboard (unified view of state model)
-        self._generate_dashboard(state, today)
 
         # Assemble final output.md with all reports
         self.logger.info("Assembling final output.md with all reports...")
@@ -731,15 +756,16 @@ class HealthLogProcessor:
     def _get_output_deps(self) -> dict[str, str]:
         """Get dependencies for final output.md.
 
-        Depends on summary, next_steps, action_plan, experiments, and all processed sections.
+        Depends on summary, next_steps, action_plan, experiments, targeted_questions,
+        and all processed sections. All intermediate reports are in .internal/.
         """
         deps = {
             "processed": self._hash_all_processed(),
         }
 
-        # Add hashes of key reports
-        for report_name in ["summary", "next_steps", "action_plan", "experiments"]:
-            report_path = self.reports_dir / f"{report_name}.md"
+        # Add hashes of key reports (from .internal/)
+        for report_name in ["summary", "next_steps", "action_plan", "experiments", "targeted_clarifying_questions"]:
+            report_path = self.internal_dir / f"{report_name}.md"
             report_hash = hash_file(report_path) or "missing"
             deps[report_name] = report_hash
 
@@ -761,8 +787,11 @@ class HealthLogProcessor:
         extra_messages: Iterable[dict[str, str]] | None = None,
         description: str | None = None,
         dependencies: dict[str, str] | None = None,
+        hidden: bool = False,
     ) -> str:
-        path = self.reports_dir / filename
+        # Hidden files go to .internal/, visible files go to reports/
+        target_dir = self.internal_dir if hidden else self.reports_dir
+        path = target_dir / filename
 
         # Check if file exists and is up-to-date
         if path.exists():
@@ -798,7 +827,7 @@ class HealthLogProcessor:
                 for i in range(calls):
                     out = make_call()
                     outputs.append(out)
-                    variant_path = self.reports_dir / f"{base}_{i+1}{suffix}"
+                    variant_path = target_dir / f"{base}_{i+1}{suffix}"
                     variant_path.write_text(out, encoding="utf-8")
                     bar.update(1)
         else:
@@ -834,18 +863,18 @@ class HealthLogProcessor:
         The action plan is the primary output - a time-bucketed, prioritized list of
         actions the user should take (this week, this month, this quarter).
         """
-        # Read the input reports
+        # Read the input reports from .internal/
         sections = []
 
-        summary_path = self.reports_dir / "summary.md"
+        summary_path = self.internal_dir / "summary.md"
         if summary_path.exists():
             sections.append(f"## Clinical Summary\n\n{self._read_without_deps_comment(summary_path)}")
 
-        next_steps_path = self.reports_dir / "next_steps.md"
+        next_steps_path = self.internal_dir / "next_steps.md"
         if next_steps_path.exists():
             sections.append(f"## Recommended Next Steps (includes lab recommendations)\n\n{self._read_without_deps_comment(next_steps_path)}")
 
-        experiments_path = self.reports_dir / "experiments.md"
+        experiments_path = self.internal_dir / "experiments.md"
         if experiments_path.exists():
             sections.append(f"## Current Experiments\n\n{self._read_without_deps_comment(experiments_path)}")
 
@@ -863,7 +892,7 @@ class HealthLogProcessor:
             last_entry_date=last_entry_date,
         )
 
-        # Dependencies include all input reports
+        # Dependencies include all input reports (from .internal/)
         deps = {
             "summary": hash_file(summary_path) or "missing",
             "next_steps": hash_file(next_steps_path) or "missing",
@@ -879,132 +908,8 @@ class HealthLogProcessor:
             extra_messages=[{"role": "user", "content": combined_input}],
             description="action plan",
             dependencies=deps,
+            hidden=True,
         )
-
-    def _generate_dashboard(self, state: dict, today: str) -> None:
-        """Generate unified dashboard view from state model."""
-        self.logger.info("Generating dashboard...")
-
-        dashboard = []
-
-        # Header
-        dashboard.append(f"# Health Dashboard")
-        dashboard.append(f"*Generated: {today}*\n")
-
-        # Quick stats
-        conditions = state.get("conditions", {})
-        active_count = sum(1 for c in conditions.values() if c.get("status") in ("active", "suspected"))
-        resolved_count = sum(1 for c in conditions.values() if c.get("status") == "resolved")
-
-        meds = state.get("medications", {})
-        current_meds = len(meds.get("current", {}))
-
-        supps = state.get("supplements", {})
-        current_supps = len(supps.get("current", {}))
-
-        experiments = state.get("experiments", {})
-        active_experiments = len(experiments.get("active", {}))
-
-        dashboard.append("## Quick Stats")
-        dashboard.append(f"- **Active conditions**: {active_count}")
-        dashboard.append(f"- **Resolved conditions**: {resolved_count}")
-        dashboard.append(f"- **Current medications**: {current_meds}")
-        dashboard.append(f"- **Current supplements**: {current_supps}")
-        dashboard.append(f"- **Active experiments**: {active_experiments}")
-        dashboard.append("")
-
-        # Key alerts from action plan (if exists)
-        action_plan_path = self.reports_dir / "action_plan.md"
-        if action_plan_path.exists():
-            action_content = action_plan_path.read_text(encoding="utf-8")
-            # Extract priority actions (first section after header)
-            lines = action_content.split("\n")
-            in_priority = False
-            priority_lines = []
-            for line in lines:
-                if "Priority" in line or "This Week" in line or "Urgent" in line:
-                    in_priority = True
-                    continue
-                if in_priority:
-                    if line.startswith("##"):
-                        break
-                    if line.strip():
-                        priority_lines.append(line)
-            if priority_lines:
-                dashboard.append("## Priority Actions")
-                dashboard.extend(priority_lines[:10])  # Limit to 10
-                dashboard.append("")
-
-        # Active conditions - only show recent ones (not stale or permanent)
-        max_age = self.config.staleness_max_age_days  # 365 days default
-        active_conds = []
-        for name, data in conditions.items():
-            if data.get("status") not in ("active", "suspected"):
-                continue
-            # Skip permanent conditions (structural/congenital)
-            if data.get("condition_type") == "permanent":
-                continue
-            # Skip stale conditions (not mentioned in > max_age days)
-            days_since = data.get("days_since_mention")
-            if days_since is not None and days_since > max_age:
-                continue
-            active_conds.append((name, data))
-
-        if active_conds:
-            dashboard.append("## Active Conditions")
-            for name, data in sorted(active_conds, key=lambda x: x[1].get("last_updated", "")):
-                status = data.get("status", "unknown")
-                last_updated = data.get("last_updated", "?")
-                days_since = data.get("days_since_mention")
-                if days_since is not None:
-                    dashboard.append(f"- **{name}** ({status}) - last mentioned {last_updated} ({days_since}d ago)")
-                else:
-                    dashboard.append(f"- **{name}** ({status}) - since {data.get('first_noted', '?')}")
-            dashboard.append("")
-
-        # Lab trends (highlights)
-        lab_trends = state.get("lab_trends", {})
-        concerning = [(n, d) for n, d in lab_trends.items()
-                      if d.get("trend") in ("increasing", "decreasing") and abs(d.get("change_pct", 0)) > 10]
-        if concerning:
-            dashboard.append("## Notable Lab Trends")
-            for name, data in concerning[:10]:
-                trend = data.get("trend", "?")
-                change = data.get("change_pct", 0)
-                latest = data.get("latest", "?")
-                dashboard.append(f"- **{name}**: {latest} ({trend}, {change:+.1f}%)")
-            dashboard.append("")
-
-        # Active experiments
-        active_exps = experiments.get("active", {})
-        if active_exps:
-            dashboard.append("## Active Experiments")
-            for name, data in active_exps.items():
-                started = data.get("started", "?")
-                dashboard.append(f"- **{name}** (started {started})")
-            dashboard.append("")
-
-        # Open todos
-        todos = state.get("todos", [])
-        if todos:
-            dashboard.append("## Open Items")
-            for item in todos[:15]:  # Limit to 15
-                dashboard.append(f"- [ ] {item}")
-            dashboard.append("")
-
-        # Links to detailed reports
-        dashboard.append("---")
-        dashboard.append("## Detailed Reports")
-        dashboard.append("- [Action Plan](action_plan.md)")
-        dashboard.append("- [Next Steps](next_steps.md)")
-        dashboard.append("- [Experiments](experiments.md)")
-        dashboard.append("- [Summary](summary.md)")
-        dashboard.append("- [Full Output](output.md)")
-
-        # Write dashboard
-        dashboard_path = self.reports_dir / "dashboard.md"
-        dashboard_path.write_text("\n".join(dashboard), encoding="utf-8")
-        self.logger.info("Saved dashboard to %s", dashboard_path)
 
     # --------------------------------------------------------------
     # State model building (entity extraction + aggregation)
@@ -1443,6 +1348,11 @@ class HealthLogProcessor:
                 name = exp.get("name", "")
                 if not name:
                     continue
+                # Skip standard treatments that were incorrectly classified as experiments
+                name_lower = name.lower()
+                if any(pattern in name_lower for pattern in self.standard_treatments):
+                    self.logger.debug("Skipping standard treatment from experiments: %s", name)
+                    continue
                 event = exp.get("event", "update")
                 if event == "end":
                     if name in state["experiments"]["active"]:
@@ -1725,8 +1635,11 @@ class HealthLogProcessor:
                 supp["potentially_stale"] = True
                 supp["staleness_reason"] = f"stale_{days}d"
 
-        # Active experiments staleness
-        for name, exp in state.get("experiments", {}).get("active", {}).items():
+        # Active experiments staleness - auto-complete experiments older than max_age
+        experiments = state.get("experiments", {})
+        to_complete: list[str] = []  # Track experiments to move to completed
+
+        for name, exp in experiments.get("active", {}).items():
             updates = exp.get("updates", [])
             if updates:
                 last = updates[-1].get("date")
@@ -1741,13 +1654,28 @@ class HealthLogProcessor:
                 exp["staleness_reason"] = "no_date"
                 continue
 
+            # If older than max_age, mark for auto-completion (assumed discontinued)
             if days > max_age:
-                exp["staleness_reason"] = f"too_old_{days}d"
+                exp["staleness_reason"] = f"auto_completed_{days}d"
+                exp["auto_completed"] = True
+                exp["ended"] = analysis_date
+                exp["outcome"] = "discontinued (no updates for over a year)"
+                to_complete.append(name)
                 continue
 
             if days >= threshold:
                 exp["potentially_stale"] = True
                 exp["staleness_reason"] = f"stale_{days}d"
+
+        # Move old experiments from active to completed
+        for name in to_complete:
+            exp = experiments["active"].pop(name)
+            experiments["completed"][name] = exp
+            self.logger.info(
+                "Auto-completed stale experiment: %s (%s days since last update)",
+                name,
+                exp.get("days_since_update"),
+            )
 
         # Add metadata
         state["_staleness_metadata"] = {
@@ -2054,7 +1982,7 @@ class HealthLogProcessor:
         """Assemble summary + processed entries (used as input for other reports)."""
         processed_text = self._get_processed_entries_text()
 
-        # Generate summary with dependency tracking
+        # Generate summary with dependency tracking (hidden in .internal/)
         summary = self._generate_file(
             "summary.md",
             "summary.system_prompt",
@@ -2062,39 +1990,59 @@ class HealthLogProcessor:
             extra_messages=[{"role": "user", "content": "\n\n".join(filter(None, [header_text, processed_text]))}],
             description="summary",
             dependencies=self._get_standard_report_deps("summary.system_prompt"),
+            hidden=True,
         )
         return summary + "\n\n" + processed_text
 
     def _assemble_final_output(self, header_text: str) -> str:
-        """Assemble final output.md with action plan, experiments, summary, next steps, and all entries."""
-        sections = []
+        """Assemble final output.md - the single comprehensive report.
 
-        # 1. Action Plan (PRIMARY OUTPUT - what to do next)
-        action_plan_path = self.reports_dir / "action_plan.md"
+        Structure:
+        1. # Health Report
+        2. ## Questions to Address (stale items needing updates)
+        3. ## Action Plan (prioritized what-to-do-next)
+        4. ## Experiments (N=1 tracking)
+        5. ## Clinical Summary
+        6. --- (clear demarcation)
+        7. ## Health Log Entries (all processed entries)
+        """
+        sections = ["# Health Report"]
+
+        # 1. Questions to Address (stale items needing user input)
+        questions_path = self.internal_dir / "targeted_clarifying_questions.md"
+        if questions_path.exists():
+            questions_content = self._read_without_deps_comment(questions_path).strip()
+            # Only include if there are actual questions (not the "no items" placeholder)
+            if questions_content and "No items require status updates" not in questions_content:
+                sections.append(f"## Questions to Address\n\n{questions_content}")
+
+        # 2. Action Plan (PRIMARY - what to do next)
+        action_plan_path = self.internal_dir / "action_plan.md"
         if action_plan_path.exists():
-            sections.append(self._read_without_deps_comment(action_plan_path).strip())
+            content = self._read_without_deps_comment(action_plan_path).strip()
+            # Action plan usually has its own header, so include as-is
+            sections.append(content)
 
-        # 2. Experiments (active biohacking/N=1 experiments)
-        experiments_path = self.reports_dir / "experiments.md"
+        # 3. Experiments (N=1 tracking)
+        experiments_path = self.internal_dir / "experiments.md"
         if experiments_path.exists():
-            sections.append(self._read_without_deps_comment(experiments_path).strip())
+            content = self._read_without_deps_comment(experiments_path).strip()
+            sections.append(content)
 
-        # 3. Summary (clinical overview)
-        summary_path = self.reports_dir / "summary.md"
+        # 4. Clinical Summary
+        summary_path = self.internal_dir / "summary.md"
         if summary_path.exists():
-            sections.append(f"# Clinical Summary\n\n{self._read_without_deps_comment(summary_path).strip()}")
+            sections.append(f"## Clinical Summary\n\n{self._read_without_deps_comment(summary_path).strip()}")
 
-        # 4. Next Steps (detailed recommendations including labs)
-        next_steps_path = self.reports_dir / "next_steps.md"
-        if next_steps_path.exists():
-            sections.append(f"# Detailed Next Steps\n\n{self._read_without_deps_comment(next_steps_path).strip()}")
+        # 5. Clear demarcation before full entries
+        sections.append("---\n<!-- FULL HEALTH LOG ENTRIES BELOW - clip here if sharing -->")
 
-        # 5. All processed entries (newest first)
+        # 6. All processed entries (newest first)
         processed_text = self._get_processed_entries_text()
         if processed_text:
-            sections.append(f"# Health Log Entries\n\n{processed_text}")
+            sections.append(f"## Health Log Entries\n\n{processed_text}")
 
-        return "\n\n---\n\n".join(sections)
+        return "\n\n".join(sections)
 
 
 # --------------------------------------------------------------------------------------
