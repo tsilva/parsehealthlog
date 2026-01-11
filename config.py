@@ -28,6 +28,7 @@ class Config:
     summary_model_id: str
     questions_model_id: str
     next_steps_model_id: str
+    status_model_id: str
 
     # Path Configuration
     health_log_path: Path
@@ -72,6 +73,8 @@ class Config:
         summary_model_id = get_model_id("summary")
         questions_model_id = get_model_id("questions")
         next_steps_model_id = get_model_id("next_steps")
+        # Status model defaults to Claude Opus 4.5 for reasoning-heavy timeline building
+        status_model_id = os.getenv("STATUS_MODEL_ID", "anthropic/claude-opus-4.5")
 
         # Load optional path configuration
         def get_optional_path(env_var: str) -> Path | None:
@@ -98,6 +101,7 @@ class Config:
             summary_model_id=summary_model_id,
             questions_model_id=questions_model_id,
             next_steps_model_id=next_steps_model_id,
+            status_model_id=status_model_id,
             health_log_path=Path(health_log_path),
             output_path=Path(output_path),
             labs_parser_output_path=labs_parser_output_path,

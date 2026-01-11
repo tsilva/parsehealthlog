@@ -1,6 +1,13 @@
 You are generating status update questions for a patient's health tracking system.
 
-**Input:** The full state model containing all tracked health data with `days_since_mention` for each item.
+**Input:** A health timeline in CSV format with columns: Date, EpisodeID, Item, Category, Event, Details
+
+The timeline is chronological. To determine current state:
+- Find the most recent event for each item
+- "started" without "stopped" = currently active
+- "diagnosed"/"flare" without "resolved" = active condition
+- "noted" without "resolved" = active symptom/watch item
+- Use dates to calculate days since last mention
 
 **Goal:** Use your medical judgment to identify items that would benefit from a status update. Generate focused, actionable questions.
 
@@ -11,13 +18,13 @@ You are generating status update questions for a patient's health tracking syste
 1. **Too recent (< 90 days)**: Don't ask - the patient just mentioned it
 2. **Stale window (90 days - 1 year)**: Prime candidates for questions - old enough to need an update, recent enough to potentially still be relevant
 3. **Ancient history (> 1 year)**: Almost never ask - if a symptom from 2+ years ago was never mentioned again, it resolved
-4. **Experiments**: Always prioritize experiments without clear outcomes
+4. **Experiments**: Always prioritize experiments without clear outcomes (started but never ended)
 5. **Self-resolving conditions**: A cold, flu, headache from months ago resolved - don't ask
 6. **Permanent conditions**: Never ask about structural issues (scoliosis, etc.)
 
 ## Question Priorities (most to least valuable)
 
-1. **Experiments without outcomes** - Critical for future recommendations
+1. **Experiments without outcomes** - Critical for future recommendations (started but no "ended" event)
 2. **Medications/supplements needing efficacy feedback** - Affects what to continue
 3. **Symptoms with unclear resolution** - Determines if still a concern
 4. **Conditions that could flare** - Only if medically plausible
@@ -47,7 +54,7 @@ You are generating status update questions for a patient's health tracking syste
 
 1. **Maximum 10-15 questions** - Focus on highest value items
 2. **Only include sections with items** - Skip empty sections entirely
-3. **Use exact names from input** - Don't paraphrase
+3. **Use exact names from timeline** - Don't paraphrase
 4. **No duplicates** - Each item appears exactly once
 5. **Prioritize by value** - Experiments first, then medications/supplements, then symptoms
 6. **If nothing needs follow-up** - Output only: "No items require status updates at this time."
@@ -58,7 +65,7 @@ You are generating status update questions for a patient's health tracking syste
 - Items older than ~1 year (if not mentioned again, they resolved)
 - Self-resolving conditions past their resolution period (flu, cold, headache from months ago)
 - Permanent/structural conditions (scoliosis, congenital issues, anatomical variants)
-- Items explicitly marked as "resolved" or "inactive"
+- Items with "resolved" or "stopped" as their most recent event
 - Vague or generic entries ("symptoms", "condition", "all symptoms")
 
 **Be ruthlessly selective. Only 10-15 questions maximum. Focus on what actually matters.**

@@ -28,9 +28,9 @@ This document describes the data processing pipeline used by health-log-parser t
        |             |      Raw -> LLM Process -> LLM Validate    |-----> entries/*.processed.md
        |             |      (retry up to 3x if validation fails)  |-----> entries/*.raw.md
        |             |                                            |-----> entries/*.labs.md
-       |             |   5. BUILD STATE MODEL                     |
-       |             |      Entity extraction (cached per-entry)  |-----> state_model.json
-       |             |      Aggregate + compute trends/staleness  |-----> entries/*.entities.json
+       |             |   5. BUILD HEALTH TIMELINE                 |
+       |             |      Chronological CSV with episode IDs    |-----> health_timeline.csv
+       |             |      Incremental processing (oldest→newest)|
        |             |                                            |
        |             |   6. GENERATE REPORTS                      |
        |             |      Summary, Questions, Next Steps, etc.  |-----> reports/*.md
@@ -122,52 +122,76 @@ This document describes the data processing pipeline used by health-log-parser t
 
 ---
 
-### Step 5: State Model Building
+### Step 5: Health Timeline Building
 
-**What it does:** Extracts structured entities (conditions, medications, symptoms, etc.) from all processed sections, aggregates them, and adds recency metadata.
+**What it does:** Builds a chronological CSV timeline from all processed sections. Each row represents a health event with episode IDs linking related events across time.
 
 **Key files/APIs:**
-- `main.py:_build_state_model()` - Orchestration
-- `main.py:_aggregate_entities()` - Merge entities across dates
-- `main.py:_add_recency()` - Add days_since_mention to all items
-- `prompts/extract_entities.system_prompt.md` - Entity extraction prompt
+- `main.py:_build_health_timeline()` - Orchestration with incremental logic
+- `main.py:_get_chronological_entries()` - Get entries sorted oldest→newest
+- `main.py:_parse_timeline_header()` - Extract processed_through, hash, last episode
+- `main.py:_process_timeline_batch()` - Call LLM to generate new CSV rows
+- `prompts/update_timeline.system_prompt.md` - Timeline building prompt
 
-**Input:** All `entries/*.processed.md` files
-**Output:**
-- `state_model.json` - Aggregated entities with recency metadata
-- `entries/<date>.entities.json` - Per-entry cached extractions
+**Input:** All `entries/*.processed.md` files (sorted chronologically)
+**Output:** `health_timeline.csv` - CSV timeline with metadata header
 
-**Behavior notes:**
-- Per-entry caching avoids re-extracting unchanged entries
-- Logs show "Entity extraction: X cached, Y extracted" for cache performance
-- `days_since_mention` is computed for all items (pure math, no hardcoded thresholds)
-- LLM uses its medical knowledge to judge relevance based on recency
-- Design principle: Defer medical knowledge to the LLM rather than encoding rules in Python
+**CSV Format:**
+```csv
+Date,EpisodeID,Item,Category,Event,Details
+2024-01-15,ep-001,Vitamin D 2000IU,supplement,started,"Optimization, daily"
+2024-03-10,ep-002,Gastritis,condition,flare,Stress-triggered
+2024-03-12,ep-003,Pantoprazole 20mg,medication,started,"For ep-002, PRN"
+```
+
+**Categories & Events:**
+| Category | Events |
+|----------|--------|
+| condition | diagnosed, suspected, flare, improved, worsened, resolved, stable |
+| symptom | noted, improved, worsened, resolved, stable |
+| medication | started, adjusted, stopped |
+| supplement | started, adjusted, stopped |
+| experiment | started, update, ended |
+| provider | visit |
+| watch | noted, resolved |
+| todo | added, completed |
+
+**Episode ID Semantics:**
+- New condition/symptom → new EpisodeID (ep-001, ep-002, ...)
+- Follow-up events for same episode → reuse EpisodeID
+- Medication/supplement for a condition → new EpisodeID, Details references what it treats ("For ep-002")
+- Experiments → new EpisodeID, updates use same ID
+
+**Incremental Processing:**
+- Timeline header stores: `processed_through` date, `entries_hash`, `last_episode_id`
+- If hash matches and new entries exist → process only new entries (append)
+- If hash differs (old entry changed) → full reprocess from scratch
+- If no new entries and hash matches → cache hit, skip processing
+
+**Design Principle:** Trust the LLM for medical reasoning rather than encoding rules in Python. The timeline captures events; downstream prompts interpret significance.
 
 ---
 
 ### Step 6: Report Generation
 
-**What it does:** Generates various reports using the state model and processed entries as input.
+**What it does:** Generates various reports using the health timeline and processed entries as input.
 
 **Key files/APIs:**
 - `main.py:_generate_file()` - Generic report generation with caching
 - `main.py:_generate_action_plan()` - Synthesize action plan
-- `main.py:_generate_dashboard()` - Create dashboard view
 - `main.py:_assemble_output()` - Combine summary + entries
 - `main.py:_assemble_final_output()` - Combine all reports
 
-**Input:** `state_model.json`, processed entries, intro.md
+**Input:** `health_timeline.csv`, processed entries, intro.md
 **Output (in `reports/` directory):**
 
 | Report | Description | Input |
 |--------|-------------|-------|
 | `summary.md` | Clinical overview | Processed entries + intro |
-| `targeted_clarifying_questions.md` | Questions about stale items | Filtered stale items from state model |
-| `next_steps.md` | Comprehensive recommendations | State model markdown |
-| `experiments.md` | N=1 experiment tracker | State model markdown |
+| `targeted_clarifying_questions.md` | Questions about stale items | Health timeline CSV |
+| `next_steps.md` | Comprehensive recommendations | Health timeline CSV |
+| `experiments.md` | N=1 experiment tracker | Health timeline CSV |
 | `action_plan.md` | Prioritized action items | Summary + next_steps + experiments |
-| `dashboard.md` | Quick stats and links | State model |
 | `output.md` | Full compiled report | All above + entries |
 
 **Behavior notes:**
@@ -211,22 +235,17 @@ This document describes the data processing pipeline used by health-log-parser t
   <date>.raw.md   <date>.processed.md  <date>.labs.md
                          |
                          v
-                 +---------------+
-                 |    EXTRACT    |  (parallel, cached per-entry)
-                 |   ENTITIES    |
-                 +---------------+
+               +------------------+
+               |  BUILD TIMELINE  |  (batched, chronological)
+               |                  |
+               |  entries sorted  |
+               |  oldest→newest   |
+               |  -> LLM appends  |
+               |     CSV rows     |
+               +------------------+
                          |
                          v
-               <date>.entities.json
-                         |
-                         v
-                 +---------------+
-                 |   AGGREGATE   |
-                 |   + RECENCY   |
-                 +---------------+
-                         |
-                         v
-                  state_model.json
+               health_timeline.csv
                          |
          +---------------+---------------+
          |               |               |
@@ -236,9 +255,9 @@ This document describes the data processing pipeline used by health-log-parser t
    +-----------+   +-----------+   +-----------+
          |               |               |
          +-------+-------+-------+-------+
-                 |               |
-                 v               v
-           action_plan.md    dashboard.md
+                 |
+                 v
+           action_plan.md
                  |
                  v
             output.md (final assembled report)
@@ -255,11 +274,11 @@ This document describes the data processing pipeline used by health-log-parser t
 | `prompts/validate.system_prompt.md` | Validates processed output (checks for `$OK$`) |
 | `prompts/validate.user_prompt.md` | User prompt template for validation |
 | `prompts/summary.system_prompt.md` | Generates patient clinical summary |
+| `prompts/update_timeline.system_prompt.md` | Builds chronological CSV timeline with episode IDs |
 | `prompts/targeted_questions.system_prompt.md` | Generates questions about stale items |
 | `prompts/next_steps_unified.system_prompt.md` | "Genius doctor" comprehensive recommendations |
 | `prompts/action_plan.system_prompt.md` | Time-bucketed prioritized actions |
 | `prompts/experiments.system_prompt.md` | N=1 experiment tracking |
-| `prompts/extract_entities.system_prompt.md` | JSON entity extraction for state model |
 | `prompts/merge_bullets.system_prompt.md` | Merges multiple LLM outputs |
 | `prompts/standard_treatments.yaml` | Treatments excluded from experiment tracking |
 
@@ -276,6 +295,7 @@ This document describes the data processing pipeline used by health-log-parser t
 | `SUMMARY_MODEL_ID` | No | `MODEL_ID` | Model for generating summary |
 | `QUESTIONS_MODEL_ID` | No | `MODEL_ID` | Model for generating questions |
 | `NEXT_STEPS_MODEL_ID` | No | `MODEL_ID` | Model for generating recommendations |
+| `STATUS_MODEL_ID` | No | `anthropic/claude-opus-4.5` | Model for building health timeline |
 | `LABS_PARSER_OUTPUT_PATH` | No | - | Path to aggregated lab CSVs |
 | `REPORT_OUTPUT_PATH` | No | - | Copy final report to this path |
 | `MAX_WORKERS` | No | `4` | Parallel processing threads |
@@ -294,8 +314,13 @@ All generated files use hash-based dependency tracking stored in the first line:
 
 **Cache dependencies by file type:**
 - `.processed.md`: `raw` (section content), `labs`, `process_prompt`, `validate_prompt`
-- `.entities.json`: `processed` (content hash), `prompt` (extraction prompt hash)
-- Reports: `processed` (all sections), `intro`, `prompt` (specific prompt hash)
+- `health_timeline.csv`: `entries_hash` (hash of all processed entries up to processed_through date)
+- Reports: `timeline` (health_timeline.csv hash), `prompt` (specific prompt hash)
+
+**Timeline incremental processing:**
+- Header stores: `processed_through` date, `entries_hash`, `last_episode_id`
+- If historical entries unchanged and new entries exist → append new rows only
+- If historical entry changed → full reprocess from scratch
 
 ### Reprocessing Logic
 
@@ -307,7 +332,7 @@ Files are regenerated when:
 ### Parallel Processing
 
 - Section processing uses `ThreadPoolExecutor` with configurable `MAX_WORKERS`
-- Entity extraction runs in parallel with per-entry caching
+- Timeline building processes entries in batches (chronological order)
 - Reports generate sequentially (dependencies between them)
 
 ### Error Handling
