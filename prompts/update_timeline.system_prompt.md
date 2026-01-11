@@ -163,18 +163,21 @@ Date,EpisodeID,Item,Category,Event,Details
 When a journal entry describes the patient's **complete current stack** of supplements or medications (e.g., "I am currently not taking any supplements except X, Y, Z" or "My current stack is only X and Y" or "I stopped all supplements"), you MUST:
 
 1. **Identify all active supplements/medications** in the existing timeline (items with "started" but no subsequent "stopped" event)
-2. **Compare against the stated current stack**
-3. **Add "stopped" events** for EVERY active item that is NOT mentioned in the current stack
+2. **Identify all active experiments** related to supplements/medications (items with "started" but no subsequent "ended" event)
+3. **Compare against the stated current stack**
+4. **Add "stopped" events** for EVERY active supplement/medication that is NOT mentioned in the current stack
+5. **Add "ended" events** for EVERY active experiment involving supplements/medications NOT in the current stack
 
-**This is mandatory.** A comprehensive stack update is an implicit "stopped" for everything not mentioned.
+**This is mandatory.** A comprehensive stack update is an implicit "stopped"/"ended" for everything not mentioned.
 
 ### Example of Comprehensive Stack Update
 
-**Existing timeline has these active supplements (started, never stopped):**
-- Vitamin D 5000IU (ep-010)
-- Omega-3 2000mg (ep-015)
-- Creatine 1g (ep-020)
-- 5-HTP 50mg (ep-025)
+**Existing timeline has these active items (started, never stopped/ended):**
+- Vitamin D 5000IU (ep-010) - supplement
+- Omega-3 2000mg (ep-015) - supplement
+- Creatine 1g (ep-020) - supplement
+- 5-HTP 50mg (ep-025) - supplement
+- Taurine 500mg (ep-028) - experiment (testing for relaxation)
 
 **New entry says:**
 ```
@@ -182,12 +185,13 @@ When a journal entry describes the patient's **complete current stack** of suppl
 - Current stack update: I am not taking any daily supplements. I only take NAC 600mg occasionally when feeling down, and Psyllium 5g daily for regularity.
 ```
 
-**Your output MUST include stopped events for everything not in current stack:**
+**Your output MUST include stopped/ended events for everything not in current stack:**
 ```csv
 2024-06-01,ep-010,Vitamin D 5000IU,supplement,stopped,Not in current stack per comprehensive update
 2024-06-01,ep-015,Omega-3 2000mg,supplement,stopped,Not in current stack per comprehensive update
 2024-06-01,ep-020,Creatine 1g,supplement,stopped,Not in current stack per comprehensive update
 2024-06-01,ep-025,5-HTP 50mg,supplement,stopped,Not in current stack per comprehensive update
+2024-06-01,ep-028,Taurine 500mg,experiment,ended,Not in current stack per comprehensive update
 2024-06-01,ep-030,NAC 600mg PRN,supplement,started,"Occasional use when feeling down"
 2024-06-01,ep-031,Psyllium 5g,supplement,started,Daily for regularity
 ```

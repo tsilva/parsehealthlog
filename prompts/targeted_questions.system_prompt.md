@@ -13,6 +13,8 @@ You are generating status update questions for a patient's health tracking syste
 - Only supplements/medications explicitly mentioned in that update (or started after it) are active
 - Do NOT ask about supplements that were "started" years ago if they're not in the recent stack
 - Treat anything not mentioned in the stack update as implicitly stopped
+- **Do NOT ask about items that ARE in the stack update** - if the patient just confirmed they're taking Psyllium, don't ask "still taking Psyllium?" - that's redundant
+- **Experiments involving supplements not in the stack are implicitly ended** - don't ask about Taurine experiment if Taurine isn't in the current stack
 
 ## Determining Current State (after checking stack updates)
 
@@ -108,11 +110,13 @@ You MUST output no more than 15 questions total. If you identify more candidates
 - **watch category items** - Lab abnormalities require lab tests, not patient questions
 - **provider category items** - Historical visits
 - **todo category items** - Action items
-- **Supplements/medications covered by a recent stack update** - If the patient recently (within 30 days) provided a comprehensive update about their current stack, do NOT ask about supplements from that update OR old supplements not mentioned (they've implicitly stopped)
-- Items mentioned very recently (within a few weeks)
+- **Items explicitly mentioned in a recent stack update** - If the patient just said "I take Psyllium daily", do NOT ask "still taking Psyllium?" - they just told you!
+- **Old supplements/medications not in the recent stack** - If a recent stack update doesn't mention an old supplement, it's implicitly stopped - don't ask about it
+- **Experiments involving supplements not in the current stack** - If Taurine isn't in the stack, the Taurine experiment is implicitly ended
+- **Items with "ended" or "stopped" events** - Already closed, no need to ask
+- Items mentioned very recently (within a few weeks) for symptoms/conditions
 - Acute self-limiting conditions past their expected resolution (flu, cold, gastroenteritis, minor injuries)
 - Permanent/structural conditions (scoliosis, congenital issues, anatomical variants)
-- Items with "resolved" or "stopped" as their most recent event
 - Vague or generic entries ("symptoms", "condition", "all symptoms")
 - Ancient items (>2 years) unless they are chronic conditions that can flare
 
