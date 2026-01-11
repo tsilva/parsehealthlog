@@ -301,6 +301,7 @@ class HealthLogProcessor:
             "summary": config.summary_model_id,
             "questions": config.questions_model_id,
             "next_steps": config.next_steps_model_id,
+            "status": config.status_model_id,
         }
         self.llm = {k: LLM(self.client, v) for k, v in self.models.items()}
 
@@ -329,7 +330,7 @@ class HealthLogProcessor:
             "merge_bullets.system_prompt",
             "action_plan.system_prompt",
             "experiments.system_prompt",
-            "extract_entities.system_prompt",
+            "update_timeline.system_prompt",
         ]
 
         missing = [p for p in required_prompts if not (PROMPTS_DIR / f"{p}.md").exists()]
@@ -502,39 +503,37 @@ class HealthLogProcessor:
         # Note: final_markdown is used as input for generating other reports
         # but output.md will be assembled at the end with additional sections
 
-        # Build state model FIRST (entity extraction + aggregation + trend analysis)
-        # This is used as input for next_steps, next_labs, experiments
-        state = self._build_state_model()
-        state_markdown = self._state_model_to_markdown(state)
+        # Build health timeline (replaces entity extraction + aggregation)
+        # This is used as input for next_steps, experiments, targeted questions
+        timeline_csv = self._build_health_timeline()
 
         # Targeted clarifying questions - LLM judges what needs follow-up
-        # Send full state model; LLM uses medical judgment to decide what's worth asking about
-        state_json = json.dumps(state, indent=2, ensure_ascii=False, default=str)
+        # Send timeline CSV; LLM derives current state and identifies items needing follow-up
         self._generate_file(
             "targeted_clarifying_questions.md",
             "targeted_questions.system_prompt",
             role="questions",
             temperature=0.0,  # Deterministic output to avoid duplicates
-            extra_messages=[{"role": "user", "content": state_json}],
+            extra_messages=[{"role": "user", "content": timeline_csv}],
             description="targeted clarifying questions",
-            dependencies=self._get_state_model_deps("targeted_questions.system_prompt"),
+            dependencies=self._get_timeline_deps("targeted_questions.system_prompt"),
             hidden=True,
         )
 
-        # Unified next steps (genius doctor prompt - uses state model for focused input)
+        # Unified next steps (genius doctor prompt - uses timeline for focused input)
         # This includes lab recommendations in the "Labs & Testing" section
         self._generate_file(
             "next_steps.md",
             "next_steps_unified.system_prompt",
             role="next_steps",
             temperature=0.25,
-            extra_messages=[{"role": "user", "content": state_markdown}],
+            extra_messages=[{"role": "user", "content": timeline_csv}],
             description="unified next steps",
-            dependencies=self._get_state_model_deps("next_steps_unified.system_prompt"),
+            dependencies=self._get_timeline_deps("next_steps_unified.system_prompt"),
             hidden=True,
         )
 
-        # Experiments tracker (uses state model for experiment context)
+        # Experiments tracker (uses timeline for experiment context)
         today = datetime.now().strftime("%Y-%m-%d")
         experiments_prompt = self._prompt("experiments.system_prompt").format(today=today)
         self._generate_file(
@@ -542,10 +541,10 @@ class HealthLogProcessor:
             experiments_prompt,
             role="next_steps",
             temperature=0.25,
-            extra_messages=[{"role": "user", "content": state_markdown}],
+            extra_messages=[{"role": "user", "content": timeline_csv}],
             description="experiments tracker",
             dependencies={
-                "state_model": self._get_state_model_deps("experiments.system_prompt")["state_model"],
+                "timeline": self._get_timeline_deps("experiments.system_prompt")["timeline"],
                 "prompt": hash_content(experiments_prompt),
             },
             hidden=True,
@@ -676,15 +675,15 @@ class HealthLogProcessor:
             "prompt": self._hash_prompt(prompt_name),
         }
 
-    def _get_state_model_deps(self, prompt_name: str) -> dict[str, str]:
-        """Get dependencies for reports that use state model.
+    def _get_timeline_deps(self, prompt_name: str) -> dict[str, str]:
+        """Get dependencies for reports that use health timeline.
 
-        Used by: next_steps_unified, next_labs, experiments
+        Used by: next_steps_unified, experiments, targeted_questions
         """
-        state_path = self.OUTPUT_PATH / "state_model.json"
-        state_hash = hash_file(state_path) if state_path.exists() else "missing"
+        timeline_path = self.OUTPUT_PATH / "health_timeline.csv"
+        timeline_hash = hash_file(timeline_path) if timeline_path.exists() else "missing"
         return {
-            "state_model": state_hash,
+            "timeline": timeline_hash,
             "prompt": self._hash_prompt(prompt_name),
         }
 
@@ -847,427 +846,258 @@ class HealthLogProcessor:
         )
 
     # --------------------------------------------------------------
-    # State model building (entity extraction + aggregation)
+    # Health Timeline building (replaces entity extraction + aggregation)
     # --------------------------------------------------------------
 
-    def _state_model_to_markdown(self, state: dict) -> str:
-        """Convert state model to structured markdown for report generation."""
-        sections = []
+    def _build_health_timeline(self) -> str:
+        """Build health timeline CSV from processed entries.
 
-        # Current conditions - include last_updated, days_since_mention, and condition_type for recency/classification
-        conditions = state.get("conditions", {})
-        active = [(name, data) for name, data in conditions.items()
-                  if data.get("status") in ("active", "suspected")]
-        if active:
-            cond_lines = []
-            for name, data in sorted(active, key=lambda x: x[1].get("first_noted", "")):
-                status = data['status']
-                cond_type = data.get('condition_type', 'unknown')
-                last_updated = data.get('last_updated', 'unknown')
-                days_since = data.get('days_since_mention')
+        Processes entries chronologically (oldest first), building a CSV timeline
+        with episode IDs linking related events. Supports incremental updates.
 
-                line = f"- **{name}** ({status}, type: {cond_type}, last_updated: {last_updated}"
-                if days_since is not None:
-                    line += f", {days_since} days ago"
-                line += ")"
-                cond_lines.append(line)
-            sections.append("## Active Conditions\n" + "\n".join(cond_lines))
-
-        # Current medications
-        meds = state.get("medications", {}).get("current", {})
-        if meds:
-            med_lines = [f"- **{name}**: {data.get('dose', 'unknown dose')} ({data.get('frequency', '')})"
-                        for name, data in meds.items()]
-            sections.append("## Current Medications\n" + "\n".join(med_lines))
-
-        # Current supplements
-        supps = state.get("supplements", {}).get("current", {})
-        if supps:
-            supp_lines = [f"- **{name}**: {data.get('dose', '')}" for name, data in supps.items()]
-            sections.append("## Current Supplements\n" + "\n".join(supp_lines))
-
-        # Symptoms - show observations with recency (LLM will judge trends)
-        symptoms = state.get("symptoms", {})
-        if symptoms:
-            symptom_lines = []
-            for name, data in symptoms.items():
-                last_noted = data.get("last_noted", "unknown")
-                days_since = data.get("days_since_mention")
-                obs = data.get("observations", [])
-                # Get latest observation for severity/trend
-                latest_obs = obs[-1] if obs else {}
-                severity = latest_obs.get("severity", "")
-                trend = latest_obs.get("trend", "")
-
-                line = f"- **{name}**"
-                if severity:
-                    line += f" (severity: {severity})"
-                if trend:
-                    line += f" [{trend}]"
-                line += f", last_noted: {last_noted}"
-                if days_since is not None:
-                    line += f" ({days_since} days ago)"
-                symptom_lines.append(line)
-            sections.append("## Symptoms\n" + "\n".join(symptom_lines))
-
-        # Active experiments
-        experiments = state.get("experiments", {}).get("active", {})
-        if experiments:
-            exp_lines = []
-            for name, data in experiments.items():
-                start = data.get("started", "unknown")
-                exp_lines.append(f"- **{name}**: started {start}")
-                if data.get("updates"):
-                    for update in data["updates"][-3:]:  # Last 3 updates
-                        exp_lines.append(f"  - {update.get('date', '?')}: {update.get('details', '')}")
-            sections.append("## Active Experiments\n" + "\n".join(exp_lines))
-
-        # Providers
-        providers = state.get("providers", {})
-        if providers:
-            prov_lines = []
-            for name, data in providers.items():
-                specialty = data.get("specialty", "unknown")
-                visits = data.get("visits", [])
-                last_visit = visits[-1].get("date", "unknown") if visits else "unknown"
-                prov_lines.append(f"- **{name}** ({specialty}) - last visit: {last_visit}")
-            sections.append("## Providers\n" + "\n".join(prov_lines))
-
-        # Todos
-        todos = state.get("todos", [])
-        if todos:
-            todo_lines = [f"- [ ] {item}" for item in todos[:20]]  # Limit to 20
-            sections.append("## Open Items\n" + "\n".join(todo_lines))
-
-        return "\n\n".join(sections)
-
-    def _build_state_model(self) -> dict:
-        """Build comprehensive state model from all processed sections.
-
-        Extracts entities from each section (with per-entry caching), merges them
-        into a single state, and computes trends for labs and symptoms.
-
-        Per-entry caching: Each entry's entities are cached in <date>.entities.json.
-        Only entries whose processed content or prompt changed get re-extracted.
-
-        Returns the state dict and saves it to state_model.json.
+        Returns the timeline CSV content.
         """
-        self.logger.info("Building state model from processed sections...")
+        self.logger.info("Building health timeline from processed entries...")
 
-        # Get all processed sections
-        processed_files = sorted(self.entries_dir.glob("*.processed.md"))
-        if not processed_files:
-            self.logger.warning("No processed sections found for state model")
-            return {}
+        timeline_path = self.OUTPUT_PATH / "health_timeline.csv"
 
-        # Check if state model is up-to-date (fast path)
-        state_model_path = self.OUTPUT_PATH / "state_model.json"
-        processed_hash = self._hash_all_processed()
-        prompt_hash = self._hash_prompt("extract_entities.system_prompt")
-        state_deps = {
-            "processed": processed_hash,
-            "prompt": prompt_hash,
-        }
+        # Get all processed entries sorted chronologically (oldest first)
+        entries = self._get_chronological_entries()
+        if not entries:
+            self.logger.warning("No processed entries found for timeline")
+            return self._get_empty_timeline()
 
-        if state_model_path.exists():
-            try:
-                existing_state = json.loads(state_model_path.read_text(encoding="utf-8"))
-                if existing_state.get("_deps", {}) == state_deps:
-                    self.logger.info("State model is up-to-date")
-                    return existing_state
-            except (json.JSONDecodeError, IOError):
-                pass  # Regenerate
+        # Parse existing timeline header if it exists
+        processed_through, existing_hash, last_episode_num = self._parse_timeline_header(timeline_path)
 
-        # Extract entities from each section (with per-entry caching)
-        entity_prompt = self._prompt("extract_entities.system_prompt")
-        all_entities: list[dict] = []
-        cache_hits = 0
-        cache_misses = 0
+        # Split entries into historical and new
+        historical_entries = [(d, c) for d, c in entries if d <= processed_through] if processed_through else []
+        new_entries = [(d, c) for d, c in entries if d > processed_through] if processed_through else entries
 
-        with tqdm(total=len(processed_files), desc="Extracting entities") as bar:
-            for path in processed_files:
-                date = path.stem.split(".")[0]
-                entities_path = self.entries_dir / f"{date}.entities.json"
-                content = self._read_without_deps_comment(path)
-                content_hash = hash_content(content)
+        # Compute hash of historical entries
+        historical_hash = hash_content("".join(c for _, c in historical_entries)) if historical_entries else ""
 
-                # Per-entry dependency check
-                entry_deps = {"processed": content_hash, "prompt": prompt_hash}
+        # Determine processing mode
+        if processed_through and historical_hash == existing_hash and not new_entries:
+            # Cache hit - timeline is up-to-date
+            self.logger.info("Health timeline is up-to-date (processed through %s)", processed_through)
+            return self._read_timeline_content(timeline_path)
 
-                # Try to load cached entities
-                if entities_path.exists():
-                    try:
-                        cached = json.loads(entities_path.read_text(encoding="utf-8"))
-                        if cached.get("_deps") == entry_deps:
-                            # Cache hit - use cached entities
-                            entities = cached.get("entities", {})
-                            entities["date"] = date
-                            all_entities.append(entities)
-                            cache_hits += 1
-                            bar.update(1)
-                            continue
-                    except (json.JSONDecodeError, IOError):
-                        pass  # Re-extract
+        if processed_through and historical_hash == existing_hash and new_entries:
+            # Incremental mode - only process new entries
+            self.logger.info(
+                "Incremental timeline update: %d new entries after %s",
+                len(new_entries), processed_through
+            )
+            existing_content = self._read_timeline_content(timeline_path)
+            new_rows = self._process_timeline_batch(
+                existing_content, new_entries, last_episode_num + 1
+            )
+            # Append new rows
+            if new_rows.strip():
+                updated_content = existing_content.rstrip() + "\n" + new_rows
+            else:
+                updated_content = existing_content
+            # Update header and save
+            new_last_date = new_entries[-1][0]
+            new_hash = hash_content("".join(c for _, c in entries))
+            new_last_ep = self._get_last_episode_num(updated_content)
+            self._save_timeline(timeline_path, updated_content, new_last_date, new_hash, new_last_ep)
+            return updated_content
 
-                # Cache miss - extract entities via LLM
-                cache_misses += 1
-                try:
-                    response = self.llm["process"](
-                        [
-                            {"role": "system", "content": entity_prompt},
-                            {"role": "user", "content": content},
-                        ],
-                        temperature=0.0,
-                        max_tokens=8192,  # Lab-heavy entries need more tokens
-                    )
+        # Full reprocess - historical entry changed or first run
+        self.logger.info("Full timeline rebuild: processing %d entries", len(entries))
+        timeline_content = self._get_empty_timeline()
 
-                    # Parse JSON response
-                    entities = self._parse_json_response(response)
-                    entities["date"] = date
+        # Process in batches to stay within context limits
+        next_episode_num = 1
+        batch_start = 0
+        while batch_start < len(entries):
+            batch_size = self._calculate_batch_size(entries[batch_start:], len(timeline_content))
+            batch = entries[batch_start:batch_start + batch_size]
 
-                    # Save to per-entry cache
-                    cache_data = {"_deps": entry_deps, "entities": entities}
-                    entities_path.write_text(
-                        json.dumps(cache_data, indent=2, ensure_ascii=False),
-                        encoding="utf-8",
-                    )
+            new_rows = self._process_timeline_batch(
+                timeline_content, batch, next_episode_num
+            )
 
-                    all_entities.append(entities)
-                except (json.JSONDecodeError, Exception) as e:
-                    # Log actual response for debugging (truncated)
-                    response_preview = response[:200] if response else "(empty)"
-                    self.logger.warning(
-                        "Failed to extract entities from %s: %s. Response preview: %s",
-                        date, e, response_preview
-                    )
+            if new_rows.strip():
+                timeline_content = timeline_content.rstrip() + "\n" + new_rows
+                next_episode_num = self._get_last_episode_num(timeline_content) + 1
 
-                bar.update(1)
+            batch_start += batch_size
+            self.logger.info(
+                "Processed batch: %d entries through %s (%d remaining)",
+                len(batch), batch[-1][0], len(entries) - batch_start
+            )
 
-        self.logger.info(
-            "Entity extraction: %d cached, %d extracted", cache_hits, cache_misses
-        )
+        # Save with header
+        last_date = entries[-1][0]
+        full_hash = hash_content("".join(c for _, c in entries))
+        last_ep = self._get_last_episode_num(timeline_content)
+        self._save_timeline(timeline_path, timeline_content, last_date, full_hash, last_ep)
 
-        # Aggregate entities into state model
-        state = self._aggregate_entities(all_entities)
+        return timeline_content
 
-        # Add recency metadata for all items (LLM will judge relevance)
+    def _get_chronological_entries(self) -> list[tuple[str, str]]:
+        """Get all processed entries sorted chronologically (oldest first).
+
+        Returns:
+            List of (date, content) tuples, sorted by date ascending.
+        """
+        entries = []
+        for path in self.entries_dir.glob("*.processed.md"):
+            date = path.stem.split(".")[0]
+            content = self._read_without_deps_comment(path)
+            entries.append((date, content))
+        return sorted(entries, key=lambda x: x[0])  # Oldest first
+
+    def _get_empty_timeline(self) -> str:
+        """Return empty timeline with just the CSV header."""
+        return "Date,EpisodeID,Item,Category,Event,Details"
+
+    def _parse_timeline_header(self, path: Path) -> tuple[str | None, str | None, int]:
+        """Parse timeline header to get processed_through, hash, and last episode ID.
+
+        Returns:
+            (processed_through_date, entries_hash, last_episode_num)
+        """
+        if not path.exists():
+            return None, None, 0
+
+        try:
+            first_line = path.read_text(encoding="utf-8").split("\n")[0]
+            # Expected format: # Last updated: YYYY-MM-DD | Processed through: YYYY-MM-DD | Hash: xxx | LastEp: N
+            match = re.match(
+                r"#\s*Last updated:.*\|\s*Processed through:\s*(\d{4}-\d{2}-\d{2})\s*\|\s*Hash:\s*(\w+)\s*\|\s*LastEp:\s*(\d+)",
+                first_line
+            )
+            if match:
+                return match.group(1), match.group(2), int(match.group(3))
+        except (IOError, IndexError):
+            pass
+        return None, None, 0
+
+    def _read_timeline_content(self, path: Path) -> str:
+        """Read timeline content, skipping the header comment line."""
+        lines = path.read_text(encoding="utf-8").split("\n")
+        # Skip header comment if present
+        if lines and lines[0].startswith("#"):
+            return "\n".join(lines[1:])
+        return "\n".join(lines)
+
+    def _save_timeline(self, path: Path, content: str, processed_through: str, entries_hash: str, last_ep: int) -> None:
+        """Save timeline with metadata header."""
         today = datetime.now().strftime("%Y-%m-%d")
-        self._add_recency(state, today)
+        header = f"# Last updated: {today} | Processed through: {processed_through} | Hash: {entries_hash} | LastEp: {last_ep}"
+        path.write_text(f"{header}\n{content}", encoding="utf-8")
+        self.logger.info("Saved health timeline to %s", path)
 
-        # Add metadata
-        state["_deps"] = state_deps
-        state["_generated_at"] = datetime.now().isoformat()
-        state["_entries_count"] = len(processed_files)
+    def _get_last_episode_num(self, timeline_content: str) -> int:
+        """Extract the highest episode number from timeline content."""
+        matches = re.findall(r"ep-(\d+)", timeline_content)
+        if matches:
+            return max(int(m) for m in matches)
+        return 0
 
-        # Save state model
-        state_model_path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
-        self.logger.info("Saved state model to %s", state_model_path)
-
-        return state
-
-    def _aggregate_entities(self, all_entities: list[dict]) -> dict:
-        """Aggregate entities from all sections into unified state."""
-        state = {
-            "conditions": {},
-            "medications": {"current": {}, "past": {}},
-            "supplements": {"current": {}, "past": {}},
-            "symptoms": {},
-            "providers": {},
-            "experiments": {"active": {}, "completed": {}},
-            "todos": [],
-        }
-
-        for entry in sorted(all_entities, key=lambda x: x.get("date", "")):
-            date = entry.get("date", "")
-
-            # Conditions
-            for cond in entry.get("conditions", []):
-                name = cond.get("name", "").lower()
-                if not name:
-                    continue
-                if name not in state["conditions"]:
-                    state["conditions"][name] = {
-                        "name": name,
-                        "status": cond.get("status", "active"),
-                        "condition_type": cond.get("condition_type"),
-                        "first_noted": date,
-                        "last_updated": date,
-                        "history": [],
-                    }
-                state["conditions"][name]["last_updated"] = date
-                state["conditions"][name]["status"] = cond.get("status", state["conditions"][name]["status"])
-                # Update condition_type if newer extraction provides it
-                if cond.get("condition_type"):
-                    state["conditions"][name]["condition_type"] = cond.get("condition_type")
-                state["conditions"][name]["history"].append({
-                    "date": date,
-                    "event": cond.get("event"),
-                    "details": cond.get("details"),
-                })
-
-            # Medications
-            for med in entry.get("medications", []):
-                name = med.get("name", "")
-                if not name:
-                    continue
-                event = med.get("event", "mentioned")
-                med_entry = {
-                    "name": name,
-                    "dose": med.get("dose"),
-                    "frequency": med.get("frequency"),
-                    "started": date if event == "started" else None,
-                    "stopped": date if event == "stopped" else None,
-                    "last_mentioned": date,
-                }
-                if event == "stopped":
-                    state["medications"]["past"][name] = med_entry
-                    state["medications"]["current"].pop(name, None)
-                elif event in ("started", "continued", "mentioned", "adjusted"):
-                    if name not in state["medications"]["current"]:
-                        state["medications"]["current"][name] = med_entry
-                    else:
-                        state["medications"]["current"][name]["last_mentioned"] = date
-                        if med.get("dose"):
-                            state["medications"]["current"][name]["dose"] = med.get("dose")
-
-            # Supplements (same logic as medications)
-            for supp in entry.get("supplements", []):
-                name = supp.get("name", "")
-                if not name:
-                    continue
-                event = supp.get("event", "mentioned")
-                supp_entry = {
-                    "name": name,
-                    "dose": supp.get("dose"),
-                    "frequency": supp.get("frequency"),
-                    "started": date if event == "started" else None,
-                    "stopped": date if event == "stopped" else None,
-                    "last_mentioned": date,
-                }
-                if event == "stopped":
-                    state["supplements"]["past"][name] = supp_entry
-                    state["supplements"]["current"].pop(name, None)
-                elif event in ("started", "continued", "mentioned", "adjusted"):
-                    if name not in state["supplements"]["current"]:
-                        state["supplements"]["current"][name] = supp_entry
-                    else:
-                        state["supplements"]["current"][name]["last_mentioned"] = date
-                        if supp.get("dose"):
-                            state["supplements"]["current"][name]["dose"] = supp.get("dose")
-
-            # Symptoms
-            for sym in entry.get("symptoms", []):
-                name = sym.get("name", "").lower()
-                if not name:
-                    continue
-                if name not in state["symptoms"]:
-                    state["symptoms"][name] = {
-                        "name": name,
-                        "first_noted": date,
-                        "last_noted": date,
-                        "observations": [],
-                    }
-                state["symptoms"][name]["last_noted"] = date
-                state["symptoms"][name]["observations"].append({
-                    "date": date,
-                    "severity": sym.get("severity"),
-                    "trend": sym.get("trend"),
-                    "details": sym.get("details"),
-                })
-
-            # Providers
-            for prov in entry.get("providers", []):
-                name = prov.get("name", "")
-                if not name:
-                    continue
-                if name not in state["providers"]:
-                    state["providers"][name] = {
-                        "name": name,
-                        "specialty": prov.get("specialty"),
-                        "location": prov.get("location"),
-                        "visits": [],
-                    }
-                state["providers"][name]["visits"].append({
-                    "date": date,
-                    "type": prov.get("visit_type"),
-                    "notes": prov.get("notes"),
-                })
-
-            # Experiments (LLM judges what's an experiment vs standard treatment)
-            for exp in entry.get("experiments", []):
-                name = exp.get("name", "")
-                if not name:
-                    continue
-                event = exp.get("event", "update")
-                if event == "end":
-                    if name in state["experiments"]["active"]:
-                        state["experiments"]["completed"][name] = state["experiments"]["active"].pop(name)
-                        state["experiments"]["completed"][name]["ended"] = date
-                        state["experiments"]["completed"][name]["outcome"] = exp.get("details")
-                elif event == "start":
-                    state["experiments"]["active"][name] = {
-                        "name": name,
-                        "started": date,
-                        "hypothesis": exp.get("details"),
-                        "updates": [],
-                    }
-                elif event == "update":
-                    if name in state["experiments"]["active"]:
-                        state["experiments"]["active"][name]["updates"].append({
-                            "date": date,
-                            "observation": exp.get("details"),
-                        })
-
-            # TODOs
-            for todo in entry.get("todos", []):
-                if todo and todo not in state["todos"]:
-                    state["todos"].append(todo)
-
-        return state
-
-    def _add_recency(self, state: dict, analysis_date: str) -> None:
-        """Add recency metadata to all state model items.
-
-        This function ONLY does math (computing days_since_mention).
-        All medical judgment about what's relevant is deferred to the LLM.
+    def _calculate_batch_size(self, entries: list[tuple[str, str]], timeline_size: int) -> int:
+        """Calculate how many entries fit in a batch given current timeline size.
 
         Args:
-            state: The aggregated state model
-            analysis_date: The date to compute recency from (YYYY-MM-DD)
+            entries: List of (date, content) tuples to potentially include
+            timeline_size: Current character count of timeline
+
+        Returns:
+            Number of entries to include in this batch
         """
-        try:
-            today = datetime.strptime(analysis_date, "%Y-%m-%d")
-        except ValueError:
-            today = datetime.now()
+        CONTEXT_LIMIT = 200_000  # Claude Opus 4.5 context
+        SYSTEM_PROMPT_TOKENS = 3_000
+        MAX_OUTPUT_TOKENS = 32_768  # Match max_tokens in _process_timeline_batch
+        OUTPUT_TOKENS_PER_ENTRY = 60  # ~1.5 rows per entry, ~40 tokens per row
+        SAFETY_MARGIN = 10_000
+        CHARS_PER_TOKEN = 4
 
-        def days_since(date_str: str | None) -> int | None:
-            if not date_str:
-                return None
-            try:
-                return (today - datetime.strptime(date_str, "%Y-%m-%d")).days
-            except ValueError:
-                return None
+        timeline_tokens = timeline_size // CHARS_PER_TOKEN
+        available_input_tokens = CONTEXT_LIMIT - SYSTEM_PROMPT_TOKENS - timeline_tokens - MAX_OUTPUT_TOKENS - SAFETY_MARGIN
 
-        # Add days_since_mention to all items - LLM will judge relevance
-        for cond in state.get("conditions", {}).values():
-            cond["days_since_mention"] = days_since(cond.get("last_updated"))
+        batch_chars = 0
+        count = 0
+        for _, content in entries:
+            entry_chars = len(content)
+            # Check both input token limit and output token limit
+            estimated_output_tokens = (count + 1) * OUTPUT_TOKENS_PER_ENTRY
+            if batch_chars + entry_chars > available_input_tokens * CHARS_PER_TOKEN:
+                break
+            if estimated_output_tokens > MAX_OUTPUT_TOKENS - 1000:  # Leave buffer
+                break
+            batch_chars += entry_chars
+            count += 1
 
-        for sym in state.get("symptoms", {}).values():
-            sym["days_since_mention"] = days_since(sym.get("last_noted"))
+        # Ensure at least 1 entry per batch
+        return max(1, count)
 
-        for med in state.get("medications", {}).get("current", {}).values():
-            med["days_since_mention"] = days_since(med.get("last_mentioned"))
+    def _process_timeline_batch(
+        self, existing_timeline: str, entries: list[tuple[str, str]], next_episode_num: int
+    ) -> str:
+        """Process a batch of entries and return new CSV rows to append.
 
-        for supp in state.get("supplements", {}).get("current", {}).values():
-            supp["days_since_mention"] = days_since(supp.get("last_mentioned"))
+        Args:
+            existing_timeline: Current timeline CSV content (for context)
+            entries: List of (date, content) tuples to process
+            next_episode_num: The next episode ID number to use
 
-        for exp in state.get("experiments", {}).get("active", {}).values():
-            updates = exp.get("updates", [])
-            last = updates[-1].get("date") if updates else exp.get("started")
-            exp["days_since_update"] = days_since(last)
+        Returns:
+            New CSV rows to append (without header)
+        """
+        system_prompt = self._prompt("update_timeline.system_prompt")
 
-        # Metadata - just the date, no arbitrary thresholds
-        state["_recency_metadata"] = {"analysis_date": analysis_date}
+        # Format entries for the batch
+        entries_text = "\n\n---\n\n".join(
+            f"### Entry: {date}\n\n{content}"
+            for date, content in entries
+        )
+
+        user_content = f"""## Current Timeline (for context)
+
+```csv
+{existing_timeline}
+```
+
+## Next Episode ID
+
+Use ep-{next_episode_num:03d} for the first new episode, then increment as needed.
+
+## Entries to Process (oldest first)
+
+{entries_text}
+
+Output only the new CSV rows to append (no header row):"""
+
+        response = self.llm["status"](
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            max_tokens=32768,
+            temperature=0.0,
+        )
+
+        # Clean up response - remove any markdown code blocks
+        cleaned = response.strip()
+        if cleaned.startswith("```"):
+            # Remove code block markers
+            lines = cleaned.split("\n")
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            cleaned = "\n".join(lines)
+
+        # Remove any accidental header row
+        lines = cleaned.split("\n")
+        if lines and lines[0].strip().startswith("Date,"):
+            lines = lines[1:]
+
+        return "\n".join(lines)
 
     # --------------------------------------------------------------
     # Section processing (one dated section → validated markdown)
