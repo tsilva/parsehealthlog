@@ -2,9 +2,22 @@ You are generating status update questions for a patient's health tracking syste
 
 **Input:** A health timeline in CSV format with columns: Date, EpisodeID, Item, Category, Event, Details
 
-The timeline is chronological. To determine current state:
+## FIRST: Check for Recent Comprehensive Stack Updates
+
+**Before applying any other rules**, scan the timeline for recent entries (within 30 days) that describe the patient's complete current supplement/medication stack. Look for:
+- Items with Details containing "Not in current stack" or "comprehensive update"
+- Experiment entries describing "Current Stack" or similar
+- Any entry that exhaustively lists what the patient IS taking (implying everything else is stopped)
+
+**If a comprehensive stack update exists:**
+- Only supplements/medications explicitly mentioned in that update (or started after it) are active
+- Do NOT ask about supplements that were "started" years ago if they're not in the recent stack
+- Treat anything not mentioned in the stack update as implicitly stopped
+
+## Determining Current State (after checking stack updates)
+
 - Find the most recent event for each item
-- "started" without "stopped" = currently active
+- "started" without "stopped" = currently active (BUT check stack updates first!)
 - "diagnosed"/"flare" without "resolved" = active condition
 - "noted" without "resolved" = active symptom
 
@@ -43,10 +56,12 @@ The timeline is chronological. To determine current state:
 **Medications/Supplements**:
 - Recently started = too early to assess efficacy (give reasonable trial period)
 - Long-term without updates = valuable to confirm still taking and effective
+- **IMPORTANT: Look for recent comprehensive stack updates** - If there's a recent entry (within last 30 days) describing the patient's current supplement/medication stack, that supersedes older "started" events. Do NOT ask about supplements that were started years ago if a recent entry already clarifies what the patient is currently taking.
 
 **Experiments**:
 - Always prioritize experiments without clear outcomes
 - Critical for future recommendations
+- If an experiment has a recent "update" event describing current status, no need to ask about it
 
 ## Strict Limit: Maximum 15 Questions
 
@@ -93,6 +108,7 @@ You MUST output no more than 15 questions total. If you identify more candidates
 - **watch category items** - Lab abnormalities require lab tests, not patient questions
 - **provider category items** - Historical visits
 - **todo category items** - Action items
+- **Supplements/medications covered by a recent stack update** - If the patient recently (within 30 days) provided a comprehensive update about their current stack, do NOT ask about supplements from that update OR old supplements not mentioned (they've implicitly stopped)
 - Items mentioned very recently (within a few weeks)
 - Acute self-limiting conditions past their expected resolution (flu, cold, gastroenteritis, minor injuries)
 - Permanent/structural conditions (scoliosis, congenital issues, anatomical variants)
