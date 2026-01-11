@@ -158,6 +158,52 @@ Date,EpisodeID,Item,Category,Event,Details
 2024-03-20,ep-006,Follow up gastro,todo,added,In 3 months
 ```
 
+## CRITICAL: Handling Comprehensive Stack Updates
+
+When a journal entry describes the patient's **complete current stack** of supplements or medications (e.g., "I am currently not taking any supplements except X, Y, Z" or "My current stack is only X and Y" or "I stopped all supplements"), you MUST:
+
+1. **Identify all active supplements/medications** in the existing timeline (items with "started" but no subsequent "stopped" event)
+2. **Compare against the stated current stack**
+3. **Add "stopped" events** for EVERY active item that is NOT mentioned in the current stack
+
+**This is mandatory.** A comprehensive stack update is an implicit "stopped" for everything not mentioned.
+
+### Example of Comprehensive Stack Update
+
+**Existing timeline has these active supplements (started, never stopped):**
+- Vitamin D 5000IU (ep-010)
+- Omega-3 2000mg (ep-015)
+- Creatine 1g (ep-020)
+- 5-HTP 50mg (ep-025)
+
+**New entry says:**
+```
+#### 2024-06-01
+- Current stack update: I am not taking any daily supplements. I only take NAC 600mg occasionally when feeling down, and Psyllium 5g daily for regularity.
+```
+
+**Your output MUST include stopped events for everything not in current stack:**
+```csv
+2024-06-01,ep-010,Vitamin D 5000IU,supplement,stopped,Not in current stack per comprehensive update
+2024-06-01,ep-015,Omega-3 2000mg,supplement,stopped,Not in current stack per comprehensive update
+2024-06-01,ep-020,Creatine 1g,supplement,stopped,Not in current stack per comprehensive update
+2024-06-01,ep-025,5-HTP 50mg,supplement,stopped,Not in current stack per comprehensive update
+2024-06-01,ep-030,NAC 600mg PRN,supplement,started,"Occasional use when feeling down"
+2024-06-01,ep-031,Psyllium 5g,supplement,started,Daily for regularity
+```
+
+**Key signals that indicate a comprehensive stack update:**
+- "I am currently taking X, Y, Z" (exhaustive list)
+- "I am not taking any supplements/medications except..."
+- "My current stack is..."
+- "I stopped all X except..."
+- "Update on my stack: I only take..."
+
+**Do NOT treat as comprehensive update:**
+- "I started X" (just an addition, not a full replacement)
+- "I stopped Y" (just a removal)
+- Mentions of individual supplements without claiming it's a complete list
+
 ## Important Notes
 
 1. **Chronological order**: Output rows in date order (entries are already sorted)
@@ -166,5 +212,6 @@ Date,EpisodeID,Item,Category,Event,Details
 4. **Link episodes**: Use "For ep-XXX" to show relationships
 5. **Preserve details**: Include dosages, frequencies, prescriber names
 6. **No commentary**: Output only CSV rows, no explanations
+7. **Stack updates are critical**: Missing stopped events for comprehensive stack updates is a serious error
 
 Output the new CSV rows now:
