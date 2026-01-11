@@ -30,7 +30,7 @@ Date,EpisodeID,Item,Category,Event,Details
 | Item | Name of condition, medication, symptom, etc. |
 | Category | One of: condition, symptom, medication, supplement, experiment, provider, watch, todo |
 | Event | Status/action (see below) |
-| Details | Additional context, references to other episodes |
+| Details | Clinical context, nuance, and episode references (see Details Guidance below) |
 
 ### Categories and Events
 
@@ -42,8 +42,38 @@ Date,EpisodeID,Item,Category,Event,Details
 | supplement | started, adjusted, stopped | Supplements, vitamins, OTC |
 | experiment | started, update, ended | N=1 self-experiments |
 | provider | visit | Healthcare provider encounters |
-| watch | noted, resolved | Items to monitor (abnormal labs, trends) |
+| watch | noted, resolved | Clinical decisions requiring monitoring (NOT individual lab values) |
 | todo | added, completed | Action items |
+
+### Details Guidance - Capturing Clinical Nuance
+
+The Details field captures important clinical context that the fixed Event types cannot express. Use it to convey:
+
+**Degree/Severity modifiers:**
+- "partial improvement", "significant worsening", "mild flare"
+- "50% better", "mostly resolved but occasional recurrence"
+
+**Causation and context:**
+- "likely triggered by stress", "possibly related to ep-002"
+- "started after dietary change", "unclear if connected to medication"
+
+**Treatment response:**
+- "stopped due to side effects (nausea)", "ineffective after 4 weeks"
+- "helpful but caused insomnia", "uncertain response - may need longer trial"
+
+**Uncertainty and caveats:**
+- "suspected but unconfirmed", "diagnosis uncertain"
+- "symptoms persist afternoons only", "variable response"
+
+**Episode references:**
+- "For ep-005", "Managing ep-011", "May be related to ep-003"
+
+**Examples of nuanced Details:**
+- `improved,"Partial - headaches 50% less frequent, still present afternoons"`
+- `stopped,"Ineffective after 6 weeks, no noticeable benefit"`
+- `stopped,"Side effects (GI upset), switching to alternative"`
+- `worsened,"Significant flare, possibly stress-related"`
+- `started,"For ep-002, trial period 4 weeks, reassess"`
 
 ## Episode ID Rules
 
@@ -76,13 +106,20 @@ Date,EpisodeID,Item,Category,Event,Details
 - Significant symptoms (recurring, concerning, or being tracked)
 - Doctor/provider visits with key takeaways
 - Experiments and their observations
-- Abnormal lab values or trends worth monitoring
 - Action items mentioned (TODOs, follow-ups needed)
+- Clinical decisions that require monitoring (use "watch" category sparingly)
 
 **DO NOT capture:**
+- **Individual lab abnormalities** - Labs are already in the processed entries with reference ranges. Do NOT create watch items for "Elevated Bilirubin", "Low Erythrocytes", etc. The timeline should capture diagnoses based on lab patterns (e.g., "Chronic Hemolysis") not the raw lab values.
 - Minor one-off symptoms that never recur
 - Routine observations without clinical significance
 - Duplicate information already in timeline
+
+**Watch category guidance:**
+The "watch" category is for clinical decisions requiring follow-up, NOT for individual lab results. Use it ONLY for:
+- A decision to monitor something specific (e.g., "Monitor for anemia symptoms")
+- An unexpected finding requiring follow-up (e.g., "Incidental nodule found - recheck in 6 months")
+- NOT for every abnormal lab value (those belong in the processed entries, not timeline)
 
 ## CSV Escaping
 
@@ -114,10 +151,10 @@ Date,EpisodeID,Item,Category,Event,Details
 
 **Your output:**
 ```csv
-2024-03-20,ep-002,Gastritis,condition,improved,Less epigastric pain
-2024-03-20,ep-003,Pantoprazole 20mg,medication,stopped,Symptoms resolved
-2024-03-20,ep-004,Dr. Chen (Gastro),provider,visit,"Confirmed ep-002 resolving, continue DGL"
-2024-03-20,ep-005,DGL,supplement,started,"Maintenance for ep-002, PRN"
+2024-03-20,ep-002,Gastritis,condition,improved,"Partial - less epigastric pain, mild discomfort persists"
+2024-03-20,ep-003,Pantoprazole 20mg,medication,stopped,"Symptoms mostly resolved, no longer needed"
+2024-03-20,ep-004,Dr. Chen (Gastro),provider,visit,"Confirmed ep-002 resolving, continue DGL for maintenance"
+2024-03-20,ep-005,DGL,supplement,started,"For ep-002 maintenance, PRN"
 2024-03-20,ep-006,Follow up gastro,todo,added,In 3 months
 ```
 

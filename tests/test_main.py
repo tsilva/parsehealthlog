@@ -140,7 +140,7 @@ class TestFormatLabs:
     """Tests for lab formatting function."""
 
     def test_format_labs_basic(self):
-        """Format basic lab result."""
+        """Format basic lab result with reference range."""
         df = pd.DataFrame({
             "lab_name_standardized": ["Glucose"],
             "value_normalized": [95],
@@ -152,10 +152,14 @@ class TestFormatLabs:
         assert "**Glucose:**" in result
         assert "95" in result
         assert "mg/dL" in result
-        assert "[OK]" in result
+        assert "(ref: 70 - 100)" in result
+        # No hardcoded status - LLM applies clinical judgment
+        assert "[OK]" not in result
+        assert "[BELOW RANGE]" not in result
+        assert "[ABOVE RANGE]" not in result
 
     def test_format_labs_below_range(self):
-        """Lab value below range shows BELOW RANGE."""
+        """Lab value below range - just shows value and range for LLM interpretation."""
         df = pd.DataFrame({
             "lab_name_standardized": ["Glucose"],
             "value_normalized": [50],
@@ -164,10 +168,13 @@ class TestFormatLabs:
             "reference_max_normalized": [100],
         })
         result = format_labs(df)
-        assert "[BELOW RANGE]" in result
+        assert "50" in result
+        assert "(ref: 70 - 100)" in result
+        # No hardcoded status - LLM applies clinical judgment
+        assert "[BELOW RANGE]" not in result
 
     def test_format_labs_above_range(self):
-        """Lab value above range shows ABOVE RANGE."""
+        """Lab value above range - just shows value and range for LLM interpretation."""
         df = pd.DataFrame({
             "lab_name_standardized": ["Glucose"],
             "value_normalized": [150],
@@ -176,10 +183,13 @@ class TestFormatLabs:
             "reference_max_normalized": [100],
         })
         result = format_labs(df)
-        assert "[ABOVE RANGE]" in result
+        assert "150" in result
+        assert "(ref: 70 - 100)" in result
+        # No hardcoded status - LLM applies clinical judgment
+        assert "[ABOVE RANGE]" not in result
 
-    def test_format_labs_boolean_positive(self):
-        """Boolean lab shows Positive."""
+    def test_format_labs_boolean(self):
+        """Boolean lab shows raw value for LLM interpretation."""
         df = pd.DataFrame({
             "lab_name_standardized": ["H. pylori"],
             "value_normalized": ["positive"],
@@ -188,19 +198,9 @@ class TestFormatLabs:
             "reference_max_normalized": [0],
         })
         result = format_labs(df)
-        assert "Positive" in result
-
-    def test_format_labs_boolean_negative(self):
-        """Boolean lab shows Negative."""
-        df = pd.DataFrame({
-            "lab_name_standardized": ["H. pylori"],
-            "value_normalized": ["negative"],
-            "unit_normalized": ["boolean"],
-            "reference_min_normalized": [0],
-            "reference_max_normalized": [1],
-        })
-        result = format_labs(df)
-        assert "Negative" in result
+        assert "**H. pylori:**" in result
+        assert "positive" in result
+        # LLM interprets the clinical significance
 
     def test_format_labs_no_range(self):
         """Lab without reference range omits range display."""
@@ -214,8 +214,7 @@ class TestFormatLabs:
         result = format_labs(df)
         assert "**Vitamin D:**" in result
         assert "45" in result
-        assert "[OK]" not in result
-        assert "[BELOW RANGE]" not in result
+        assert "ref:" not in result
 
     def test_format_labs_multiple(self):
         """Format multiple lab results."""
