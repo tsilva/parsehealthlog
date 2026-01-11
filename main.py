@@ -197,6 +197,11 @@ def extract_date(section: str) -> str:
 
 
 def format_labs(df: pd.DataFrame) -> str:
+    """Format lab results for clinical review.
+
+    Outputs raw values with reference ranges - clinical interpretation is
+    delegated to downstream LLMs which can apply medical judgment.
+    """
     out: list[str] = []
     for row in df.itertuples():
         name = str(row.lab_name_standardized).strip()
@@ -204,31 +209,10 @@ def format_labs(df: pd.DataFrame) -> str:
         unit = str(getattr(row, "unit_normalized", "")).strip()
         rmin, rmax = row.reference_min_normalized, row.reference_max_normalized
 
-        is_bool = unit.lower() in {"boolean", "bool"}
-        if is_bool:
-            sval = str(value).strip().lower()
-            is_positive = sval in {"1", "1.0", "true", "positive", "yes"}
-            line = f"- **{name}:** {'Positive' if is_positive else 'Negative'}"
-        else:
-            line = f"- **{name}:** {value}{f' {unit}' if unit else ''}"
-            if pd.notna(rmin) and pd.notna(rmax):
-                line += f" ({rmin} - {rmax})"
-
+        # Format value with unit and reference range
+        line = f"- **{name}:** {value}{f' {unit}' if unit else ''}"
         if pd.notna(rmin) and pd.notna(rmax):
-            try:
-                if is_bool:
-                    v = 1.0 if is_positive else 0.0
-                else:
-                    v = float(value)
-                lo, hi = map(float, (rmin, rmax))
-                status = "BELOW RANGE" if v < lo else "ABOVE RANGE" if v > hi else "OK"
-                line += f" [{status}]"
-            except (ValueError, TypeError) as e:
-                # Log conversion failures (e.g., non-numeric values) at debug level
-                logging.getLogger(__name__).debug(
-                    "Could not compute range status for %s (value=%r, range=%r-%r): %s",
-                    name, value, rmin, rmax, e
-                )
+            line += f" (ref: {rmin} - {rmax})"
 
         out.append(line)
     return "\n".join(out)
