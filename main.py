@@ -671,6 +671,18 @@ class HealthLogProcessor:
             "prompt": self._hash_prompt(prompt_name),
         }
 
+    def _get_state_deps(self, prompt_name: str) -> dict[str, str]:
+        """Get dependencies for reports that use current state.
+
+        Used by: targeted_questions, next_steps_unified, experiments (after state integration)
+        """
+        state_path = self.internal_dir / "current_state.md"
+        state_hash = hash_file(state_path) if state_path.exists() else "missing"
+        return {
+            "state": state_hash,
+            "prompt": self._hash_prompt(prompt_name),
+        }
+
     def _get_output_deps(self) -> dict[str, str]:
         """Get dependencies for final output.md.
 
