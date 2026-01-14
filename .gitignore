@@ -178,3 +178,9 @@ output/
 input.md
 output.md
 labs.csv
+
+# User profiles (contain personal paths)
+profiles/*.yaml
+profiles/*.yml
+profiles/*.json
+!profiles/_template.yaml

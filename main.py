@@ -68,7 +68,7 @@ from openai import OpenAI, APIError, APIConnectionError, RateLimitError, APITime
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from tqdm import tqdm
 
-from config import Config
+from config import Config, ProfileConfig
 from exceptions import DateExtractionError, PromptError, LabParsingError
 
 # --------------------------------------------------------------------------------------
@@ -1716,8 +1716,28 @@ Output only the new CSV rows to append (no header row):"""
 
 
 def main() -> None:
-    """Run the processor using configuration from environment variables."""
-    parser = argparse.ArgumentParser(description="Process health log entries and generate reports.")
+    """Run the processor using configuration from profile."""
+    parser = argparse.ArgumentParser(
+        description="Process health log entries and generate reports.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  uv run python main.py --profile tiago
+  uv run python main.py --profile tiago --force-reprocess
+  uv run python main.py --list-profiles
+        """,
+    )
+    parser.add_argument(
+        "--profile",
+        "-p",
+        type=str,
+        help="Profile name (without extension) - REQUIRED for processing",
+    )
+    parser.add_argument(
+        "--list-profiles",
+        action="store_true",
+        help="List available profiles and exit",
+    )
     parser.add_argument(
         "--force-reprocess",
         action="store_true",
@@ -1728,8 +1748,55 @@ def main() -> None:
     setup_logging()
     logger = logging.getLogger(__name__)
 
+    # Handle --list-profiles
+    if args.list_profiles:
+        profiles = ProfileConfig.list_profiles()
+        if profiles:
+            print("Available profiles:")
+            for name in profiles:
+                print(f"  - {name}")
+        else:
+            print("No profiles found in profiles/ directory.")
+            print("Create a profile by copying profiles/_template.yaml")
+        sys.exit(0)
+
+    # Profile is required for processing
+    if not args.profile:
+        print("Error: --profile is required.")
+        print()
+        profiles = ProfileConfig.list_profiles()
+        if profiles:
+            print("Available profiles:")
+            for name in profiles:
+                print(f"  - {name}")
+            print()
+            print(f"Example: uv run python main.py --profile {profiles[0]}")
+        else:
+            print("No profiles found. Create one by copying profiles/_template.yaml")
+        sys.exit(1)
+
+    # Load profile
+    profile_path = None
+    for ext in (".yaml", ".yml", ".json"):
+        candidate = Path("profiles") / f"{args.profile}{ext}"
+        if candidate.exists():
+            profile_path = candidate
+            break
+
+    if not profile_path:
+        print(f"Error: Profile '{args.profile}' not found.")
+        print("Use --list-profiles to see available profiles.")
+        sys.exit(1)
+
     try:
-        config = Config.from_env()
+        profile = ProfileConfig.from_file(profile_path)
+        logger.info("Using profile: %s", profile.name)
+    except Exception as e:
+        print(f"Error loading profile: {e}")
+        sys.exit(1)
+
+    try:
+        config = Config.from_profile(profile)
     except ValueError as e:
         raise SystemExit(f"Configuration error: {e}")
 
