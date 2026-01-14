@@ -1,0 +1,25 @@
+# Profile Template - Copy and rename to {your_name}.yaml
+name: "Your Name"
+
+# Required: Path to the markdown health log file
+health_log_path: "/path/to/your/health.md"
+
+# Required: Base directory for generated output
+output_path: "/path/to/your/output/"
+
+# Optional: External data sources
+labs_parser_output_path: null
+medical_exams_parser_output_path: null
+
+# Optional: Copy final report to specific location
+report_output_path: null
+
+# Optional overrides (defaults shown):
+# model: "gpt-4o-mini"        # Default model for all stages
+# process_model: null         # Override for processing stage
+# validate_model: null        # Override for validation stage
+# summary_model: null         # Override for summary generation
+# questions_model: null       # Override for question generation
+# next_steps_model: null      # Override for next steps generation
+# status_model: "anthropic/claude-opus-4.5"  # Override for timeline building
+# workers: 4                  # Parallel workers for section processing
