@@ -34,6 +34,7 @@ class Config:
     health_log_path: Path
     output_path: Path
     labs_parser_output_path: Path | None
+    medical_exams_parser_output_path: Path | None
     report_output_path: Path | None
 
     # Processing Configuration
@@ -82,6 +83,7 @@ class Config:
             return Path(val) if val else None
 
         labs_parser_output_path = get_optional_path("LABS_PARSER_OUTPUT_PATH")
+        medical_exams_parser_output_path = get_optional_path("MEDICAL_EXAMS_PARSER_OUTPUT_PATH")
         report_output_path = get_optional_path("REPORT_OUTPUT_PATH")
 
         # Load processing configuration with defaults and validation
@@ -105,6 +107,7 @@ class Config:
             health_log_path=Path(health_log_path),
             output_path=Path(output_path),
             labs_parser_output_path=labs_parser_output_path,
+            medical_exams_parser_output_path=medical_exams_parser_output_path,
             report_output_path=report_output_path,
             max_workers=max_workers,
         )
