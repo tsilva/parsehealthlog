@@ -9,12 +9,16 @@ from __future__ import annotations
   `LABS_PARSER_OUTPUT_PATH/all.csv`).
 • Produces an output folder (default `output/` next to the script,
   configurable via `OUTPUT_PATH`) with:
-      ├─ entries/               # dated sections and labs
+      ├─ entries/               # dated sections, labs, and exams
       │   ├─ <date>.raw.md
       │   ├─ <date>.processed.md
-      │   └─ <date>.labs.md
+      │   ├─ <date>.labs.md
+      │   └─ <date>.exams.md
       ├─ intro.md               # any pre-dated content
       └─ reports/               # generated summaries and plans
+          ├─ .internal/
+          │   ├─ health_log_collated.md  # all entries (newest to oldest)
+          │   ├─ health_timeline.csv     # chronological events with episode IDs
           ├─ summary.md
           ├─ clarifying_questions.md
           ├─ next_steps_<spec>.md
@@ -33,6 +37,7 @@ and validates these environment variables:
     SUMMARY_MODEL_ID             – (optional) override for summary
     NEXT_STEPS_MODEL_ID          – (optional) override for next-steps generation
     LABS_PARSER_OUTPUT_PATH      – (optional) path to aggregated lab CSVs
+    MEDICAL_EXAMS_PARSER_OUTPUT_PATH – (optional) path to medical exam summaries
     MAX_WORKERS                  – (optional) ThreadPoolExecutor size (default 4)
     QUESTIONS_RUNS               – (optional) how many diverse question sets to generate (default 3)
 
@@ -43,6 +48,7 @@ maintaining identical behaviour.
 from dotenv import load_dotenv
 load_dotenv(override=True)
 
+import argparse
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -125,6 +131,7 @@ def setup_logging() -> None:
 
 PROMPTS_DIR: Final = Path(__file__).with_suffix("").parent / "prompts"
 LAB_SECTION_HEADER: Final = "Lab test results:"
+MEDICAL_EXAMS_SECTION_HEADER: Final = "Medical exam results:"
 
 def load_prompt(name: str) -> str:
     path = PROMPTS_DIR / f"{name}.md"
@@ -218,6 +225,60 @@ def format_labs(df: pd.DataFrame) -> str:
     return "\n".join(out)
 
 
+def format_medical_exams(exams: list[str]) -> str:
+    """Format medical exam summaries for inclusion in health entries.
+
+    Each exam is already in markdown format with its own headers.
+    Multiple exams on the same date are separated by blank lines.
+    """
+    return "\n\n".join(exams)
+
+
+def normalize_markdown_headers(content: str, target_base_level: int) -> str:
+    """Normalize markdown headers to be relative to a target base level.
+
+    Finds the minimum header level in content and shifts all headers so that
+    the minimum becomes target_base_level. This ensures consistent hierarchy
+    when content is nested under a parent section.
+
+    Args:
+        content: Markdown content with headers to normalize.
+        target_base_level: The level the highest (smallest #) header should become.
+
+    Returns:
+        Content with all headers adjusted to maintain relative hierarchy.
+    """
+    if not content.strip():
+        return content
+
+    lines = content.split('\n')
+    header_pattern = re.compile(r'^(#{1,6})\s+(.+)$')
+    min_level = 7  # Higher than max possible (6)
+
+    for line in lines:
+        match = header_pattern.match(line)
+        if match:
+            min_level = min(min_level, len(match.group(1)))
+
+    if min_level == 7:  # No headers found
+        return content
+
+    offset = target_base_level - min_level
+    if offset == 0:
+        return content
+
+    result_lines = []
+    for line in lines:
+        match = header_pattern.match(line)
+        if match:
+            new_level = max(1, min(6, len(match.group(1)) + offset))
+            result_lines.append('#' * new_level + ' ' + match.group(2))
+        else:
+            result_lines.append(line)
+
+    return '\n'.join(result_lines)
+
+
 # --------------------------------------------------------------------------------------
 # OpenAI wrapper
 # --------------------------------------------------------------------------------------
@@ -291,6 +352,9 @@ class HealthLogProcessor:
 
         # Lab data per date – populated lazily
         self.labs_by_date: dict[str, pd.DataFrame] = {}
+
+        # Medical exam data per date – populated lazily
+        self.medical_exams_by_date: dict[str, list[str]] = {}
 
         # State file for progress tracking
         self.state_file = self.OUTPUT_PATH / ".state.json"
@@ -420,8 +484,9 @@ class HealthLogProcessor:
 
         header_text, sections = self._split_sections()
         self._load_labs()
+        self._load_medical_exams()
 
-        # Create placeholder sections for dates with labs but no entries
+        # Create placeholder sections for dates with labs/exams but no entries
         sections = self._create_placeholder_sections(sections)
 
         # Update state with total sections count
@@ -439,8 +504,12 @@ class HealthLogProcessor:
             if date in self.labs_by_date and not self.labs_by_date[date].empty:
                 labs_content = f"{LAB_SECTION_HEADER}\n{format_labs(self.labs_by_date[date])}\n"
 
+            exams_content = ""
+            if date in self.medical_exams_by_date and self.medical_exams_by_date[date]:
+                exams_content = f"{MEDICAL_EXAMS_SECTION_HEADER}\n{format_medical_exams(self.medical_exams_by_date[date])}\n"
+
             processed_path = self.entries_dir / f"{date}.processed.md"
-            deps = self._get_section_dependencies(sec, labs_content)
+            deps = self._get_section_dependencies(sec, labs_content, exams_content)
 
             if self._check_needs_regeneration(processed_path, deps):
                 to_process.append(sec)
@@ -471,6 +540,9 @@ class HealthLogProcessor:
         else:
             self.logger.info("All sections processed successfully")
 
+        # Save collated health log (all processed entries newest to oldest)
+        self._save_collated_health_log(header_text)
+
         # Always regenerate lab markdown files
         # This includes both regular entries and lab-only entries
         for date, df in self.labs_by_date.items():
@@ -479,6 +551,17 @@ class HealthLogProcessor:
             lab_path = self.entries_dir / f"{date}.labs.md"
             lab_path.write_text(
                 f"{LAB_SECTION_HEADER}\n{format_labs(df)}\n",
+                encoding="utf-8",
+            )
+
+        # Always regenerate exam markdown files
+        # This includes both regular entries and exam-only entries
+        for date, exams_list in self.medical_exams_by_date.items():
+            if not exams_list:
+                continue
+            exams_path = self.entries_dir / f"{date}.exams.md"
+            exams_path.write_text(
+                f"{MEDICAL_EXAMS_SECTION_HEADER}\n{format_medical_exams(exams_list)}\n",
                 encoding="utf-8",
             )
 
@@ -616,11 +699,12 @@ class HealthLogProcessor:
         """Compute combined hash of all processed sections."""
         return self._hash_files_without_deps(self.entries_dir.glob("*.processed.md"))
 
-    def _get_section_dependencies(self, section: str, labs_content: str) -> dict[str, str]:
+    def _get_section_dependencies(self, section: str, labs_content: str, exams_content: str = "") -> dict[str, str]:
         """Compute all dependencies for a processed section."""
         return {
             "raw": hash_content(section),
             "labs": hash_content(labs_content) if labs_content else "none",
+            "exams": hash_content(exams_content) if exams_content else "none",
             "process_prompt": self._hash_prompt("process.system_prompt"),
             "validate_prompt": self._hash_prompt("validate.system_prompt"),
         }
@@ -855,7 +939,7 @@ class HealthLogProcessor:
         """
         self.logger.info("Building health timeline from processed entries...")
 
-        timeline_path = self.OUTPUT_PATH / "health_timeline.csv"
+        timeline_path = self.internal_dir / "health_timeline.csv"
 
         # Get all processed entries sorted chronologically (oldest first)
         entries = self._get_chronological_entries()
@@ -1108,8 +1192,13 @@ Output only the new CSV rows to append (no header row):"""
         if date in self.labs_by_date and not self.labs_by_date[date].empty:
             labs_content = f"{LAB_SECTION_HEADER}\n{format_labs(self.labs_by_date[date])}\n"
 
+        # Get medical exams content for this date
+        exams_content = ""
+        if date in self.medical_exams_by_date and self.medical_exams_by_date[date]:
+            exams_content = f"{MEDICAL_EXAMS_SECTION_HEADER}\n{format_medical_exams(self.medical_exams_by_date[date])}\n"
+
         # Compute dependencies for this section
-        deps = self._get_section_dependencies(section, labs_content)
+        deps = self._get_section_dependencies(section, labs_content, exams_content)
 
         last_processed = ""
         last_validation = ""
@@ -1147,10 +1236,12 @@ Output only the new CSV rows to append (no header row):"""
             last_validation = validation
 
             if "$OK$" in validation:
-                # Include labs in processed file if they exist
+                # Include labs and exams in processed file if they exist
                 final_content = processed
                 if labs_content:
-                    final_content = f"{processed}\n\n{labs_content}"
+                    final_content = f"{final_content}\n\n{labs_content}"
+                if exams_content:
+                    final_content = f"{final_content}\n\n{exams_content}"
 
                 # Write with dependency hash in first line
                 deps_comment = format_deps_comment(deps)
@@ -1160,6 +1251,12 @@ Output only the new CSV rows to append (no header row):"""
                 if (df := self.labs_by_date.get(date)) is not None and not df.empty:
                     lab_path = self.entries_dir / f"{date}.labs.md"
                     lab_path.write_text(labs_content, encoding="utf-8")
+
+                # Exams are also written to separate .exams.md file
+                if self.medical_exams_by_date.get(date):
+                    exams_path = self.entries_dir / f"{date}.exams.md"
+                    exams_path.write_text(exams_content, encoding="utf-8")
+
                 return date, True
 
             self.logger.error("Validation failed (%s attempt %d): %s", date, attempt, validation)
@@ -1325,37 +1422,169 @@ Output only the new CSV rows to append (no header row):"""
 
         self.labs_by_date = {d: df for d, df in labs_df.groupby("date")}
 
-    def _create_placeholder_sections(self, sections: list[str]) -> list[str]:
-        """Create entry files directly for dates with labs but no health log entries.
+    def _load_medical_exams(self) -> None:
+        """Load medical exam summaries from the configured output path.
 
-        Creates .processed.md (just date header) and .labs.md (lab results) files.
+        Scans directories matching YYYY-MM-DD pattern, reads .summary.md files,
+        and groups them by date. Directories without valid date prefixes are
+        skipped with a warning.
+        """
+        if not self.config.medical_exams_parser_output_path:
+            self.logger.info("No MEDICAL_EXAMS_PARSER_OUTPUT_PATH configured")
+            return
+
+        exams_path = self.config.medical_exams_parser_output_path
+        if not exams_path.exists():
+            self.logger.warning("MEDICAL_EXAMS_PARSER_OUTPUT_PATH does not exist: %s", exams_path)
+            return
+        if not exams_path.is_dir():
+            self.logger.warning("MEDICAL_EXAMS_PARSER_OUTPUT_PATH is not a directory: %s", exams_path)
+            return
+
+        # Date pattern for directory names: YYYY-MM-DD - description
+        date_pattern = re.compile(r"^(\d{4}-\d{2}-\d{2})\s*-\s*")
+
+        exams_by_date: dict[str, list[str]] = {}
+        skipped_count = 0
+        loaded_count = 0
+
+        for subdir in sorted(exams_path.iterdir()):
+            if not subdir.is_dir():
+                continue
+
+            # Extract date from directory name
+            match = date_pattern.match(subdir.name)
+            if not match:
+                self.logger.debug(
+                    "Skipping directory without date prefix: %s",
+                    subdir.name
+                )
+                skipped_count += 1
+                continue
+
+            date = match.group(1)
+
+            # Find .summary.md file in this directory
+            summary_files = list(subdir.glob("*.summary.md"))
+            if not summary_files:
+                self.logger.debug("No .summary.md file found in %s", subdir.name)
+                continue
+
+            # Read the summary file (there should typically be one)
+            for summary_file in sorted(summary_files):
+                try:
+                    content = summary_file.read_text(encoding="utf-8").strip()
+                    if content:
+                        if date not in exams_by_date:
+                            exams_by_date[date] = []
+                        exams_by_date[date].append(content)
+                        loaded_count += 1
+                except IOError as e:
+                    self.logger.warning("Failed to read %s: %s", summary_file, e)
+
+        self.medical_exams_by_date = exams_by_date
+
+        if skipped_count > 0:
+            self.logger.warning(
+                "Skipped %d directories without valid date prefix",
+                skipped_count
+            )
+        self.logger.info(
+            "Loaded %d medical exam summaries for %d dates from %s",
+            loaded_count, len(exams_by_date), exams_path
+        )
+
+    def _save_collated_health_log(self, header_text: str) -> None:
+        """Save collated health log with all processed entries (newest to oldest).
+
+        Creates an intermediate file containing the full health log in reverse
+        chronological order for reference and debugging. Uses processed entries
+        (not raw) so the collated log reflects validated, cleaned content.
+        """
+        collated_path = self.internal_dir / "health_log_collated.md"
+
+        # Get all processed entries sorted newest-first, with normalized headers
+        processed_entries = []
+        for path in self.entries_dir.glob("*.processed.md"):
+            date = path.stem.split(".")[0]
+            content = self._read_without_deps_comment(path)
+            # Normalize entry headers to level 4 (#### YYYY-MM-DD)
+            normalized = normalize_markdown_headers(content, target_base_level=4)
+            processed_entries.append((date, normalized))
+
+        sorted_entries = sorted(processed_entries, key=lambda x: x[0], reverse=True)
+
+        # Assemble collated content
+        parts = []
+        if header_text:
+            parts.append(header_text.strip())
+        for _, entry_content in sorted_entries:
+            parts.append(entry_content)
+
+        content = "\n\n".join(parts)
+
+        # Compute hash for dependency tracking
+        content_hash = hash_content(content)
+        deps_comment = format_deps_comment({"content": content_hash})
+
+        # Check if file needs update
+        if collated_path.exists():
+            existing_deps = parse_deps_comment(
+                collated_path.read_text(encoding="utf-8").split("\n")[0]
+            )
+            if existing_deps.get("content") == content_hash:
+                self.logger.info("Collated health log is up-to-date")
+                return
+
+        collated_path.write_text(f"{deps_comment}\n{content}", encoding="utf-8")
+        self.logger.info(
+            "Saved collated health log (%d processed entries, newest to oldest) to %s",
+            len(sorted_entries),
+            collated_path,
+        )
+
+    def _create_placeholder_sections(self, sections: list[str]) -> list[str]:
+        """Create entry files directly for dates with labs/exams but no health log entries.
+
+        Creates .processed.md (just date header + content) and separate files.
         No .raw.md is created since there's no raw health log content.
-        Uses dependency tracking to detect when labs data changes.
+        Uses dependency tracking to detect when data changes.
 
         Returns the original sections list unchanged.
         """
         # Extract dates from existing sections
         log_dates = {extract_date(sec) for sec in sections}
 
-        # Find dates with labs but no entries
-        missing_dates = sorted(set(self.labs_by_date) - log_dates)
+        # Find dates with labs or exams but no entries
+        data_dates = set(self.labs_by_date.keys()) | set(self.medical_exams_by_date.keys())
+        missing_dates = sorted(data_dates - log_dates)
 
         if not missing_dates:
             return sections
 
-        # Create entry files directly for dates with only labs
+        # Create entry files directly for dates with only labs/exams
         for date in missing_dates:
-            df = self.labs_by_date[date]
-            if df.empty:
+            # Get labs content if available
+            labs_content = ""
+            df = self.labs_by_date.get(date)
+            if df is not None and not df.empty:
+                labs_content = f"{LAB_SECTION_HEADER}\n{format_labs(df)}\n"
+
+            # Get exams content if available
+            exams_content = ""
+            exams_list = self.medical_exams_by_date.get(date)
+            if exams_list:
+                exams_content = f"{MEDICAL_EXAMS_SECTION_HEADER}\n{format_medical_exams(exams_list)}\n"
+
+            # Skip if neither labs nor exams exist
+            if not labs_content and not exams_content:
                 continue
 
-            # Format labs content
-            labs_content = f"{LAB_SECTION_HEADER}\n{format_labs(df)}\n"
-
-            # Dependencies for lab-only entries (no raw content, no LLM processing)
+            # Dependencies for data-only entries (no raw content, no LLM processing)
             deps = {
                 "raw": "none",  # No raw health log content
-                "labs": hash_content(labs_content),
+                "labs": hash_content(labs_content) if labs_content else "none",
+                "exams": hash_content(exams_content) if exams_content else "none",
                 "process_prompt": "none",  # Not processed by LLM
                 "validate_prompt": "none",  # Not validated
             }
@@ -1365,14 +1594,28 @@ Output only the new CSV rows to append (no header row):"""
             if not self._check_needs_regeneration(processed_path, deps):
                 continue  # up-to-date
 
-            # Write processed file (deps comment + date header + labs)
-            # No raw file needed - there's no raw content to store
-            # Labs are written to both .labs.md (separate) and .processed.md (for output)
-            processed_content = f"### {date}\n\n{labs_content}"
+            # Assemble processed content
+            content_parts = [f"### {date}"]
+            if labs_content:
+                content_parts.append(labs_content)
+            if exams_content:
+                content_parts.append(exams_content)
+
+            processed_content = "\n\n".join(content_parts)
             deps_comment = format_deps_comment(deps)
             processed_path.write_text(f"{deps_comment}\n{processed_content}", encoding="utf-8")
 
-            self.logger.info("Created entry for %s (labs only, no health log entry)", date)
+            # Describe what data types are present
+            data_types = []
+            if labs_content:
+                data_types.append("labs")
+            if exams_content:
+                data_types.append("exams")
+            self.logger.info(
+                "Created entry for %s (%s, no health log entry)",
+                date,
+                " + ".join(data_types)
+            )
 
         # Return original sections unchanged (placeholder files were created directly)
         return sections
@@ -1382,11 +1625,14 @@ Output only the new CSV rows to append (no header row):"""
     # --------------------------------------------------------------
 
     def _get_processed_entries_text(self) -> str:
-        """Read all processed entries, return them sorted newest-first."""
+        """Read all processed entries, normalize headers, return sorted newest-first."""
         items: list[tuple[str, str]] = []
         for path in self.entries_dir.glob("*.processed.md"):
             date = path.stem.split(".")[0]
-            items.append((date, self._read_without_deps_comment(path)))
+            content = self._read_without_deps_comment(path)
+            # Normalize entry headers to level 4 (#### YYYY-MM-DD)
+            normalized = normalize_markdown_headers(content, target_base_level=4)
+            items.append((date, normalized))
         return "\n\n".join(v for _, v in sorted(items, key=lambda t: t[0], reverse=True))
 
     def _assemble_output(self, header_text: str) -> str:
@@ -1425,25 +1671,33 @@ Output only the new CSV rows to append (no header row):"""
             questions_content = self._read_without_deps_comment(questions_path).strip()
             # Only include if there are actual questions (not the "no items" placeholder)
             if questions_content and "No items require status updates" not in questions_content:
-                sections.append(f"## Questions to Address\n\n{questions_content}")
+                # Normalize headers to level 3+ (under ## Questions)
+                normalized = normalize_markdown_headers(questions_content, target_base_level=3)
+                sections.append(f"## Questions to Address\n\n{normalized}")
 
         # 2. Action Plan (PRIMARY - what to do next)
         action_plan_path = self.internal_dir / "action_plan.md"
         if action_plan_path.exists():
             content = self._read_without_deps_comment(action_plan_path).strip()
-            # Action plan usually has its own header, so include as-is
-            sections.append(content)
+            # Normalize: LLM outputs # header, adjust to level 2
+            normalized = normalize_markdown_headers(content, target_base_level=2)
+            sections.append(normalized)
 
         # 3. Experiments (N=1 tracking)
         experiments_path = self.internal_dir / "experiments.md"
         if experiments_path.exists():
             content = self._read_without_deps_comment(experiments_path).strip()
-            sections.append(content)
+            # Normalize: LLM outputs # header, adjust to level 2
+            normalized = normalize_markdown_headers(content, target_base_level=2)
+            sections.append(normalized)
 
         # 4. Clinical Summary
         summary_path = self.internal_dir / "summary.md"
         if summary_path.exists():
-            sections.append(f"## Clinical Summary\n\n{self._read_without_deps_comment(summary_path).strip()}")
+            content = self._read_without_deps_comment(summary_path).strip()
+            # Normalize: summary uses #### headers, keep at level 4
+            normalized = normalize_markdown_headers(content, target_base_level=4)
+            sections.append(f"## Clinical Summary\n\n{normalized}")
 
         # 5. Clear demarcation before full entries
         sections.append("---\n<!-- FULL HEALTH LOG ENTRIES BELOW - clip here if sharing -->")
@@ -1463,16 +1717,57 @@ Output only the new CSV rows to append (no header row):"""
 
 def main() -> None:
     """Run the processor using configuration from environment variables."""
+    parser = argparse.ArgumentParser(description="Process health log entries and generate reports.")
+    parser.add_argument(
+        "--force-reprocess",
+        action="store_true",
+        help="Clear all cached outputs and reprocess everything from scratch",
+    )
+    args = parser.parse_args()
+
     setup_logging()
+    logger = logging.getLogger(__name__)
 
     try:
         config = Config.from_env()
     except ValueError as e:
         raise SystemExit(f"Configuration error: {e}")
 
+    # Handle --force-reprocess flag: clear cached outputs
+    if args.force_reprocess:
+        output_path = config.output_path
+        entries_dir = output_path / "entries"
+        reports_dir = output_path / "reports"
+
+        # Delete all generated entry files
+        if entries_dir.exists():
+            patterns = ["*.processed.md", "*.labs.md", "*.exams.md", "*.failed.md"]
+            deleted = 0
+            for pattern in patterns:
+                for f in entries_dir.glob(pattern):
+                    f.unlink()
+                    deleted += 1
+            if deleted:
+                logger.info("Cleared %d generated files from %s", deleted, entries_dir)
+
+        # Delete all reports (including .internal/)
+        if reports_dir.exists():
+            shutil.rmtree(reports_dir)
+            logger.info("Cleared reports directory: %s", reports_dir)
+
+        # Delete state file
+        state_file = output_path / ".state.json"
+        if state_file.exists():
+            state_file.unlink()
+
+        # Delete timeline if it exists at output root (legacy location)
+        timeline_path = output_path / "health_timeline.csv"
+        if timeline_path.exists():
+            timeline_path.unlink()
+
     start = datetime.now()
     HealthLogProcessor(config).run()
-    logging.getLogger(__name__).info(
+    logger.info(
         "Finished in %.1fs",
         (datetime.now() - start).total_seconds(),
     )
