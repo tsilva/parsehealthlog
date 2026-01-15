@@ -203,6 +203,15 @@ def extract_date(section: str) -> str:
     raise DateExtractionError(f"No valid date found in header: {header}", section=section)
 
 
+def strip_date_header(section: str) -> str:
+    """Remove the date header line from a section (date is in filename)."""
+    lines = section.strip().splitlines()
+    if not lines:
+        return ""
+    # Skip the first line (date header) and return the rest
+    return "\n".join(lines[1:]).strip()
+
+
 def format_labs(df: pd.DataFrame) -> str:
     """Format lab results for clinical review.
 
@@ -497,7 +506,8 @@ class HealthLogProcessor:
         for sec in sections:
             date = extract_date(sec)
             raw_path = self.entries_dir / f"{date}.raw.md"
-            raw_path.write_text(sec, encoding="utf-8")
+            # Strip date header - it's already in the filename
+            raw_path.write_text(strip_date_header(sec), encoding="utf-8")
 
             # Check if processing needed based on dependencies
             labs_content = ""
@@ -1186,6 +1196,8 @@ Output only the new CSV rows to append (no header row):"""
     def _process_section(self, section: str) -> tuple[str, bool]:
         date = extract_date(section)
         processed_path = self.entries_dir / f"{date}.processed.md"
+        # Strip date header - it's in the filename
+        section_content = strip_date_header(section)
 
         # Get labs content for this date
         labs_content = ""
@@ -1207,7 +1219,7 @@ Output only the new CSV rows to append (no header row):"""
             # 1) PROCESS - include validation feedback on retries
             messages = [
                 {"role": "system", "content": self._prompt("process.system_prompt")},
-                {"role": "user", "content": section},
+                {"role": "user", "content": section_content},
             ]
             if attempt > 1 and last_validation:
                 messages.append({
@@ -1228,7 +1240,7 @@ Output only the new CSV rows to append (no header row):"""
                     {
                         "role": "user",
                         "content": self._prompt("validate.user_prompt").format(
-                            raw_section=section, processed_section=processed
+                            raw_section=section_content, processed_section=processed
                         ),
                     },
                 ]
@@ -1267,7 +1279,7 @@ Output only the new CSV rows to append (no header row):"""
 
 ## Raw Section (Input)
 ```
-{section}
+{section_content}
 ```
 
 ## Last Processed Output
@@ -1546,7 +1558,7 @@ Output only the new CSV rows to append (no header row):"""
     def _create_placeholder_sections(self, sections: list[str]) -> list[str]:
         """Create entry files directly for dates with labs/exams but no health log entries.
 
-        Creates .processed.md (just date header + content) and separate files.
+        Creates .processed.md (just labs/exams content) and separate files.
         No .raw.md is created since there's no raw health log content.
         Uses dependency tracking to detect when data changes.
 
@@ -1594,8 +1606,8 @@ Output only the new CSV rows to append (no header row):"""
             if not self._check_needs_regeneration(processed_path, deps):
                 continue  # up-to-date
 
-            # Assemble processed content
-            content_parts = [f"### {date}"]
+            # Assemble processed content (no date header - it's in the filename)
+            content_parts = []
             if labs_content:
                 content_parts.append(labs_content)
             if exams_content:
