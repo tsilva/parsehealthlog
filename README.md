@@ -1,95 +1,97 @@
-# 🩺 health-log-parser
+<div align="center">
+  <img src="logo.png" alt="health-log-parser" width="400"/>
 
-<p align="center">
-  <img src="logo.png" alt="Logo" width="400"/>
-</p>
+  [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+  [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 
-🔹 **AI-powered tool for structuring and auditing personal health logs**  
+  **Transform messy health journals into expert-quality medical reports with clinical reasoning**
 
-## 📖 Overview
+  [Documentation](docs/pipeline.md)
+</div>
 
-health-log-parser transforms unstructured or semi-structured health journal entries into clean, standardized Markdown summaries. It uses an LLM (via OpenRouter) to extract and format details about medical visits, medications, and symptoms. The tool also audits the structured output, reporting any clinical data missing from the conversion.
+## Overview
 
-This project is ideal for patients, caregivers, or clinicians who want to organize health notes and ensure no important information is lost in the process.
+health-log-parser uses LLMs to transform unstructured health journal entries into structured, clinician-quality reports. It builds a chronological timeline of health events, links related episodes (e.g., medications to the conditions they treat), and generates actionable summaries, recommendations, and follow-up questions.
 
-## 🚀 Installation
+**Key capabilities:**
+- Parallel processing of hundreds of journal entries
+- Episode linking to track treatments, conditions, and experiments over time
+- Lab result integration with automatic interpretation
+- Multi-model support via OpenRouter (GPT-4, Claude, etc.)
 
-This project uses [uv](https://docs.astral.sh/uv/) for fast, reliable Python package management.
+## Quick Start
 
-**Install uv** (if you haven't already):
 ```bash
+# Install uv (if needed)
 curl -LsSf https://astral.sh/uv/install.sh | sh
-```
 
-**Install the project:**
-```bash
+# Clone and install
+git clone https://github.com/tsilva/health-log-parser.git
+cd health-log-parser
 uv sync
-```
 
-This will create a virtual environment and install all dependencies from `pyproject.toml`.
+# Configure
+cp .env.example .env
+# Edit .env with your OPENROUTER_API_KEY, HEALTH_LOG_PATH, and OUTPUT_PATH
 
-**Requirements:**
-- Python 3.8+
-- Set up your `.env` file (see `.env.example`) with your OpenRouter API key, preferred model, and health log path
-
-## 🛠️ Usage
-
-**Basic usage:**
-
-```bash
+# Run
 uv run python main.py
 ```
 
-Or activate the virtual environment and run directly:
+## How It Works
 
-```bash
-source .venv/bin/activate  # On Unix/macOS
-# or
-.venv\Scripts\activate     # On Windows
-
-python main.py
+```
+health.md ─→ Split Sections ─→ Process (parallel) ─→ Build Timeline ─→ Generate Reports ─→ output.md
 ```
 
-- Input: A Markdown file with health log entries (can be unstructured)
-- Output:
-  - `OUTPUT_PATH/<LOG>/entries/<DATE>.raw.md` — original section text
-  - `OUTPUT_PATH/<LOG>/entries/<DATE>.processed.md` — validated LLM output
-  - `OUTPUT_PATH/<LOG>/entries/<DATE>.labs.md` — structured lab results for each date
-  - `OUTPUT_PATH/<LOG>/intro.md` — any pre-dated content
-  - `OUTPUT_PATH/<LOG>/reports/summary.md` — short patient summary
-  - `OUTPUT_PATH/<LOG>/reports/clarifying_questions_<N>.md` — raw questions from each run
-  - `OUTPUT_PATH/<LOG>/reports/clarifying_questions.md` — clarifying questions merged from multiple runs
-  - `OUTPUT_PATH/<LOG>/reports/next_steps_<SPECIALTY>.md` — recommended actions from each specialist
-  - `OUTPUT_PATH/<LOG>/reports/next_steps.md` — consensus recommendations
-  - `OUTPUT_PATH/<LOG>/reports/output.md` — patient summary followed by the curated log
-  - `OUTPUT_PATH/<LOG>/reports/clinical_data_missing_report.md` — report of any clinical data missing from the structured output
-  - `logs/error.log` — errors captured during processing
-  - Logs are also echoed to the console
+The pipeline:
+1. **Splits** your markdown health log into dated sections
+2. **Processes** each section in parallel using LLMs
+3. **Builds** a chronological timeline with episode IDs linking related events
+4. **Generates** reports: summary, recommendations, experiments, follow-up questions
 
-**Environment variables (`.env`):**
+## Output Structure
 
-- `OPENROUTER_API_KEY` — your OpenRouter API key
-- `MODEL_ID` — default LLM model (e.g., `openai/gpt-4.1`)
-- `PROCESS_MODEL_ID` — model for transforming raw sections
-- `VALIDATE_MODEL_ID` — model for validating processed sections
-- `QUESTIONS_MODEL_ID` — model for generating clarifying questions
-- `QUESTIONS_RUNS` — how many times to generate clarifying questions (default: 3)
-- `SUMMARY_MODEL_ID` — model for creating summaries
-- `NEXT_STEPS_MODEL_ID` — model for recommended next steps
-- `HEALTH_LOG_PATH` — path to the markdown health log
-- `LABS_PARSER_OUTPUT_PATH` — path to aggregated lab CSVs
-- `MAX_WORKERS` — number of parallel processing threads (default: 1)
-- `OUTPUT_PATH` — base directory for generated output (default: `output`)
+```
+OUTPUT_PATH/
+├── entries/
+│   ├── 2024-01-15.raw.md        # Original section
+│   ├── 2024-01-15.processed.md  # Structured output
+│   └── 2024-01-15.labs.md       # Lab results
+├── health_timeline.csv          # Chronological events with episode IDs
+└── reports/
+    └── output.md                # Final compiled report
+```
 
-**Example workflow:**
+## Configuration
 
-1. Prepare your `.env` file with API credentials and the path to your health log.
-2. Run the tool:
-   ```bash
-   uv run python main.py
-   ```
-3. Review the structured log and reports in the `OUTPUT_PATH/<LOG>/` directory (defaults to `output/<LOG>/`).
+Create a `.env` file with:
 
-## 📄 License
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `OPENROUTER_API_KEY` | Yes | Your OpenRouter API key |
+| `HEALTH_LOG_PATH` | Yes | Path to your markdown health log |
+| `OUTPUT_PATH` | Yes | Directory for generated output |
+| `MODEL_ID` | No | Default LLM model (default: `gpt-4o-mini`) |
+| `MAX_WORKERS` | No | Parallel processing threads (default: `4`) |
 
-This project is licensed under the [MIT License](LICENSE).
+See [docs/pipeline.md](docs/pipeline.md) for all configuration options and model overrides per task.
+
+## Health Log Format
+
+Your health log should be a markdown file with dated sections:
+
+```markdown
+### 2024-01-15
+
+Visited Dr. Smith for annual checkup. Blood pressure 120/80.
+Started vitamin D 2000 IU daily.
+
+### 2024-01-20
+
+Feeling better after starting vitamin D. Energy levels improved.
+```
+
+## License
+
+[MIT](LICENSE)

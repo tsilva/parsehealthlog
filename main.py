@@ -1372,6 +1372,7 @@ Output only the new CSV rows to append (no header row):"""
         # Handle multiple column naming conventions (before validation)
         column_mappings = {
             "lab_name_enum": "lab_name_standardized",
+            "lab_name": "lab_name_standardized",
             "lab_value_final": "value_normalized",
             "lab_unit_final": "unit_normalized",
             "lab_range_min_final": "reference_min_normalized",
@@ -1530,7 +1531,8 @@ Output only the new CSV rows to append (no header row):"""
         parts = []
         if header_text:
             parts.append(header_text.strip())
-        for _, entry_content in sorted_entries:
+        for date, entry_content in sorted_entries:
+            parts.append(f"# {date}")
             parts.append(entry_content)
 
         content = "\n\n".join(parts)
