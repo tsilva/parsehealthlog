@@ -163,10 +163,26 @@ Date,EpisodeID,Item,Category,Event,Details
 - Experiments → new EpisodeID, updates use same ID
 
 **Incremental Processing:**
-- Timeline header stores: `processed_through` date, `entries_hash`, `last_episode_id`
-- If hash matches and new entries exist → process only new entries (append)
-- If hash differs (old entry changed) → full reprocess from scratch
-- If no new entries and hash matches → cache hit, skip processing
+
+The timeline uses per-entry hash tracking to enable incremental rebuilds from any change point.
+
+Header format (two lines):
+```
+# Last updated: 2024-01-20 | Processed through: 2024-01-20 | LastEp: 42
+# HASHES: 2024-01-15=a1b2c3d4,2024-01-20=b2c3d4e5
+```
+
+Processing modes:
+- **Cache hit**: All entry hashes match, no new entries → return existing timeline
+- **Append mode**: All existing hashes match, new entries after `processed_through` → append new rows only
+- **Incremental rebuild**: Entry modified, deleted, or inserted in middle → truncate timeline to change point and rebuild from there
+- **Full rebuild**: First run, migration from old format, or no HASHES line → rebuild from scratch
+
+Change detection algorithm:
+1. Compare current entry hashes against stored HASHES line
+2. Find earliest date where: entry deleted, entry modified, or new entry inserted before `processed_through`
+3. Truncate timeline to keep rows before change point
+4. Reprocess entries from change point forward
 
 **Design Principle:** Trust the LLM for medical reasoning rather than encoding rules in Python. The timeline captures events; downstream prompts interpret significance.
 
@@ -314,13 +330,14 @@ All generated files use hash-based dependency tracking stored in the first line:
 
 **Cache dependencies by file type:**
 - `.processed.md`: `raw` (section content), `labs`, `process_prompt`, `validate_prompt`
-- `health_timeline.csv`: `entries_hash` (hash of all processed entries up to processed_through date)
+- `health_timeline.csv`: Per-entry hashes stored in HASHES line
 - Reports: `timeline` (health_timeline.csv hash), `prompt` (specific prompt hash)
 
 **Timeline incremental processing:**
-- Header stores: `processed_through` date, `entries_hash`, `last_episode_id`
-- If historical entries unchanged and new entries exist → append new rows only
-- If historical entry changed → full reprocess from scratch
+- Header stores: `processed_through` date, `last_episode_id`, and per-entry HASHES
+- If all entry hashes match and new entries exist → append new rows only
+- If entry modified/deleted/inserted in middle → rebuild from earliest change point
+- Earlier rows before change point are preserved unchanged
 
 ### Reprocessing Logic
 

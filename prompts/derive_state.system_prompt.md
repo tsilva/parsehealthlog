@@ -5,7 +5,7 @@ You are a clinical analyst determining the **current state** of a patient's heal
 ## Input
 
 You will receive:
-1. **Health timeline CSV** - Chronological events with columns: Date, EpisodeID, Item, Category, Event, Details
+1. **Health timeline CSV** - Chronological events with columns: Date, EpisodeID, Item, Category, Event, RelatedEpisode, Details
 2. **Today's date** - For calculating recency
 
 ## Output
@@ -49,13 +49,13 @@ If an item has an explicit event (stopped, resolved, ended), that is the ground 
 
 ### Rule 3: Condition-Treatment Cascade
 
-**Trigger:** A condition episode has "resolved" event AND a medication/supplement has "For [that episode]" in its Details.
+**Trigger:** A condition episode has "resolved" event AND a medication/supplement has that episode in its RelatedEpisode column.
 
-**Action:** If the treatment was started FOR a condition that is now resolved, and the treatment has no explicit "stopped" event, mark it as **inferred stopped** (reason: condition_resolved).
+**Action:** If the treatment was started FOR a condition that is now resolved (indicated by RelatedEpisode column), and the treatment has no explicit "stopped" event, mark it as **inferred stopped** (reason: condition_resolved).
 
 **Example:**
 - ep-001 Flu → resolved on 2024-03-17
-- ep-002 Paracetamol → started "For ep-001", never explicitly stopped
+- ep-002 Paracetamol → started with RelatedEpisode=ep-001, never explicitly stopped
 - **Result:** ep-002 Paracetamol is inferred stopped on 2024-03-17
 
 ### Rule 4: Temporal Decay for Acute Conditions
@@ -177,13 +177,13 @@ If a comprehensive stack update was detected:
 
 **Timeline:**
 ```csv
-Date,EpisodeID,Item,Category,Event,Details
-2024-01-15,ep-001,Vitamin D 5000IU,supplement,started,Daily for optimization
-2024-02-10,ep-002,Flu,condition,diagnosed,"Fever, body aches"
-2024-02-10,ep-003,Paracetamol 500mg,medication,started,"For ep-002, PRN"
-2024-02-17,ep-002,Flu,condition,resolved,Fully recovered
-2024-03-01,ep-004,Creatine 5g,supplement,started,Testing for cognition
-2024-06-01,ep-005,Stack Update,experiment,started,"Current stack: NAC 600mg PRN, Psyllium 5g daily"
+Date,EpisodeID,Item,Category,Event,RelatedEpisode,Details
+2024-01-15,ep-001,Vitamin D 5000IU,supplement,started,,Daily for optimization
+2024-02-10,ep-002,Flu,condition,diagnosed,,"Fever, body aches"
+2024-02-10,ep-003,Paracetamol 500mg,medication,started,ep-002,PRN
+2024-02-17,ep-002,Flu,condition,resolved,,Fully recovered
+2024-03-01,ep-004,Creatine 5g,supplement,started,,Testing for cognition
+2024-06-01,ep-005,Stack Update,experiment,started,,"Current stack: NAC 600mg PRN, Psyllium 5g daily"
 ```
 
 **Today:** 2024-06-15
