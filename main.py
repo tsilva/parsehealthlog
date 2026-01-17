@@ -943,7 +943,11 @@ class HealthLogProcessor:
         """Build health timeline CSV from processed entries.
 
         Processes entries chronologically (oldest first), building a CSV timeline
-        with episode IDs linking related events. Supports incremental updates.
+        with episode IDs linking related events. Supports incremental updates:
+        - Cache hit: No changes detected, return existing timeline
+        - Append mode: Only new entries at end, append new rows
+        - Incremental rebuild: Entry modified/deleted/inserted, rebuild from change point
+        - Full rebuild: First run or migration from old format
 
         Returns the timeline CSV content.
         """
@@ -958,23 +962,24 @@ class HealthLogProcessor:
             return self._get_empty_timeline()
 
         # Parse existing timeline header if it exists
-        processed_through, existing_hash, last_episode_num = self._parse_timeline_header(timeline_path)
+        processed_through, last_episode_num, entry_hashes = self._parse_timeline_header(timeline_path)
 
-        # Split entries into historical and new
-        historical_entries = [(d, c) for d, c in entries if d <= processed_through] if processed_through else []
-        new_entries = [(d, c) for d, c in entries if d > processed_through] if processed_through else entries
+        # No HASHES line - full rebuild (migration or first run)
+        if not entry_hashes:
+            self.logger.info("Full timeline rebuild: processing %d entries", len(entries))
+            return self._full_timeline_rebuild(timeline_path, entries)
 
-        # Compute hash of historical entries
-        historical_hash = hash_content("".join(c for _, c in historical_entries)) if historical_entries else ""
+        # Detect what changed
+        change = self._find_earliest_change(entries, entry_hashes, processed_through)
 
-        # Determine processing mode
-        if processed_through and historical_hash == existing_hash and not new_entries:
+        if change is None:
             # Cache hit - timeline is up-to-date
             self.logger.info("Health timeline is up-to-date (processed through %s)", processed_through)
             return self._read_timeline_content(timeline_path)
 
-        if processed_through and historical_hash == existing_hash and new_entries:
-            # Incremental mode - only process new entries
+        if change == "append":
+            # Only new entries after processed_through
+            new_entries = [(d, c) for d, c in entries if d > processed_through]
             self.logger.info(
                 "Incremental timeline update: %d new entries after %s",
                 len(new_entries), processed_through
@@ -989,14 +994,60 @@ class HealthLogProcessor:
             else:
                 updated_content = existing_content
             # Update header and save
-            new_last_date = new_entries[-1][0]
-            new_hash = hash_content("".join(c for _, c in entries))
+            new_last_date = entries[-1][0]
             new_last_ep = self._get_last_episode_num(updated_content)
-            self._save_timeline(timeline_path, updated_content, new_last_date, new_hash, new_last_ep)
+            self._save_timeline(timeline_path, updated_content, new_last_date, entries, new_last_ep)
             return updated_content
 
-        # Full reprocess - historical entry changed or first run
-        self.logger.info("Full timeline rebuild: processing %d entries", len(entries))
+        # Incremental rebuild from change point
+        self.logger.info("Rebuilding timeline from %s", change)
+
+        existing_content = self._read_timeline_content(timeline_path)
+        truncated, last_ep_kept = self._truncate_timeline_to_date(existing_content, change)
+
+        # Get entries to reprocess (date >= change point)
+        to_process = [(d, c) for d, c in entries if d >= change]
+
+        # Process in batches, starting from truncated timeline
+        timeline_content = truncated
+        next_ep = last_ep_kept + 1
+
+        batch_start = 0
+        while batch_start < len(to_process):
+            batch_size = self._calculate_batch_size(to_process[batch_start:], len(timeline_content))
+            batch = to_process[batch_start:batch_start + batch_size]
+
+            new_rows = self._process_timeline_batch(
+                timeline_content, batch, next_ep
+            )
+
+            if new_rows.strip():
+                timeline_content = timeline_content.rstrip() + "\n" + new_rows
+                next_ep = self._get_last_episode_num(timeline_content) + 1
+
+            batch_start += batch_size
+            self.logger.info(
+                "Processed batch: %d entries through %s (%d remaining)",
+                len(batch), batch[-1][0], len(to_process) - batch_start
+            )
+
+        # Save with header
+        last_date = entries[-1][0]
+        last_ep = self._get_last_episode_num(timeline_content)
+        self._save_timeline(timeline_path, timeline_content, last_date, entries, last_ep)
+
+        return timeline_content
+
+    def _full_timeline_rebuild(self, timeline_path: Path, entries: list[tuple[str, str]]) -> str:
+        """Perform a full timeline rebuild from scratch.
+
+        Args:
+            timeline_path: Path to save the timeline.
+            entries: All entries sorted chronologically (oldest first).
+
+        Returns:
+            The complete timeline CSV content.
+        """
         timeline_content = self._get_empty_timeline()
 
         # Process in batches to stay within context limits
@@ -1022,9 +1073,8 @@ class HealthLogProcessor:
 
         # Save with header
         last_date = entries[-1][0]
-        full_hash = hash_content("".join(c for _, c in entries))
         last_ep = self._get_last_episode_num(timeline_content)
-        self._save_timeline(timeline_path, timeline_content, last_date, full_hash, last_ep)
+        self._save_timeline(timeline_path, timeline_content, last_date, entries, last_ep)
 
         return timeline_content
 
@@ -1045,41 +1095,81 @@ class HealthLogProcessor:
         """Return empty timeline with just the CSV header."""
         return "Date,EpisodeID,Item,Category,Event,Details"
 
-    def _parse_timeline_header(self, path: Path) -> tuple[str | None, str | None, int]:
-        """Parse timeline header to get processed_through, hash, and last episode ID.
+    def _parse_timeline_header(self, path: Path) -> tuple[str | None, int, dict[str, str]]:
+        """Parse timeline header to get processed_through, last episode ID, and per-entry hashes.
+
+        Expected header format (two lines):
+            # Last updated: YYYY-MM-DD | Processed through: YYYY-MM-DD | LastEp: N
+            # HASHES: 2024-01-15=a1b2c3d4,2024-01-20=b2c3d4e5
 
         Returns:
-            (processed_through_date, entries_hash, last_episode_num)
+            (processed_through_date, last_episode_num, entry_hashes_dict)
         """
         if not path.exists():
-            return None, None, 0
+            return None, 0, {}
 
         try:
-            first_line = path.read_text(encoding="utf-8").split("\n")[0]
-            # Expected format: # Last updated: YYYY-MM-DD | Processed through: YYYY-MM-DD | Hash: xxx | LastEp: N
+            lines = path.read_text(encoding="utf-8").split("\n")
+            if not lines:
+                return None, 0, {}
+
+            first_line = lines[0]
+
+            # New format: # Last updated: YYYY-MM-DD | Processed through: YYYY-MM-DD | LastEp: N
             match = re.match(
-                r"#\s*Last updated:.*\|\s*Processed through:\s*(\d{4}-\d{2}-\d{2})\s*\|\s*Hash:\s*(\w+)\s*\|\s*LastEp:\s*(\d+)",
+                r"#\s*Last updated:.*\|\s*Processed through:\s*(\d{4}-\d{2}-\d{2})\s*\|\s*LastEp:\s*(\d+)",
                 first_line
             )
             if match:
-                return match.group(1), match.group(2), int(match.group(3))
+                processed_through = match.group(1)
+                last_ep = int(match.group(2))
+                # Parse second line for HASHES
+                entry_hashes = {}
+                if len(lines) > 1 and lines[1].startswith("# HASHES:"):
+                    entry_hashes = self._parse_hashes_line(lines[1])
+                return processed_through, last_ep, entry_hashes
+
+            # Legacy format: # Last updated: ... | Hash: xxx | LastEp: N
+            # Return empty entry_hashes to trigger full rebuild
+            legacy_match = re.match(
+                r"#\s*Last updated:.*\|\s*Processed through:\s*(\d{4}-\d{2}-\d{2})\s*\|\s*Hash:\s*\w+\s*\|\s*LastEp:\s*(\d+)",
+                first_line
+            )
+            if legacy_match:
+                # Legacy format - return empty hashes to force migration rebuild
+                return legacy_match.group(1), int(legacy_match.group(2)), {}
+
         except (IOError, IndexError):
             pass
-        return None, None, 0
+        return None, 0, {}
 
     def _read_timeline_content(self, path: Path) -> str:
-        """Read timeline content, skipping the header comment line."""
-        lines = path.read_text(encoding="utf-8").split("\n")
-        # Skip header comment if present
-        if lines and lines[0].startswith("#"):
-            return "\n".join(lines[1:])
-        return "\n".join(lines)
+        """Read timeline content, skipping the header comment lines.
 
-    def _save_timeline(self, path: Path, content: str, processed_through: str, entries_hash: str, last_ep: int) -> None:
-        """Save timeline with metadata header."""
+        Skips up to two comment lines at the start:
+        - Line 1: Metadata (Last updated, Processed through, LastEp)
+        - Line 2: HASHES line (per-entry hashes)
+        """
+        lines = path.read_text(encoding="utf-8").split("\n")
+        # Skip header comment lines
+        skip = 0
+        while skip < len(lines) and lines[skip].startswith("#"):
+            skip += 1
+        return "\n".join(lines[skip:])
+
+    def _save_timeline(
+        self, path: Path, content: str, processed_through: str, entries: list[tuple[str, str]], last_ep: int
+    ) -> None:
+        """Save timeline with two-line metadata header.
+
+        Header format:
+            # Last updated: YYYY-MM-DD | Processed through: YYYY-MM-DD | LastEp: N
+            # HASHES: date1=hash1,date2=hash2,...
+        """
         today = datetime.now().strftime("%Y-%m-%d")
-        header = f"# Last updated: {today} | Processed through: {processed_through} | Hash: {entries_hash} | LastEp: {last_ep}"
-        path.write_text(f"{header}\n{content}", encoding="utf-8")
+        header_line1 = f"# Last updated: {today} | Processed through: {processed_through} | LastEp: {last_ep}"
+        header_line2 = self._format_hashes_line(entries)
+        path.write_text(f"{header_line1}\n{header_line2}\n{content}", encoding="utf-8")
         self.logger.info("Saved health timeline to %s", path)
 
     def _get_last_episode_num(self, timeline_content: str) -> int:
@@ -1088,6 +1178,130 @@ class HealthLogProcessor:
         if matches:
             return max(int(m) for m in matches)
         return 0
+
+    def _format_hashes_line(self, entries: list[tuple[str, str]]) -> str:
+        """Format per-entry hashes as a comment line.
+
+        Args:
+            entries: List of (date, content) tuples.
+
+        Returns:
+            Formatted line like: # HASHES: 2024-01-15=a1b2c3d4,2024-01-20=b2c3d4e5
+        """
+        hashes = []
+        for date, content in sorted(entries, key=lambda x: x[0]):
+            h = hash_content(content)
+            hashes.append(f"{date}={h}")
+        return "# HASHES: " + ",".join(hashes)
+
+    def _parse_hashes_line(self, line: str) -> dict[str, str]:
+        """Parse HASHES line into a dict of date -> hash.
+
+        Args:
+            line: Line like "# HASHES: 2024-01-15=a1b2c3d4,2024-01-20=b2c3d4e5"
+
+        Returns:
+            Dict mapping date strings to their content hashes.
+        """
+        if not line.startswith("# HASHES:"):
+            return {}
+
+        hashes_part = line[len("# HASHES:"):].strip()
+        if not hashes_part:
+            return {}
+
+        result = {}
+        for pair in hashes_part.split(","):
+            if "=" in pair:
+                date, h = pair.split("=", 1)
+                result[date.strip()] = h.strip()
+        return result
+
+    def _find_earliest_change(
+        self,
+        entries: list[tuple[str, str]],
+        entry_hashes: dict[str, str],
+        processed_through: str | None,
+    ) -> str | None:
+        """Find the earliest date where an entry changed, was deleted, or was inserted.
+
+        Args:
+            entries: Current list of (date, content) tuples.
+            entry_hashes: Dict of date -> hash from the stored HASHES line.
+            processed_through: The date through which the timeline was last processed.
+
+        Returns:
+            - A date string if we need to rebuild from that date
+            - "append" if only new entries after processed_through exist
+            - None if cache is valid (no changes)
+        """
+        # Build current hashes
+        current = {date: hash_content(content) for date, content in entries}
+        current_dates = set(current.keys())
+        existing_dates = set(entry_hashes.keys())
+
+        change_points = []
+
+        # Case 1: Entry deleted
+        for date in existing_dates - current_dates:
+            change_points.append(date)
+
+        # Case 2: Entry modified
+        for date in current_dates & existing_dates:
+            if current[date] != entry_hashes[date]:
+                change_points.append(date)
+
+        # Case 3: New entry inserted in middle (not appended)
+        for date in current_dates - existing_dates:
+            if processed_through and date <= processed_through:
+                change_points.append(date)
+
+        if change_points:
+            return min(change_points)  # Earliest change
+
+        # No changes to existing - check for append mode
+        if processed_through:
+            new_entries = [d for d in current_dates if d > processed_through]
+            if new_entries:
+                return "append"  # Use existing append logic
+
+        return None  # Cache hit
+
+    def _truncate_timeline_to_date(self, content: str, cutoff_date: str) -> tuple[str, int]:
+        """Keep timeline rows where Date < cutoff_date.
+
+        Args:
+            content: Timeline CSV content (without header comment lines).
+            cutoff_date: Date to truncate from (exclusive - rows before this are kept).
+
+        Returns:
+            Tuple of (truncated content, max episode number in kept rows).
+        """
+        lines = content.split("\n")
+        kept = []
+        last_ep = 0
+
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+
+            # Keep CSV header
+            if stripped.startswith("Date,"):
+                kept.append(line)
+                continue
+
+            # Parse date from first column (handle quoted/unquoted)
+            row_date = line.split(",")[0].strip().strip('"')
+
+            if row_date < cutoff_date:
+                kept.append(line)
+                # Track max episode number
+                match = re.search(r"ep-(\d+)", line)
+                if match:
+                    last_ep = max(last_ep, int(match.group(1)))
+
+        return "\n".join(kept), last_ep
 
     def _calculate_batch_size(self, entries: list[tuple[str, str]], timeline_size: int) -> int:
         """Calculate how many entries fit in a batch given current timeline size.

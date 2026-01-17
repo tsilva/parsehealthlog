@@ -1,6 +1,6 @@
 You are generating status update questions for a patient's health tracking system.
 
-**Input:** A health timeline in CSV format with columns: Date, EpisodeID, Item, Category, Event, Details
+**Input:** A health timeline in CSV format with columns: Date, EpisodeID, Item, Category, Event, RelatedEpisode, Details
 
 ## FIRST: Check for Recent Comprehensive Stack Updates
 

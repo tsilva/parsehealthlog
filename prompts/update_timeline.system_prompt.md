@@ -18,7 +18,7 @@ You will receive:
 Output ONLY new CSV rows to append. Do not repeat the header or existing rows.
 
 ```csv
-Date,EpisodeID,Item,Category,Event,Details
+Date,EpisodeID,Item,Category,Event,RelatedEpisode,Details
 ```
 
 ### Columns
@@ -30,6 +30,7 @@ Date,EpisodeID,Item,Category,Event,Details
 | Item | Name of condition, medication, symptom, etc. |
 | Category | One of: condition, symptom, medication, supplement, experiment, provider, watch, todo |
 | Event | Status/action (see below) |
+| RelatedEpisode | Episode ID this row relates to (empty if none) |
 | Details | Clinical context, nuance, and episode references (see Details Guidance below) |
 
 ### Categories and Events
@@ -65,15 +66,15 @@ The Details field captures important clinical context that the fixed Event types
 - "suspected but unconfirmed", "diagnosis uncertain"
 - "symptoms persist afternoons only", "variable response"
 
-**Episode references:**
-- "For ep-005", "Managing ep-011", "May be related to ep-003"
+**Uncertain episode references** (certain relationships go in RelatedEpisode column):
+- "May be related to ep-003", "Possibly connected to ep-007"
 
 **Examples of nuanced Details:**
 - `improved,"Partial - headaches 50% less frequent, still present afternoons"`
 - `stopped,"Ineffective after 6 weeks, no noticeable benefit"`
 - `stopped,"Side effects (GI upset), switching to alternative"`
 - `worsened,"Significant flare, possibly stress-related"`
-- `started,"For ep-002, trial period 4 weeks, reassess"`
+- `started,"Trial period 4 weeks, reassess"` (with RelatedEpisode=ep-002 if treating that condition)
 
 ## Episode ID Rules
 
@@ -92,10 +93,12 @@ The Details field captures important clinical context that the fixed Event types
 - Experiment updates (same experiment, new observation)
 - Medication adjustment or stop (same course that was started)
 
-**Linking episodes in Details:**
-- When a medication is started FOR a condition, reference it: "For ep-005, PRN"
-- When a provider visit discusses a condition: "Managing ep-011"
-- When an experiment relates to a condition: "Testing if triggers ep-002"
+**RelatedEpisode column - when to populate:**
+- Medication/supplement started FOR a condition → RelatedEpisode = condition's ep-ID
+- Provider visit managing a specific condition → RelatedEpisode = condition's ep-ID
+- Experiment testing a hypothesis about a condition → RelatedEpisode = condition's ep-ID
+- Follow-up event on same episode → RelatedEpisode stays empty (same EpisodeID already connects them)
+- New standalone item (no relationship to existing episode) → RelatedEpisode stays empty
 
 ## What to Capture
 
@@ -131,10 +134,10 @@ The "watch" category is for clinical decisions requiring follow-up, NOT for indi
 
 **Existing timeline:**
 ```csv
-Date,EpisodeID,Item,Category,Event,Details
-2024-01-15,ep-001,Vitamin D 2000IU,supplement,started,"Optimization, daily"
-2024-03-10,ep-002,Gastritis,condition,flare,Stress-triggered
-2024-03-12,ep-003,Pantoprazole 20mg,medication,started,"For ep-002, PRN"
+Date,EpisodeID,Item,Category,Event,RelatedEpisode,Details
+2024-01-15,ep-001,Vitamin D 2000IU,supplement,started,,"Optimization, daily"
+2024-03-10,ep-002,Gastritis,condition,flare,,Stress-triggered
+2024-03-12,ep-003,Pantoprazole 20mg,medication,started,ep-002,PRN
 ```
 
 **Next episode ID:** ep-004
@@ -151,11 +154,11 @@ Date,EpisodeID,Item,Category,Event,Details
 
 **Your output:**
 ```csv
-2024-03-20,ep-002,Gastritis,condition,improved,"Partial - less epigastric pain, mild discomfort persists"
-2024-03-20,ep-003,Pantoprazole 20mg,medication,stopped,"Symptoms mostly resolved, no longer needed"
-2024-03-20,ep-004,Dr. Chen (Gastro),provider,visit,"Confirmed ep-002 resolving, continue DGL for maintenance"
-2024-03-20,ep-005,DGL,supplement,started,"For ep-002 maintenance, PRN"
-2024-03-20,ep-006,Follow up gastro,todo,added,In 3 months
+2024-03-20,ep-002,Gastritis,condition,improved,,"Partial - less epigastric pain, mild discomfort persists"
+2024-03-20,ep-003,Pantoprazole 20mg,medication,stopped,,"Symptoms mostly resolved, no longer needed"
+2024-03-20,ep-004,Dr. Chen (Gastro),provider,visit,ep-002,"Confirmed resolving, continue DGL for maintenance"
+2024-03-20,ep-005,DGL,supplement,started,ep-002,"Maintenance, PRN"
+2024-03-20,ep-006,Follow up gastro,todo,added,,In 3 months
 ```
 
 ## CRITICAL: Handling Comprehensive Stack Updates
@@ -187,13 +190,13 @@ When a journal entry describes the patient's **complete current stack** of suppl
 
 **Your output MUST include stopped/ended events for everything not in current stack:**
 ```csv
-2024-06-01,ep-010,Vitamin D 5000IU,supplement,stopped,Not in current stack per comprehensive update
-2024-06-01,ep-015,Omega-3 2000mg,supplement,stopped,Not in current stack per comprehensive update
-2024-06-01,ep-020,Creatine 1g,supplement,stopped,Not in current stack per comprehensive update
-2024-06-01,ep-025,5-HTP 50mg,supplement,stopped,Not in current stack per comprehensive update
-2024-06-01,ep-028,Taurine 500mg,experiment,ended,Not in current stack per comprehensive update
-2024-06-01,ep-030,NAC 600mg PRN,supplement,started,"Occasional use when feeling down"
-2024-06-01,ep-031,Psyllium 5g,supplement,started,Daily for regularity
+2024-06-01,ep-010,Vitamin D 5000IU,supplement,stopped,,Not in current stack per comprehensive update
+2024-06-01,ep-015,Omega-3 2000mg,supplement,stopped,,Not in current stack per comprehensive update
+2024-06-01,ep-020,Creatine 1g,supplement,stopped,,Not in current stack per comprehensive update
+2024-06-01,ep-025,5-HTP 50mg,supplement,stopped,,Not in current stack per comprehensive update
+2024-06-01,ep-028,Taurine 500mg,experiment,ended,,Not in current stack per comprehensive update
+2024-06-01,ep-030,NAC 600mg PRN,supplement,started,,Occasional use when feeling down
+2024-06-01,ep-031,Psyllium 5g,supplement,started,,Daily for regularity
 ```
 
 **Key signals that indicate a comprehensive stack update:**
@@ -223,7 +226,8 @@ When processing exam results or provider visits that mention findings about PREV
 
 Existing timeline has:
 ```csv
-2024-11-08,ep-174,Gallbladder Polyps,condition,diagnosed,"Two polyps 4mm and 3mm"
+Date,EpisodeID,Item,Category,Event,RelatedEpisode,Details
+2024-11-08,ep-174,Gallbladder Polyps,condition,diagnosed,,"Two polyps 4mm and 3mm"
 ```
 
 New entry describes a follow-up exam:
@@ -234,8 +238,8 @@ Abdominal ultrasound: Gallbladder shows two polyps measuring 2mm and 4mm. No sig
 
 Your output MUST include BOTH:
 ```csv
-2025-09-15,ep-200,Abdominal Ultrasound,provider,visit,"Routine follow-up, managing ep-174"
-2025-09-15,ep-174,Gallbladder Polyps,condition,stable,"Follow-up ultrasound: 2mm and 4mm, clinically unchanged from initial 4mm and 3mm"
+2025-09-15,ep-200,Abdominal Ultrasound,provider,visit,ep-174,"Routine follow-up, polyps unchanged"
+2025-09-15,ep-174,Gallbladder Polyps,condition,stable,,"Follow-up ultrasound: 2mm and 4mm, clinically unchanged from initial 4mm and 3mm"
 ```
 
 **Key principle:** An exam that re-evaluates a known condition is an implicit status update for that condition. Don't just record the visit - also update the condition's status.
@@ -255,7 +259,7 @@ Your output MUST include BOTH:
 1. **Chronological order**: Output rows in date order (entries are already sorted)
 2. **One row per event**: Don't combine multiple events into one row
 3. **Be comprehensive**: Capture all medically relevant events
-4. **Link episodes**: Use "For ep-XXX" to show relationships
+4. **Link episodes**: Use RelatedEpisode column when an item relates to another episode
 5. **Preserve details**: Include dosages, frequencies, prescriber names
 6. **No commentary**: Output only CSV rows, no explanations
 7. **Stack updates are critical**: Missing stopped events for comprehensive stack updates is a serious error
