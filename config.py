@@ -28,16 +28,7 @@ class ProfileConfig:
     medical_exams_parser_output_path: Path | None = None
     report_output_path: Path | None = None
 
-    # Model overrides (None means use default)
-    model: str | None = None
-    process_model: str | None = None
-    validate_model: str | None = None
-    summary_model: str | None = None
-    questions_model: str | None = None
-    next_steps_model: str | None = None
-    status_model: str | None = None
-
-    # Processing overrides
+    # Processing configuration
     workers: int | None = None
 
     @classmethod
@@ -64,13 +55,6 @@ class ProfileConfig:
             labs_parser_output_path=get_path("labs_parser_output_path"),
             medical_exams_parser_output_path=get_path("medical_exams_parser_output_path"),
             report_output_path=get_path("report_output_path"),
-            model=data.get("model"),
-            process_model=data.get("process_model"),
-            validate_model=data.get("validate_model"),
-            summary_model=data.get("summary_model"),
-            questions_model=data.get("questions_model"),
-            next_steps_model=data.get("next_steps_model"),
-            status_model=data.get("status_model"),
             workers=data.get("workers"),
         )
 
@@ -213,17 +197,11 @@ class Config:
         if not profile.output_path:
             raise ConfigurationError(f"Profile '{profile.name}' missing required field: output_path")
 
-        # Model configuration with cascading defaults: profile > env > default
-        default_model = profile.model or os.getenv("MODEL_ID", "gpt-4o-mini")
+        # Model configuration from environment variables
+        default_model = os.getenv("MODEL_ID", "gpt-4o-mini")
 
-        def get_model(profile_override: str | None, role: str) -> str:
-            """Get model ID with priority: profile override > env var > default."""
-            if profile_override:
-                return profile_override
-            env_val = os.getenv(f"{role.upper()}_MODEL_ID")
-            if env_val:
-                return env_val
-            return default_model
+        def get_model_id(role: str) -> str:
+            return os.getenv(f"{role.upper()}_MODEL_ID", default_model)
 
         # Workers with priority: profile > env > default (clamped to CPU count)
         if profile.workers is not None:
@@ -239,12 +217,12 @@ class Config:
         return cls(
             openrouter_api_key=openrouter_api_key,
             model_id=default_model,
-            process_model_id=get_model(profile.process_model, "process"),
-            validate_model_id=get_model(profile.validate_model, "validate"),
-            summary_model_id=get_model(profile.summary_model, "summary"),
-            questions_model_id=get_model(profile.questions_model, "questions"),
-            next_steps_model_id=get_model(profile.next_steps_model, "next_steps"),
-            status_model_id=profile.status_model or os.getenv("STATUS_MODEL_ID", "anthropic/claude-opus-4.5"),
+            process_model_id=get_model_id("process"),
+            validate_model_id=get_model_id("validate"),
+            summary_model_id=get_model_id("summary"),
+            questions_model_id=get_model_id("questions"),
+            next_steps_model_id=get_model_id("next_steps"),
+            status_model_id=os.getenv("STATUS_MODEL_ID", "anthropic/claude-opus-4.5"),
             health_log_path=profile.health_log_path,
             output_path=profile.output_path,
             labs_parser_output_path=profile.labs_parser_output_path,

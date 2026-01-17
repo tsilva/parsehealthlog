@@ -208,6 +208,48 @@ When a journal entry describes the patient's **complete current stack** of suppl
 - "I stopped Y" (just a removal)
 - Mentions of individual supplements without claiming it's a complete list
 
+## CRITICAL: Linking Exam Findings to Existing Conditions
+
+When processing exam results or provider visits that mention findings about PREVIOUSLY DIAGNOSED conditions in the timeline:
+
+1. **Search the existing timeline** for matching conditions (by name or clinical equivalence)
+2. **Create an update event** for that condition with the appropriate event type:
+   - `stable` - findings unchanged or clinically insignificant change
+   - `improved` - findings show improvement
+   - `worsened` - findings show progression
+   - `resolved` - findings show resolution
+
+**Example:**
+
+Existing timeline has:
+```csv
+2024-11-08,ep-174,Gallbladder Polyps,condition,diagnosed,"Two polyps 4mm and 3mm"
+```
+
+New entry describes a follow-up exam:
+```
+#### 2025-09-15
+Abdominal ultrasound: Gallbladder shows two polyps measuring 2mm and 4mm. No significant change.
+```
+
+Your output MUST include BOTH:
+```csv
+2025-09-15,ep-200,Abdominal Ultrasound,provider,visit,"Routine follow-up, managing ep-174"
+2025-09-15,ep-174,Gallbladder Polyps,condition,stable,"Follow-up ultrasound: 2mm and 4mm, clinically unchanged from initial 4mm and 3mm"
+```
+
+**Key principle:** An exam that re-evaluates a known condition is an implicit status update for that condition. Don't just record the visit - also update the condition's status.
+
+**Signals that an exam finding relates to an existing condition:**
+- Explicit mention of a previously diagnosed item (e.g., "polyps", "nodule", "hernia")
+- Follow-up imaging for a known finding (e.g., "follow-up ultrasound", "repeat MRI")
+- Comparison to prior findings (e.g., "compared to previous", "no change from prior exam")
+- Same anatomical location as a tracked condition
+
+**Do NOT create update events when:**
+- The exam is screening/routine with no prior related condition in timeline
+- The finding is entirely new (create a new episode instead)
+
 ## Important Notes
 
 1. **Chronological order**: Output rows in date order (entries are already sorted)
