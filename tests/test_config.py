@@ -130,7 +130,6 @@ class TestConfigFromEnv:
         with patch.dict(os.environ, env, clear=True):
             config = Config.from_env()
             assert config.labs_parser_output_path is None
-            assert config.report_output_path is None
 
     def test_optional_paths_when_set(self):
         """Optional paths are set when provided."""
@@ -139,12 +138,10 @@ class TestConfigFromEnv:
             "HEALTH_LOG_PATH": "/path/to/log.md",
             "OUTPUT_PATH": "/path/to/output",
             "LABS_PARSER_OUTPUT_PATH": "/path/to/labs",
-            "REPORT_OUTPUT_PATH": "/path/to/report.md",
         }
         with patch.dict(os.environ, env, clear=True):
             config = Config.from_env()
             assert config.labs_parser_output_path == Path("/path/to/labs")
-            assert config.report_output_path == Path("/path/to/report.md")
 
     def test_max_workers_zero_becomes_one(self):
         """MAX_WORKERS=0 falls back to 1."""

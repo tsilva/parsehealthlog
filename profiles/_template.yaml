@@ -11,8 +11,5 @@ output_path: "/path/to/your/output/"
 labs_parser_output_path: null
 medical_exams_parser_output_path: null
 
-# Optional: Copy final report to specific location
-report_output_path: null
-
 # Optional: Processing configuration
 # workers: 4                  # Parallel workers for section processing

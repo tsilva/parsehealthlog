@@ -57,11 +57,10 @@ uv run python main.py --profile myprofile
 OUTPUT_PATH/
 ├── health_log.md           # PRIMARY: All entries (newest to oldest)
 ├── health_log.csv          # PRIMARY: Timeline with episode IDs
-├── entries/                # Intermediate files (kept for caching)
-│   ├── YYYY-MM-DD.raw.md
-│   ├── YYYY-MM-DD.processed.md
-│   └── YYYY-MM-DD.labs.md
-└── intro.md                # Pre-dated content (if exists)
+└── entries/                # Intermediate files (kept for caching)
+    ├── YYYY-MM-DD.raw.md
+    ├── YYYY-MM-DD.processed.md
+    └── YYYY-MM-DD.labs.md
 ```
 
 ## Configuration
