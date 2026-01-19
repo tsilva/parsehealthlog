@@ -2,7 +2,7 @@
 
 # Health Log Parser Pipeline
 
-This document describes the data processing pipeline used by health-log-parser to transform unstructured health journal entries into structured reports.
+This document describes the data processing pipeline used by health-log-parser to transform unstructured health journal entries into structured data.
 
 ## Quick Overview
 
@@ -28,12 +28,12 @@ This document describes the data processing pipeline used by health-log-parser t
        |             |      Raw -> LLM Process -> LLM Validate    |-----> entries/*.processed.md
        |             |      (retry up to 3x if validation fails)  |-----> entries/*.raw.md
        |             |                                            |-----> entries/*.labs.md
-       |             |   5. BUILD HEALTH TIMELINE                 |
-       |             |      Chronological CSV with episode IDs    |-----> health_timeline.csv
-       |             |      Incremental processing (oldest→newest)|
+       |             |   5. SAVE COLLATED LOG                     |
+       |             |      All entries newest to oldest          |-----> health_log.md
        |             |                                            |
-       |             |   6. GENERATE REPORTS                      |
-       |             |      Summary, Questions, Next Steps, etc.  |-----> reports/*.md
+       |             |   6. BUILD HEALTH TIMELINE                 |
+       |             |      Chronological CSV with episode IDs    |-----> health_log.csv
+       |             |      Incremental processing (oldest→newest)|
        |             |                                            |
        +-------------+--------------------------------------------+
 
@@ -122,7 +122,24 @@ This document describes the data processing pipeline used by health-log-parser t
 
 ---
 
-### Step 5: Health Timeline Building
+### Step 5: Collated Log Output
+
+**What it does:** Assembles all processed entries into a single markdown file, ordered newest to oldest.
+
+**Key files/APIs:**
+- `main.py:_save_collated_health_log()` - Assembly logic
+
+**Input:** All `entries/*.processed.md` files
+**Output:** `health_log.md` - Complete health log with all entries
+
+**Behavior notes:**
+- Headers normalized to consistent levels
+- Includes labs and exams integrated with each entry
+- Uses content hash for caching
+
+---
+
+### Step 6: Health Timeline Building
 
 **What it does:** Builds a chronological CSV timeline from all processed sections. Each row represents a health event with episode IDs linking related events across time.
 
@@ -134,7 +151,7 @@ This document describes the data processing pipeline used by health-log-parser t
 - `prompts/update_timeline.system_prompt.md` - Timeline building prompt
 
 **Input:** All `entries/*.processed.md` files (sorted chronologically)
-**Output:** `health_timeline.csv` - CSV timeline with metadata header
+**Output:** `health_log.csv` - CSV timeline with metadata header
 
 **CSV Format:**
 ```csv
@@ -184,36 +201,7 @@ Change detection algorithm:
 3. Truncate timeline to keep rows before change point
 4. Reprocess entries from change point forward
 
-**Design Principle:** Trust the LLM for medical reasoning rather than encoding rules in Python. The timeline captures events; downstream prompts interpret significance.
-
----
-
-### Step 6: Report Generation
-
-**What it does:** Generates various reports using the health timeline and processed entries as input.
-
-**Key files/APIs:**
-- `main.py:_generate_file()` - Generic report generation with caching
-- `main.py:_generate_action_plan()` - Synthesize action plan
-- `main.py:_assemble_output()` - Combine summary + entries
-- `main.py:_assemble_final_output()` - Combine all reports
-
-**Input:** `health_timeline.csv`, processed entries, intro.md
-**Output (in `reports/` directory):**
-
-| Report | Description | Input |
-|--------|-------------|-------|
-| `summary.md` | Clinical overview | Processed entries + intro |
-| `targeted_clarifying_questions.md` | Questions about stale items | Health timeline CSV |
-| `next_steps.md` | Comprehensive recommendations | Health timeline CSV |
-| `experiments.md` | N=1 experiment tracker | Health timeline CSV |
-| `action_plan.md` | Prioritized action items | Summary + next_steps + experiments |
-| `output.md` | Full compiled report | All above + entries |
-
-**Behavior notes:**
-- Each report uses dependency tracking for caching
-- Multi-call variants (multiple LLM calls) merged via `merge_bullets.system_prompt.md`
-- Temperature settings: 0.0 for most, 0.25 for next_steps and experiments
+**Design Principle:** Trust the LLM for medical reasoning rather than encoding rules in Python. The timeline captures events; downstream consumers interpret significance.
 
 ---
 
@@ -252,6 +240,17 @@ Change detection algorithm:
                          |
                          v
                +------------------+
+               |  COLLATE LOG     |
+               |                  |
+               |  All entries     |
+               |  newest→oldest   |
+               +------------------+
+                         |
+                         v
+                   health_log.md
+                         |
+                         v
+               +------------------+
                |  BUILD TIMELINE  |  (batched, chronological)
                |                  |
                |  entries sorted  |
@@ -261,22 +260,7 @@ Change detection algorithm:
                +------------------+
                          |
                          v
-               health_timeline.csv
-                         |
-         +---------------+---------------+
-         |               |               |
-         v               v               v
-   +-----------+   +-----------+   +-----------+
-   |  SUMMARY  |   | NEXT STEPS|   |EXPERIMENTS|
-   +-----------+   +-----------+   +-----------+
-         |               |               |
-         +-------+-------+-------+-------+
-                 |
-                 v
-           action_plan.md
-                 |
-                 v
-            output.md (final assembled report)
+                  health_log.csv
 ```
 
 ## Key Files
@@ -289,14 +273,7 @@ Change detection algorithm:
 | `prompts/process.system_prompt.md` | Transforms raw entries into structured markdown |
 | `prompts/validate.system_prompt.md` | Validates processed output (checks for `$OK$`) |
 | `prompts/validate.user_prompt.md` | User prompt template for validation |
-| `prompts/summary.system_prompt.md` | Generates patient clinical summary |
 | `prompts/update_timeline.system_prompt.md` | Builds chronological CSV timeline with episode IDs |
-| `prompts/targeted_questions.system_prompt.md` | Generates questions about stale items |
-| `prompts/next_steps_unified.system_prompt.md` | "Genius doctor" comprehensive recommendations |
-| `prompts/action_plan.system_prompt.md` | Time-bucketed prioritized actions |
-| `prompts/experiments.system_prompt.md` | N=1 experiment tracking |
-| `prompts/merge_bullets.system_prompt.md` | Merges multiple LLM outputs |
-| `prompts/standard_treatments.yaml` | Treatments excluded from experiment tracking |
 
 ## Configuration
 
@@ -308,12 +285,9 @@ Change detection algorithm:
 | `MODEL_ID` | No | `gpt-4o-mini` | Default model (fallback for all roles) |
 | `PROCESS_MODEL_ID` | No | `MODEL_ID` | Model for processing sections |
 | `VALIDATE_MODEL_ID` | No | `MODEL_ID` | Model for validating output |
-| `SUMMARY_MODEL_ID` | No | `MODEL_ID` | Model for generating summary |
-| `QUESTIONS_MODEL_ID` | No | `MODEL_ID` | Model for generating questions |
-| `NEXT_STEPS_MODEL_ID` | No | `MODEL_ID` | Model for generating recommendations |
 | `STATUS_MODEL_ID` | No | `anthropic/claude-opus-4.5` | Model for building health timeline |
 | `LABS_PARSER_OUTPUT_PATH` | No | - | Path to aggregated lab CSVs |
-| `REPORT_OUTPUT_PATH` | No | - | Copy final report to this path |
+| `MEDICAL_EXAMS_PARSER_OUTPUT_PATH` | No | - | Path to medical exam summaries |
 | `MAX_WORKERS` | No | `4` | Parallel processing threads |
 
 ## Behavioral Notes
@@ -330,8 +304,8 @@ All generated files use hash-based dependency tracking stored in the first line:
 
 **Cache dependencies by file type:**
 - `.processed.md`: `raw` (section content), `labs`, `process_prompt`, `validate_prompt`
-- `health_timeline.csv`: Per-entry hashes stored in HASHES line
-- Reports: `timeline` (health_timeline.csv hash), `prompt` (specific prompt hash)
+- `health_log.csv`: Per-entry hashes stored in HASHES line
+- `health_log.md`: Content hash of assembled content
 
 **Timeline incremental processing:**
 - Header stores: `processed_through` date, `last_episode_id`, and per-entry HASHES
@@ -350,7 +324,6 @@ Files are regenerated when:
 
 - Section processing uses `ThreadPoolExecutor` with configurable `MAX_WORKERS`
 - Timeline building processes entries in batches (chronological order)
-- Reports generate sequentially (dependencies between them)
 
 ### Error Handling
 
@@ -364,4 +337,3 @@ Progress tracked in `.state.json`:
 - `status`: not_started | in_progress | completed | completed_with_errors
 - `started_at`, `completed_at`: ISO timestamps
 - `sections_total`, `sections_processed`: Progress counters
-- `reports_generated`: List of generated report filenames

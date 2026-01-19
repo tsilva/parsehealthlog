@@ -26,7 +26,6 @@ class ProfileConfig:
     output_path: Path | None = None
     labs_parser_output_path: Path | None = None
     medical_exams_parser_output_path: Path | None = None
-    report_output_path: Path | None = None
 
     # Processing configuration
     workers: int | None = None
@@ -54,7 +53,6 @@ class ProfileConfig:
             output_path=get_path("output_path"),
             labs_parser_output_path=get_path("labs_parser_output_path"),
             medical_exams_parser_output_path=get_path("medical_exams_parser_output_path"),
-            report_output_path=get_path("report_output_path"),
             workers=data.get("workers"),
         )
 
@@ -86,9 +84,6 @@ class Config:
     model_id: str
     process_model_id: str
     validate_model_id: str
-    summary_model_id: str
-    questions_model_id: str
-    next_steps_model_id: str
     status_model_id: str
 
     # Path Configuration
@@ -96,7 +91,6 @@ class Config:
     output_path: Path
     labs_parser_output_path: Path | None
     medical_exams_parser_output_path: Path | None
-    report_output_path: Path | None
 
     # Processing Configuration
     max_workers: int
@@ -132,9 +126,6 @@ class Config:
 
         process_model_id = get_model_id("process")
         validate_model_id = get_model_id("validate")
-        summary_model_id = get_model_id("summary")
-        questions_model_id = get_model_id("questions")
-        next_steps_model_id = get_model_id("next_steps")
         # Status model defaults to Claude Opus 4.5 for reasoning-heavy timeline building
         status_model_id = os.getenv("STATUS_MODEL_ID", "anthropic/claude-opus-4.5")
 
@@ -145,7 +136,6 @@ class Config:
 
         labs_parser_output_path = get_optional_path("LABS_PARSER_OUTPUT_PATH")
         medical_exams_parser_output_path = get_optional_path("MEDICAL_EXAMS_PARSER_OUTPUT_PATH")
-        report_output_path = get_optional_path("REPORT_OUTPUT_PATH")
 
         # Load processing configuration with defaults and validation
         try:
@@ -161,15 +151,11 @@ class Config:
             model_id=default_model,
             process_model_id=process_model_id,
             validate_model_id=validate_model_id,
-            summary_model_id=summary_model_id,
-            questions_model_id=questions_model_id,
-            next_steps_model_id=next_steps_model_id,
             status_model_id=status_model_id,
             health_log_path=Path(health_log_path),
             output_path=Path(output_path),
             labs_parser_output_path=labs_parser_output_path,
             medical_exams_parser_output_path=medical_exams_parser_output_path,
-            report_output_path=report_output_path,
             max_workers=max_workers,
         )
 
@@ -219,14 +205,10 @@ class Config:
             model_id=default_model,
             process_model_id=get_model_id("process"),
             validate_model_id=get_model_id("validate"),
-            summary_model_id=get_model_id("summary"),
-            questions_model_id=get_model_id("questions"),
-            next_steps_model_id=get_model_id("next_steps"),
             status_model_id=os.getenv("STATUS_MODEL_ID", "anthropic/claude-opus-4.5"),
             health_log_path=profile.health_log_path,
             output_path=profile.output_path,
             labs_parser_output_path=profile.labs_parser_output_path,
             medical_exams_parser_output_path=profile.medical_exams_parser_output_path,
-            report_output_path=profile.report_output_path,
             max_workers=max_workers,
         )

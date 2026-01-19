@@ -1,48 +1,35 @@
 from __future__ import annotations
 
-"""Clean, DRY rewrite of the health-log parser / curator.
+"""Health log data extraction and curation tool.
 
+Transforms markdown health journal entries into structured, curated data:
 • Reads a markdown health log that uses `### YYYY-MM-DD` section headers.
-• Delegates heavy-lifting (processing, validation, summarisation, question-generation,
-  specialist plans, consensus, etc.) to LLM prompts stored in a local `prompts/` folder.
-• Enriches the log with lab-result CSVs (per-log `labs.csv` *and* aggregated
-  `LABS_PARSER_OUTPUT_PATH/all.csv`).
-• Produces an output folder (default `output/` next to the script,
-  configurable via `OUTPUT_PATH`) with:
-      ├─ entries/               # dated sections, labs, and exams
-      │   ├─ <date>.raw.md
-      │   ├─ <date>.processed.md
-      │   ├─ <date>.labs.md
-      │   └─ <date>.exams.md
-      ├─ intro.md               # any pre-dated content
-      └─ reports/               # generated summaries and plans
-          ├─ .internal/
-          │   ├─ health_log_collated.md  # all entries (newest to oldest)
-          │   ├─ health_timeline.csv     # chronological events with episode IDs
-          ├─ summary.md
-          ├─ clarifying_questions.md
-          ├─ next_steps_<spec>.md
-          ├─ next_steps.md
-          └─ output.md          # summary + all processed sections (reverse-chronological)
+• Processes and validates entries using LLM prompts stored in `prompts/`.
+• Enriches entries with lab results and medical exam summaries.
+• Builds a chronological timeline with episode IDs linking related events.
 
-Configuration is managed through the Config dataclass (see config.py), which loads
-and validates these environment variables:
+Output structure:
+    OUTPUT_PATH/
+    ├─ health_log.md          # PRIMARY: All entries (newest to oldest) with labs/exams
+    ├─ health_log.csv         # PRIMARY: Chronological timeline with episode IDs
+    ├─ entries/               # INTERMEDIATE (kept for caching)
+    │   ├─ <date>.raw.md
+    │   ├─ <date>.processed.md
+    │   ├─ <date>.labs.md
+    │   └─ <date>.exams.md
+    └─ intro.md               # Pre-dated content (if exists)
+
+Configuration via environment variables (see config.py):
     OPENROUTER_API_KEY           – mandatory (forwarded to openrouter.ai)
     HEALTH_LOG_PATH              – mandatory (path to the markdown health log)
     OUTPUT_PATH                  – mandatory (base directory for generated output)
     MODEL_ID                     – default model (fallback for all roles, default: gpt-4o-mini)
     PROCESS_MODEL_ID             – (optional) override for PROCESS stage
     VALIDATE_MODEL_ID            – (optional) override for VALIDATE stage
-    QUESTIONS_MODEL_ID           – (optional) override for questions
-    SUMMARY_MODEL_ID             – (optional) override for summary
-    NEXT_STEPS_MODEL_ID          – (optional) override for next-steps generation
+    STATUS_MODEL_ID              – (optional) override for timeline building
     LABS_PARSER_OUTPUT_PATH      – (optional) path to aggregated lab CSVs
     MEDICAL_EXAMS_PARSER_OUTPUT_PATH – (optional) path to medical exam summaries
     MAX_WORKERS                  – (optional) ThreadPoolExecutor size (default 4)
-    QUESTIONS_RUNS               – (optional) how many diverse question sets to generate (default 3)
-
-The implementation is ~50 % shorter than the original (~350 → ~170 LoC) while
-maintaining identical behaviour.
 """
 
 from dotenv import load_dotenv
@@ -337,10 +324,6 @@ class HealthLogProcessor:
         self.OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
         self.entries_dir = self.OUTPUT_PATH / "entries"
         self.entries_dir.mkdir(exist_ok=True)
-        self.reports_dir = self.OUTPUT_PATH / "reports"
-        self.reports_dir.mkdir(exist_ok=True)
-        self.internal_dir = self.reports_dir / ".internal"
-        self.internal_dir.mkdir(exist_ok=True)
 
         self.logger = logging.getLogger(__name__)
 
@@ -352,9 +335,6 @@ class HealthLogProcessor:
         self.models = {
             "process": config.process_model_id,
             "validate": config.validate_model_id,
-            "summary": config.summary_model_id,
-            "questions": config.questions_model_id,
-            "next_steps": config.next_steps_model_id,
             "status": config.status_model_id,
         }
         self.llm = {k: LLM(self.client, v) for k, v in self.models.items()}
@@ -381,12 +361,6 @@ class HealthLogProcessor:
             "process.system_prompt",
             "validate.system_prompt",
             "validate.user_prompt",
-            "summary.system_prompt",
-            "targeted_questions.system_prompt",
-            "next_steps_unified.system_prompt",
-            "merge_bullets.system_prompt",
-            "action_plan.system_prompt",
-            "experiments.system_prompt",
             "update_timeline.system_prompt",
         ]
 
@@ -575,88 +549,13 @@ class HealthLogProcessor:
                 encoding="utf-8",
             )
 
-        self.logger.info("Assembling final output and generating summary...")
-        final_markdown = self._assemble_output(header_text)
-        # Note: final_markdown is used as input for generating other reports
-        # but output.md will be assembled at the end with additional sections
-
-        # Build health timeline (replaces entity extraction + aggregation)
-        # This is used as input for next_steps, experiments, targeted questions
-        timeline_csv = self._build_health_timeline()
-
-        # Targeted clarifying questions - LLM judges what needs follow-up
-        # Send timeline CSV; LLM derives current state and identifies items needing follow-up
-        self._generate_file(
-            "targeted_clarifying_questions.md",
-            "targeted_questions.system_prompt",
-            role="questions",
-            temperature=0.0,  # Deterministic output to avoid duplicates
-            extra_messages=[{"role": "user", "content": timeline_csv}],
-            description="targeted clarifying questions",
-            dependencies=self._get_timeline_deps("targeted_questions.system_prompt"),
-            hidden=True,
-        )
-
-        # Unified next steps (genius doctor prompt - uses timeline for focused input)
-        # This includes lab recommendations in the "Labs & Testing" section
-        self._generate_file(
-            "next_steps.md",
-            "next_steps_unified.system_prompt",
-            role="next_steps",
-            temperature=0.25,
-            extra_messages=[{"role": "user", "content": timeline_csv}],
-            description="unified next steps",
-            dependencies=self._get_timeline_deps("next_steps_unified.system_prompt"),
-            hidden=True,
-        )
-
-        # Experiments tracker (uses timeline for experiment context)
-        today = datetime.now().strftime("%Y-%m-%d")
-        experiments_prompt = self._prompt("experiments.system_prompt").format(today=today)
-        self._generate_file(
-            "experiments.md",
-            experiments_prompt,
-            role="next_steps",
-            temperature=0.25,
-            extra_messages=[{"role": "user", "content": timeline_csv}],
-            description="experiments tracker",
-            dependencies={
-                "timeline": self._get_timeline_deps("experiments.system_prompt")["timeline"],
-                "prompt": hash_content(experiments_prompt),
-            },
-            hidden=True,
-        )
-
-        # Action plan (synthesizes summary, next_steps, next_labs, experiments)
-        self._generate_action_plan(today)
-
-        # Assemble final output.md with all reports
-        self.logger.info("Assembling final output.md with all reports...")
-        output_path = self.reports_dir / "output.md"
-        output_deps = self._get_output_deps()
-
-        # Check if output.md needs regeneration
-        if not self._check_needs_regeneration(output_path, output_deps):
-            self.logger.info("output.md is up-to-date")
-        else:
-            output_markdown = self._assemble_final_output(header_text)
-            deps_comment = format_deps_comment(output_deps)
-            output_path.write_text(f"{deps_comment}\n{output_markdown}", encoding="utf-8")
-            self.logger.info("Saved full report to %s", output_path)
-
-        # Copy to REPORT_OUTPUT_PATH if configured
-        if self.config.report_output_path:
-            # Ensure parent directory exists
-            self.config.report_output_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(output_path, self.config.report_output_path)
-            self.logger.info("Copied report to %s", self.config.report_output_path)
+        # Build health timeline CSV (chronological events with episode IDs)
+        self._build_health_timeline()
 
         # Track run completion
-        reports = [f.name for f in self.reports_dir.glob("*.md")]
         self._update_state(
             status="completed" if not failed else "completed_with_errors",
             completed_at=datetime.now().isoformat(),
-            reports_generated=reports,
         )
 
     # ------------------------------------------------------------------
@@ -742,199 +641,6 @@ class HealthLogProcessor:
 
         return False
 
-    def _get_standard_report_deps(self, prompt_name: str) -> dict[str, str]:
-        """Get standard dependencies for reports that use all processed sections + intro.
-
-        Used by: summary, questions
-        """
-        return {
-            "processed": self._hash_all_processed(),
-            "intro": self._hash_intro(),
-            "prompt": self._hash_prompt(prompt_name),
-        }
-
-    def _get_timeline_deps(self, prompt_name: str) -> dict[str, str]:
-        """Get dependencies for reports that use health timeline.
-
-        Used by: next_steps_unified, experiments, targeted_questions
-        """
-        timeline_path = self.OUTPUT_PATH / "health_timeline.csv"
-        timeline_hash = hash_file(timeline_path) if timeline_path.exists() else "missing"
-        return {
-            "timeline": timeline_hash,
-            "prompt": self._hash_prompt(prompt_name),
-        }
-
-    def _get_state_deps(self, prompt_name: str) -> dict[str, str]:
-        """Get dependencies for reports that use current state.
-
-        Used by: targeted_questions, next_steps_unified, experiments (after state integration)
-        """
-        state_path = self.internal_dir / "current_state.md"
-        state_hash = hash_file(state_path) if state_path.exists() else "missing"
-        return {
-            "state": state_hash,
-            "prompt": self._hash_prompt(prompt_name),
-        }
-
-    def _get_output_deps(self) -> dict[str, str]:
-        """Get dependencies for final output.md.
-
-        Depends on summary, next_steps, action_plan, experiments, targeted_questions,
-        and all processed sections. All intermediate reports are in .internal/.
-        """
-        deps = {
-            "processed": self._hash_all_processed(),
-        }
-
-        # Add hashes of key reports (from .internal/)
-        for report_name in ["summary", "next_steps", "action_plan", "experiments", "targeted_clarifying_questions"]:
-            report_path = self.internal_dir / f"{report_name}.md"
-            report_hash = hash_file(report_path) or "missing"
-            deps[report_name] = report_hash
-
-        return deps
-
-    # --------------------------------------------------------------
-    # File generation with caching & merging (for multi-call variants)
-    # --------------------------------------------------------------
-
-    def _generate_file(
-        self,
-        filename: str,
-        system_prompt_or_name: str,
-        *,
-        role: str,
-        max_tokens: int = 8096,
-        temperature: float = 0.0,
-        calls: int = 1,
-        extra_messages: Iterable[dict[str, str]] | None = None,
-        description: str | None = None,
-        dependencies: dict[str, str] | None = None,
-        hidden: bool = False,
-    ) -> str:
-        # Hidden files go to .internal/, visible files go to reports/
-        target_dir = self.internal_dir if hidden else self.reports_dir
-        path = target_dir / filename
-
-        # Check if file exists and is up-to-date
-        if path.exists():
-            needs_regen = dependencies is not None and self._check_needs_regeneration(path, dependencies)
-            if not needs_regen:
-                if description:
-                    self.logger.info("%s already exists at %s", description.capitalize(), path)
-                return self._read_without_deps_comment(path)
-
-        if description:
-            self.logger.info("Generating %s...", description)
-
-        system_prompt = (
-            system_prompt_or_name
-            if "\n" in system_prompt_or_name  # crude check: treat raw prompt as content
-            else self._prompt(system_prompt_or_name)
-        )
-        extra_messages = list(extra_messages or [])
-
-        def make_call() -> str:
-            return self.llm[role](
-                [{"role": "system", "content": system_prompt}, *extra_messages],
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
-
-        outputs: list[str] = []
-        base = Path(filename).stem
-        suffix = Path(filename).suffix
-        if calls > 1:
-            desc = (description or base).capitalize()
-            with tqdm(total=calls, desc=desc) as bar:
-                for i in range(calls):
-                    out = make_call()
-                    outputs.append(out)
-                    variant_path = target_dir / f"{base}_{i+1}{suffix}"
-                    variant_path.write_text(out, encoding="utf-8")
-                    bar.update(1)
-        else:
-            outputs.append(make_call())
-
-        content = outputs[0] if calls == 1 else self._merge_outputs(outputs)
-
-        # Write with dependencies comment if provided
-        if dependencies:
-            deps_comment = format_deps_comment(dependencies)
-            path.write_text(f"{deps_comment}\n{content}", encoding="utf-8")
-        else:
-            path.write_text(content, encoding="utf-8")
-
-        if description:
-            self.logger.info("Saved %s to %s", description, path)
-        return content
-
-    def _merge_outputs(self, variants: list[str]) -> str:
-        prompt = self._prompt("merge_bullets.system_prompt")
-        merged = self.llm["summary"](
-            [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": "\n\n".join(variants)},
-            ],
-            max_tokens=4096,
-        )
-        return merged
-
-    def _generate_action_plan(self, today: str) -> str:
-        """Generate action plan by synthesizing summary, next_steps, and experiments.
-
-        The action plan is the primary output - a time-bucketed, prioritized list of
-        actions the user should take (this week, this month, this quarter).
-        """
-        # Read the input reports from .internal/
-        sections = []
-
-        summary_path = self.internal_dir / "summary.md"
-        if summary_path.exists():
-            sections.append(f"## Clinical Summary\n\n{self._read_without_deps_comment(summary_path)}")
-
-        next_steps_path = self.internal_dir / "next_steps.md"
-        if next_steps_path.exists():
-            sections.append(f"## Recommended Next Steps (includes lab recommendations)\n\n{self._read_without_deps_comment(next_steps_path)}")
-
-        experiments_path = self.internal_dir / "experiments.md"
-        if experiments_path.exists():
-            sections.append(f"## Current Experiments\n\n{self._read_without_deps_comment(experiments_path)}")
-
-        combined_input = "\n\n---\n\n".join(sections)
-
-        # Find the most recent entry date
-        processed_files = sorted(self.entries_dir.glob("*.processed.md"), reverse=True)
-        last_entry_date = today
-        if processed_files:
-            last_entry_date = processed_files[0].stem.split(".")[0]
-
-        # Format the prompt with dates
-        action_prompt = self._prompt("action_plan.system_prompt").format(
-            today=today,
-            last_entry_date=last_entry_date,
-        )
-
-        # Dependencies include all input reports (from .internal/)
-        deps = {
-            "summary": hash_file(summary_path) or "missing",
-            "next_steps": hash_file(next_steps_path) or "missing",
-            "experiments": hash_file(experiments_path) or "missing",
-            "prompt": hash_content(action_prompt),
-        }
-
-        return self._generate_file(
-            "action_plan.md",
-            action_prompt,
-            role="next_steps",
-            temperature=0.25,
-            extra_messages=[{"role": "user", "content": combined_input}],
-            description="action plan",
-            dependencies=deps,
-            hidden=True,
-        )
-
     # --------------------------------------------------------------
     # Health Timeline building (replaces entity extraction + aggregation)
     # --------------------------------------------------------------
@@ -953,7 +659,7 @@ class HealthLogProcessor:
         """
         self.logger.info("Building health timeline from processed entries...")
 
-        timeline_path = self.internal_dir / "health_timeline.csv"
+        timeline_path = self.OUTPUT_PATH / "health_log.csv"
 
         # Get all processed entries sorted chronologically (oldest first)
         entries = self._get_chronological_entries()
@@ -1724,11 +1430,11 @@ Output only the new CSV rows to append (no header row):"""
     def _save_collated_health_log(self, header_text: str) -> None:
         """Save collated health log with all processed entries (newest to oldest).
 
-        Creates an intermediate file containing the full health log in reverse
-        chronological order for reference and debugging. Uses processed entries
-        (not raw) so the collated log reflects validated, cleaned content.
+        Creates the primary output file containing the full health log in reverse
+        chronological order. Uses processed entries (not raw) so the collated log
+        reflects validated, cleaned content including integrated labs and exams.
         """
-        collated_path = self.internal_dir / "health_log_collated.md"
+        collated_path = self.OUTPUT_PATH / "health_log.md"
 
         # Get all processed entries sorted newest-first, with normalized headers
         processed_entries = []
@@ -1766,7 +1472,7 @@ Output only the new CSV rows to append (no header row):"""
 
         collated_path.write_text(f"{deps_comment}\n{content}", encoding="utf-8")
         self.logger.info(
-            "Saved collated health log (%d processed entries, newest to oldest) to %s",
+            "Saved health log (%d entries, newest to oldest) to %s",
             len(sorted_entries),
             collated_path,
         )
@@ -1848,95 +1554,6 @@ Output only the new CSV rows to append (no header row):"""
         # Return original sections unchanged (placeholder files were created directly)
         return sections
 
-    # --------------------------------------------------------------
-    # Output assembly
-    # --------------------------------------------------------------
-
-    def _get_processed_entries_text(self) -> str:
-        """Read all processed entries, normalize headers, return sorted newest-first."""
-        items: list[tuple[str, str]] = []
-        for path in self.entries_dir.glob("*.processed.md"):
-            date = path.stem.split(".")[0]
-            content = self._read_without_deps_comment(path)
-            # Normalize entry headers to level 4 (#### YYYY-MM-DD)
-            normalized = normalize_markdown_headers(content, target_base_level=4)
-            items.append((date, normalized))
-        return "\n\n".join(v for _, v in sorted(items, key=lambda t: t[0], reverse=True))
-
-    def _assemble_output(self, header_text: str) -> str:
-        """Assemble summary + processed entries (used as input for other reports)."""
-        processed_text = self._get_processed_entries_text()
-
-        # Generate summary with dependency tracking (hidden in .internal/)
-        summary = self._generate_file(
-            "summary.md",
-            "summary.system_prompt",
-            role="summary",
-            extra_messages=[{"role": "user", "content": "\n\n".join(filter(None, [header_text, processed_text]))}],
-            description="summary",
-            dependencies=self._get_standard_report_deps("summary.system_prompt"),
-            hidden=True,
-        )
-        return summary + "\n\n" + processed_text
-
-    def _assemble_final_output(self, header_text: str) -> str:
-        """Assemble final output.md - the single comprehensive report.
-
-        Structure:
-        1. # Health Report
-        2. ## Questions to Address (stale items needing updates)
-        3. ## Action Plan (prioritized what-to-do-next)
-        4. ## Experiments (N=1 tracking)
-        5. ## Clinical Summary
-        6. --- (clear demarcation)
-        7. ## Health Log Entries (all processed entries)
-        """
-        sections = ["# Health Report"]
-
-        # 1. Questions to Address (stale items needing user input)
-        questions_path = self.internal_dir / "targeted_clarifying_questions.md"
-        if questions_path.exists():
-            questions_content = self._read_without_deps_comment(questions_path).strip()
-            # Only include if there are actual questions (not the "no items" placeholder)
-            if questions_content and "No items require status updates" not in questions_content:
-                # Normalize headers to level 3+ (under ## Questions)
-                normalized = normalize_markdown_headers(questions_content, target_base_level=3)
-                sections.append(f"## Questions to Address\n\n{normalized}")
-
-        # 2. Action Plan (PRIMARY - what to do next)
-        action_plan_path = self.internal_dir / "action_plan.md"
-        if action_plan_path.exists():
-            content = self._read_without_deps_comment(action_plan_path).strip()
-            # Normalize: LLM outputs # header, adjust to level 2
-            normalized = normalize_markdown_headers(content, target_base_level=2)
-            sections.append(normalized)
-
-        # 3. Experiments (N=1 tracking)
-        experiments_path = self.internal_dir / "experiments.md"
-        if experiments_path.exists():
-            content = self._read_without_deps_comment(experiments_path).strip()
-            # Normalize: LLM outputs # header, adjust to level 2
-            normalized = normalize_markdown_headers(content, target_base_level=2)
-            sections.append(normalized)
-
-        # 4. Clinical Summary
-        summary_path = self.internal_dir / "summary.md"
-        if summary_path.exists():
-            content = self._read_without_deps_comment(summary_path).strip()
-            # Normalize: summary uses #### headers, keep at level 4
-            normalized = normalize_markdown_headers(content, target_base_level=4)
-            sections.append(f"## Clinical Summary\n\n{normalized}")
-
-        # 5. Clear demarcation before full entries
-        sections.append("---\n<!-- FULL HEALTH LOG ENTRIES BELOW - clip here if sharing -->")
-
-        # 6. All processed entries (newest first)
-        processed_text = self._get_processed_entries_text()
-        if processed_text:
-            sections.append(f"## Health Log Entries\n\n{processed_text}")
-
-        return "\n\n".join(sections)
-
 
 # --------------------------------------------------------------------------------------
 # CLI entry point
@@ -1946,7 +1563,7 @@ Output only the new CSV rows to append (no header row):"""
 def main() -> None:
     """Run the processor using configuration from profile."""
     parser = argparse.ArgumentParser(
-        description="Process health log entries and generate reports.",
+        description="Process health log entries and extract structured data.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -2032,7 +1649,6 @@ Examples:
     if args.force_reprocess:
         output_path = config.output_path
         entries_dir = output_path / "entries"
-        reports_dir = output_path / "reports"
 
         # Delete all generated entry files
         if entries_dir.exists():
@@ -2045,20 +1661,27 @@ Examples:
             if deleted:
                 logger.info("Cleared %d generated files from %s", deleted, entries_dir)
 
-        # Delete all reports (including .internal/)
-        if reports_dir.exists():
-            shutil.rmtree(reports_dir)
-            logger.info("Cleared reports directory: %s", reports_dir)
+        # Delete primary output files
+        for filename in ["health_log.md", "health_log.csv"]:
+            filepath = output_path / filename
+            if filepath.exists():
+                filepath.unlink()
+                logger.info("Deleted %s", filepath)
 
         # Delete state file
         state_file = output_path / ".state.json"
         if state_file.exists():
             state_file.unlink()
 
-        # Delete timeline if it exists at output root (legacy location)
-        timeline_path = output_path / "health_timeline.csv"
-        if timeline_path.exists():
-            timeline_path.unlink()
+        # Delete legacy files if they exist
+        for legacy_file in ["health_timeline.csv", "reports"]:
+            legacy_path = output_path / legacy_file
+            if legacy_path.exists():
+                if legacy_path.is_dir():
+                    shutil.rmtree(legacy_path)
+                else:
+                    legacy_path.unlink()
+                logger.info("Cleared legacy %s", legacy_path)
 
     start = datetime.now()
     HealthLogProcessor(config).run()
