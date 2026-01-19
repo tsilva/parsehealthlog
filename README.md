@@ -1,23 +1,32 @@
 <div align="center">
-  <img src="logo.png" alt="health-log-parser" width="400"/>
+  <img src="logo.png" alt="health-log-parser" width="200"/>
 
   [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
   [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 
-  **Transform messy health journals into expert-quality medical reports with clinical reasoning**
+  **Transform messy health journals into structured, validated medical data**
 
   [Documentation](docs/pipeline.md)
 </div>
 
 ## Overview
 
-health-log-parser uses LLMs to transform unstructured health journal entries into structured, clinician-quality reports. It builds a chronological timeline of health events, links related episodes (e.g., medications to the conditions they treat), and generates actionable summaries, recommendations, and follow-up questions.
+health-log-parser is a data extraction and curation tool that transforms unstructured health journal entries into structured, validated data ready for downstream analysis.
 
-**Key capabilities:**
-- Parallel processing of hundreds of journal entries
-- Episode linking to track treatments, conditions, and experiments over time
-- Lab result integration with automatic interpretation
-- Multi-model support via OpenRouter (GPT-4, Claude, etc.)
+**What it produces:**
+- **`health_log.md`** — All processed entries (newest to oldest) with labs and exams integrated
+- **`health_log.csv`** — Chronological timeline with episode IDs linking related events
+
+The tool processes, validates, and enriches health log entries. Reports, summaries, and recommendations are left to downstream consumers of the structured data.
+
+## Features
+
+- **Parallel processing** of hundreds of journal entries
+- **Episode linking** to track treatments, conditions, and experiments over time
+- **Lab result integration** with automatic interpretation
+- **Hash-based caching** for efficient incremental rebuilds
+- **Multi-model support** via OpenRouter (GPT-4, Claude, etc.)
+- **Profile-based configuration** for managing multiple health logs
 
 ## Quick Start
 
@@ -32,50 +41,47 @@ uv sync
 
 # Configure
 cp .env.example .env
-# Edit .env with your OPENROUTER_API_KEY, HEALTH_LOG_PATH, and OUTPUT_PATH
+# Edit .env with your OPENROUTER_API_KEY
+
+# Create a profile (profiles/myprofile.yaml)
+# health_log_path: /path/to/health.md
+# output_path: /path/to/output
 
 # Run
-uv run python main.py
+uv run python main.py --profile myprofile
 ```
-
-## How It Works
-
-```
-health.md ─→ Split Sections ─→ Process (parallel) ─→ Build Timeline ─→ Generate Reports ─→ output.md
-```
-
-The pipeline:
-1. **Splits** your markdown health log into dated sections
-2. **Processes** each section in parallel using LLMs
-3. **Builds** a chronological timeline with episode IDs linking related events
-4. **Generates** reports: summary, recommendations, experiments, follow-up questions
 
 ## Output Structure
 
 ```
 OUTPUT_PATH/
-├── entries/
-│   ├── 2024-01-15.raw.md        # Original section
-│   ├── 2024-01-15.processed.md  # Structured output
-│   └── 2024-01-15.labs.md       # Lab results
-├── health_timeline.csv          # Chronological events with episode IDs
-└── reports/
-    └── output.md                # Final compiled report
+├── health_log.md           # PRIMARY: All entries (newest to oldest)
+├── health_log.csv          # PRIMARY: Timeline with episode IDs
+├── entries/                # Intermediate files (kept for caching)
+│   ├── YYYY-MM-DD.raw.md
+│   ├── YYYY-MM-DD.processed.md
+│   └── YYYY-MM-DD.labs.md
+└── intro.md                # Pre-dated content (if exists)
 ```
 
 ## Configuration
 
-Create a `.env` file with:
+### Environment Variables (.env)
 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `OPENROUTER_API_KEY` | Yes | Your OpenRouter API key |
-| `HEALTH_LOG_PATH` | Yes | Path to your markdown health log |
-| `OUTPUT_PATH` | Yes | Directory for generated output |
-| `MODEL_ID` | No | Default LLM model (default: `gpt-4o-mini`) |
-| `MAX_WORKERS` | No | Parallel processing threads (default: `4`) |
 
-See [docs/pipeline.md](docs/pipeline.md) for all configuration options and model overrides per task.
+### Profile Configuration (profiles/\<name\>.yaml)
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `health_log_path` | Yes | Path to your markdown health log |
+| `output_path` | Yes | Directory for generated output |
+| `model_id` | No | Default LLM model (default: `gpt-4o-mini`) |
+| `max_workers` | No | Parallel processing threads (default: `4`) |
+
+See [docs/pipeline.md](docs/pipeline.md) for all configuration options.
 
 ## Health Log Format
 
