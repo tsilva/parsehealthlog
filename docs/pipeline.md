@@ -19,7 +19,7 @@ This document describes the data processing pipeline used by health-log-parser t
   [Markdown Log]---->|      Check all required prompts exist      |
        |             |                                            |
        |             |   2. SPLIT SECTIONS                        |
-       +------------>|      Parse ### YYYY-MM-DD headers          |-----> intro.md
+       +------------>|      Parse ### YYYY-MM-DD headers          |
        |             |                                            |
        |             |   3. LOAD LABS                             |
   labs.csv---------->|      CSV -> DataFrame by date              |
@@ -57,21 +57,20 @@ This document describes the data processing pipeline used by health-log-parser t
 
 ### Step 2: Section Splitting
 
-**What it does:** Parses the markdown health log to extract dated sections. Separates pre-dated introductory content from dated entries.
+**What it does:** Parses the markdown health log to extract dated sections. Content before the first dated section is ignored.
 
 **Key files/APIs:**
 - `main.py:_split_sections()` - Parsing logic
 - `main.py:extract_date()` - Date extraction from headers
 
 **Input:** Raw markdown file (`HEALTH_LOG_PATH`)
-**Output:**
-- `intro.md` - Pre-dated content (background info, patient history)
-- List of section strings, each starting with `### YYYY-MM-DD`
+**Output:** List of section strings, each starting with `### YYYY-MM-DD`
 
 **Behavior notes:**
 - Supports both `YYYY-MM-DD` and `YYYY/MM/DD` date formats
 - Uses regex: `^###\s*\d{4}[-/]\d{2}[-/]\d{2}`
 - Em-dash/en-dash characters are normalized to hyphens
+- Content before the first dated section is discarded
 
 ---
 
@@ -218,9 +217,6 @@ Change detection algorithm:
    |  SPLIT   |                                  |  LOAD     |
    | SECTIONS |                                  |  LABS     |
    +----------+                                  +-----------+
-        |                                               |
-        v                                               |
-   intro.md                                             |
         |                                               |
         +----------------+     +------------------------+
                          |     |

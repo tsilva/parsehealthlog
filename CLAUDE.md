@@ -43,11 +43,10 @@ health.md → Split Sections → Process (parallel) → Build Timeline → Outpu
 OUTPUT_PATH/
 ├─ health_log.md          # PRIMARY: All entries (newest to oldest)
 ├─ health_log.csv         # PRIMARY: Timeline with episode IDs
-├─ entries/               # INTERMEDIATE (kept for caching)
-│  ├─ YYYY-MM-DD.raw.md
-│  ├─ YYYY-MM-DD.processed.md
-│  └─ YYYY-MM-DD.labs.md
-└─ intro.md               # Pre-dated content (if exists)
+└─ entries/               # INTERMEDIATE (kept for caching)
+   ├─ YYYY-MM-DD.raw.md
+   ├─ YYYY-MM-DD.processed.md
+   └─ YYYY-MM-DD.labs.md
 ```
 
 **Detailed documentation**: [`docs/pipeline.md`](docs/pipeline.md)

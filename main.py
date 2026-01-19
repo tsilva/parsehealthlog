@@ -12,12 +12,11 @@ Output structure:
     OUTPUT_PATH/
     ├─ health_log.md          # PRIMARY: All entries (newest to oldest) with labs/exams
     ├─ health_log.csv         # PRIMARY: Chronological timeline with episode IDs
-    ├─ entries/               # INTERMEDIATE (kept for caching)
-    │   ├─ <date>.raw.md
-    │   ├─ <date>.processed.md
-    │   ├─ <date>.labs.md
-    │   └─ <date>.exams.md
-    └─ intro.md               # Pre-dated content (if exists)
+    └─ entries/               # INTERMEDIATE (kept for caching)
+        ├─ <date>.raw.md
+        ├─ <date>.processed.md
+        ├─ <date>.labs.md
+        └─ <date>.exams.md
 
 Configuration via environment variables (see config.py):
     OPENROUTER_API_KEY           – mandatory (forwarded to openrouter.ai)
@@ -465,7 +464,7 @@ class HealthLogProcessor:
             completed_at=None,
         )
 
-        header_text, sections = self._split_sections()
+        sections = self._split_sections()
         self._load_labs()
         self._load_medical_exams()
 
@@ -525,7 +524,7 @@ class HealthLogProcessor:
             self.logger.info("All sections processed successfully")
 
         # Save collated health log (all processed entries newest to oldest)
-        self._save_collated_health_log(header_text)
+        self._save_collated_health_log()
 
         # Always regenerate lab markdown files
         # This includes both regular entries and lab-only entries
@@ -590,11 +589,6 @@ class HealthLogProcessor:
         the actual content being used (not file on disk which may have changed).
         """
         return hash_content(self._prompt(name))
-
-    def _hash_intro(self) -> str:
-        """Compute hash of intro.md if it exists."""
-        intro_path = self.OUTPUT_PATH / "intro.md"
-        return hash_file(intro_path) or ""
 
     def _hash_files_without_deps(self, paths: Iterable[Path]) -> str:
         """Compute combined hash of multiple files, excluding deps comments."""
@@ -1009,24 +1003,106 @@ class HealthLogProcessor:
 
         return "\n".join(kept), last_ep
 
+    def _compress_timeline_context(self, timeline: str, max_chars: int = 50_000) -> str:
+        """Compress timeline to fit within context limits while preserving essential info.
+
+        Keeps:
+        - All "active" items (last event is not stopped/resolved/ended)
+        - Recent rows for context
+        - Enough info for episode linking
+
+        Args:
+            timeline: Full timeline CSV content
+            max_chars: Maximum characters for the compressed context
+
+        Returns:
+            Compressed timeline CSV content
+        """
+        lines = timeline.strip().split("\n")
+        if not lines:
+            return timeline
+
+        header = lines[0]
+        data_lines = lines[1:] if len(lines) > 1 else []
+
+        if len(timeline) <= max_chars:
+            return timeline
+
+        # Track episode states to find active items
+        # Active = last event is NOT (stopped, resolved, ended, completed)
+        terminal_events = {"stopped", "resolved", "ended", "completed"}
+        episode_last_event: dict[str, tuple[str, int]] = {}  # ep_id -> (event, line_index)
+
+        for i, line in enumerate(data_lines):
+            if not line.strip():
+                continue
+            parts = line.split(",")
+            if len(parts) >= 5:
+                ep_id = parts[1].strip().strip('"')
+                event = parts[4].strip().strip('"').lower()
+                episode_last_event[ep_id] = (event, i)
+
+        # Find active episodes (last event not terminal)
+        active_episodes = {
+            ep_id for ep_id, (event, _) in episode_last_event.items()
+            if event not in terminal_events
+        }
+
+        # Collect lines for active episodes
+        active_lines = []
+        for i, line in enumerate(data_lines):
+            if not line.strip():
+                continue
+            parts = line.split(",")
+            if len(parts) >= 2:
+                ep_id = parts[1].strip().strip('"')
+                if ep_id in active_episodes:
+                    active_lines.append((i, line))
+
+        # Get recent lines (last 150 rows not already included)
+        active_indices = {idx for idx, _ in active_lines}
+        recent_start = max(0, len(data_lines) - 150)
+        recent_lines = [
+            (i, line) for i, line in enumerate(data_lines[recent_start:], start=recent_start)
+            if i not in active_indices and line.strip()
+        ]
+
+        # Combine and sort by original index
+        combined = sorted(active_lines + recent_lines, key=lambda x: x[0])
+        selected_lines = [line for _, line in combined]
+
+        # Build compressed output
+        compressed = header + "\n" + "\n".join(selected_lines)
+
+        # If still too large, keep only recent rows
+        if len(compressed) > max_chars:
+            keep_rows = max_chars // 100  # Rough estimate of chars per row
+            selected_lines = data_lines[-keep_rows:] if keep_rows < len(data_lines) else data_lines
+            compressed = header + "\n" + "\n".join(selected_lines)
+
+        return compressed
+
     def _calculate_batch_size(self, entries: list[tuple[str, str]], timeline_size: int) -> int:
         """Calculate how many entries fit in a batch given current timeline size.
 
         Args:
             entries: List of (date, content) tuples to potentially include
-            timeline_size: Current character count of timeline
+            timeline_size: Current character count of timeline (ignored, we use compressed size)
 
         Returns:
             Number of entries to include in this batch
         """
-        CONTEXT_LIMIT = 200_000  # Claude Opus 4.5 context
+        # Use conservative context limit for broad model compatibility
+        CONTEXT_LIMIT = 100_000  # Conservative limit for various models via OpenRouter
         SYSTEM_PROMPT_TOKENS = 3_000
         MAX_OUTPUT_TOKENS = 32_768  # Match max_tokens in _process_timeline_batch
         OUTPUT_TOKENS_PER_ENTRY = 60  # ~1.5 rows per entry, ~40 tokens per row
         SAFETY_MARGIN = 10_000
         CHARS_PER_TOKEN = 4
+        # Timeline is compressed to max 50K chars, use that as the timeline budget
+        COMPRESSED_TIMELINE_CHARS = 50_000
 
-        timeline_tokens = timeline_size // CHARS_PER_TOKEN
+        timeline_tokens = COMPRESSED_TIMELINE_CHARS // CHARS_PER_TOKEN
         available_input_tokens = CONTEXT_LIMIT - SYSTEM_PROMPT_TOKENS - timeline_tokens - MAX_OUTPUT_TOKENS - SAFETY_MARGIN
 
         batch_chars = 0
@@ -1060,6 +1136,10 @@ class HealthLogProcessor:
         """
         system_prompt = self._prompt("update_timeline.system_prompt")
 
+        # Compress timeline to avoid exceeding context limits
+        # Keep active items + recent history for episode linking
+        timeline_context = self._compress_timeline_context(existing_timeline)
+
         # Format entries for the batch
         entries_text = "\n\n---\n\n".join(
             f"### Entry: {date}\n\n{content}"
@@ -1069,7 +1149,7 @@ class HealthLogProcessor:
         user_content = f"""## Current Timeline (for context)
 
 ```csv
-{existing_timeline}
+{timeline_context}
 ```
 
 ## Next Episode ID
@@ -1226,7 +1306,7 @@ Output only the new CSV rows to append (no header row):"""
     # Input pre-processing helpers
     # --------------------------------------------------------------
 
-    def _split_sections(self) -> tuple[str, list[str]]:
+    def _split_sections(self) -> list[str]:
         text = self.path.read_text(encoding="utf-8")
 
         # Locate the first dated section header (supports YYYY-MM-DD or YYYY/MM/DD)
@@ -1237,8 +1317,8 @@ Output only the new CSV rows to append (no header row):"""
                 "No dated sections found (expected '### YYYY-MM-DD' or '### YYYY/MM/DD')."
             )
 
-        intro_text = text[: match.start()].strip()
-        body = text[match.start() :]
+        # Content before first dated section is ignored
+        body = text[match.start():]
 
         # Split the remainder on dated section headers
         sections = [
@@ -1247,13 +1327,7 @@ Output only the new CSV rows to append (no header row):"""
             if s.strip()
         ]
 
-        header_text = ""
-        if intro_text:
-            intro_path = self.OUTPUT_PATH / "intro.md"
-            intro_path.write_text(intro_text + "\n", encoding="utf-8")
-            header_text = intro_path.read_text(encoding="utf-8")
-
-        return header_text, sections
+        return sections
 
     def _load_labs(self) -> None:
         lab_dfs: list[pd.DataFrame] = []
@@ -1427,7 +1501,7 @@ Output only the new CSV rows to append (no header row):"""
             loaded_count, len(exams_by_date), exams_path
         )
 
-    def _save_collated_health_log(self, header_text: str) -> None:
+    def _save_collated_health_log(self) -> None:
         """Save collated health log with all processed entries (newest to oldest).
 
         Creates the primary output file containing the full health log in reverse
@@ -1449,8 +1523,6 @@ Output only the new CSV rows to append (no header row):"""
 
         # Assemble collated content
         parts = []
-        if header_text:
-            parts.append(header_text.strip())
         for date, entry_content in sorted_entries:
             parts.append(f"# {date}")
             parts.append(entry_content)
