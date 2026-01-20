@@ -808,7 +808,7 @@ class HealthLogProcessor:
 
     def _get_empty_timeline(self) -> str:
         """Return empty timeline with just the CSV header."""
-        return "Date,EpisodeID,Item,Category,Event,Details"
+        return "Date,EpisodeID,Item,Category,Event,RelatedEpisode,Details"
 
     def _parse_timeline_header(self, path: Path) -> tuple[str | None, int, dict[str, str]]:
         """Parse timeline header to get processed_through, last episode ID, and per-entry hashes.
