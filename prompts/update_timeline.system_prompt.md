@@ -100,6 +100,70 @@ The Details field captures important clinical context that the fixed Event types
 - Follow-up event on same episode → RelatedEpisode stays empty (same EpisodeID already connects them)
 - New standalone item (no relationship to existing episode) → RelatedEpisode stays empty
 
+### Diagnosis vs Suspicion Guidelines
+
+When determining whether to use `diagnosed` vs `suspected` for conditions:
+
+**Use `diagnosed` when:**
+- Diagnostic tests (imaging, labs, biopsies) show measurable findings confirming the condition
+  - Example: "Ultrasound shows 27g prostate" → `diagnosed` (not `suspected`)
+  - Example: "X-ray shows left-convex lumbar scoliosis" → `diagnosed`
+  - Example: "Blood test shows TSH 8.2 mIU/L" → `diagnosed`
+- Provider explicitly states diagnosis (e.g., "diagnosed with hypertension")
+- Clinical examination reveals definitive findings (e.g., "ECG confirms sinus bradycardia")
+
+**Use `suspected` when:**
+- Provider uses tentative language without confirming tests (e.g., "possibly", "may have", "suspect")
+- Awaiting test results to confirm
+- Symptoms suggest condition but no diagnostic tests performed yet
+
+**Details field nuance:**
+Even when using `diagnosed`, the Details can note follow-up needs:
+- Example: Status=`diagnosed`, Details="Confirmed on ultrasound: 27g prostate (normal <25g), requires clinical and laboratory follow-up"
+
+### Follow-up Test Resolution Inference
+
+When processing follow-up diagnostic tests (ECGs, imaging, labs) for previously diagnosed conditions:
+
+**Create status update entries when:**
+- Follow-up test normalizes after initial abnormal finding
+  - Example: Bradycardia (46 bpm) → follow-up ECG shows normal sinus rhythm (60 bpm)
+  - Action: Create entry with Status=`stable` or `resolved`, Details="Follow-up ECG shows normalization to [details]"
+- Follow-up test shows improvement
+  - Example: Prostate 27g → follow-up ultrasound 24g
+  - Action: Create entry with Status=`improved`, Details="Follow-up imaging shows [improvement details]"
+- Follow-up test shows worsening
+  - Example: Scoliosis curve 10° → follow-up X-ray 15°
+  - Action: Create entry with Status=`worsened`, Details="Progression on follow-up imaging: [details]"
+
+**When to use `resolved` vs `stable`:**
+- `resolved`: Condition fully cleared (e.g., infection resolved, fracture healed, acute symptom gone)
+- `stable`: Condition normalized but may recur (e.g., bradycardia normalized but patient prone to it)
+
+**Linking:**
+The follow-up test visit should have RelatedEpisode pointing to the condition's episode ID.
+
+### Progressive/Expanded Diagnoses
+
+When a newer diagnosis encompasses or supersedes an earlier diagnosis:
+
+**Scenario 1: Expanded scope (partial → comprehensive)**
+- Example: "Lumbar scoliosis" (2018) → "Double scoliosis (dorsal + lumbar)" (2025)
+- Action:
+  1. Create new episode for comprehensive diagnosis (ep-179 "Double Scoliosis")
+  2. Add Details note: "Includes [component] previously diagnosed YYYY-MM-DD (ep-XXX)"
+  3. Keep original episode separate (historical tracking) - no status update needed
+
+**Scenario 2: Refined diagnosis (provisional → definitive)**
+- Example: "Suspected influenza" → "Confirmed influenza A"
+- Action:
+  1. Reuse same episode ID
+  2. Add row with Status=`diagnosed`, Details="Confirmed [specifics]"
+
+**Scenario 3: Related but distinct**
+- Example: "Hypertension" and "White coat hypertension"
+- Action: Separate episodes, use RelatedEpisode to link if causally related
+
 ## What to Capture
 
 **DO capture:**
