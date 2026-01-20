@@ -35,6 +35,9 @@ This document describes the data processing pipeline used by health-log-parser t
        |             |      Chronological CSV with episode IDs    |-----> health_log.csv
        |             |      Incremental processing (oldest→newest)|
        |             |                                            |
+       |             |   7. VALIDATE TIMELINE                     |
+       |             |      Episode continuity, references, etc   |-----> validation report
+       |             |                                            |
        +-------------+--------------------------------------------+
 
                      All steps use hash-based caching for efficiency
@@ -204,6 +207,91 @@ Change detection algorithm:
 
 ---
 
+### Step 7: Timeline Validation
+
+**What it does:** Validates the generated timeline CSV for structural integrity, episode continuity, and logical consistency. Runs automatically after timeline building and reports any issues found.
+
+**Key files/APIs:**
+- `validate_timeline.py` - All validation functions
+- `validate_timeline.run_all_validations()` - Orchestrator function
+- `validate_timeline.print_validation_report()` - Human-readable output
+- `main.py:_validate_timeline_batch_output()` - Per-batch CSV validation during LLM generation
+
+**Validation checks:**
+
+1. **Episode Continuity** (`validate_episode_continuity`)
+   - Detects gaps in episode numbering (ep-001, ep-003 missing ep-002)
+   - Detects duplicate episode IDs
+   - Ensures sequential assignment
+
+2. **Related Episodes** (`validate_related_episodes`)
+   - Validates all RelatedEpisode references point to existing episodes
+   - Detects orphaned references (ep-999 doesn't exist)
+
+3. **CSV Structure** (`validate_csv_structure`)
+   - Validates 7-column format: Date, EpisodeID, Item, Category, Event, RelatedEpisode, Details
+   - Checks header row format
+   - Detects malformed rows
+
+4. **Chronological Order** (`validate_chronological_order`)
+   - Ensures entries are sorted by date (oldest to newest)
+   - Detects out-of-order entries
+
+5. **Comprehensive Stack Updates** (`validate_comprehensive_stack_updates`)
+   - Detects entries with keywords indicating complete supplement/medication lists
+   - Validates that all previously active items were either stopped or continued
+   - Prevents "lost" supplements that weren't explicitly stopped
+
+6. **Batch Output Validation** (during generation)
+   - Validates Date format (YYYY-MM-DD)
+   - Validates EpisodeID format (ep-XXX)
+   - Validates Category is in allowed set
+   - Validates Event matches Category
+   - Validates RelatedEpisode format
+   - Validates Date is in expected batch
+   - Validates EpisodeID >= expected minimum
+
+**Output:** Console report showing validation results:
+```
+============================================================
+TIMELINE VALIDATION REPORT
+============================================================
+
+✓ All validation checks passed!
+```
+
+Or if errors found:
+```
+============================================================
+TIMELINE VALIDATION REPORT
+============================================================
+
+⚠  Found 3 validation error(s):
+
+Episode Continuity:
+  - Episode ID gap: ep-001 → ep-003
+
+Related Episodes:
+  - Line 45: 2024-03-15 Levothyroxine 50mcg - RelatedEpisode 'ep-999' does not exist
+
+Chronological Order:
+  - Out of order: 2024-03-20 followed by 2024-03-15 (lines 42, 43)
+```
+
+**Behavioral notes:**
+- Validation runs automatically at end of `run()` method
+- Errors are logged as warnings but don't block processing
+- All errors are displayed to user via console report
+- Episode ID extraction now parses only the EpisodeID column (not Details field)
+- Batch validation catches issues during LLM generation (logs warnings)
+- Post-processing validation catches issues in final timeline file
+
+**Testing:**
+- Unit tests in `tests/test_validation.py`
+- Integration tests in `tests/test_timeline_processing.py`
+
+---
+
 ## Data Flow Diagram
 
 ```
@@ -257,6 +345,20 @@ Change detection algorithm:
                          |
                          v
                   health_log.csv
+                         |
+                         v
+               +------------------+
+               | VALIDATE         |
+               | TIMELINE         |
+               |                  |
+               | - Episode IDs    |
+               | - References     |
+               | - CSV structure  |
+               | - Order          |
+               +------------------+
+                         |
+                         v
+                 validation report
 ```
 
 ## Key Files
@@ -266,10 +368,13 @@ Change detection algorithm:
 | `main.py` | Monolithic implementation: `HealthLogProcessor`, `LLM` wrapper, utilities |
 | `config.py` | `Config` dataclass: loads/validates environment variables |
 | `exceptions.py` | Custom exception classes: `ConfigurationError`, `PromptError`, etc. |
+| `validate_timeline.py` | Timeline integrity validation functions |
 | `prompts/process.system_prompt.md` | Transforms raw entries into structured markdown |
 | `prompts/validate.system_prompt.md` | Validates processed output (checks for `$OK$`) |
 | `prompts/validate.user_prompt.md` | User prompt template for validation |
 | `prompts/update_timeline.system_prompt.md` | Builds chronological CSV timeline with episode IDs |
+| `tests/test_validation.py` | Unit tests for validation functions |
+| `tests/test_timeline_processing.py` | Integration tests for timeline processing |
 
 ## Configuration
 

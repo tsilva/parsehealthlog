@@ -35,7 +35,7 @@ See `docs/pipeline.md` for full configuration options.
 
 **Pipeline flow**:
 ```
-health.md → Split Sections → Process (parallel) → Build Timeline → Output
+health.md → Split Sections → Process (parallel) → Build Timeline → Validate → Output
 ```
 
 **Output structure**:
@@ -57,6 +57,7 @@ OUTPUT_PATH/
 |------|---------|
 | `main.py` | All processing logic (HealthLogProcessor, LLM wrapper) |
 | `config.py` | Environment variable loading and validation |
+| `validate_timeline.py` | Timeline integrity validation (episode IDs, references, structure) |
 | `docs/pipeline.md` | Detailed pipeline documentation |
 | `prompts/process.system_prompt.md` | Entry processing prompt |
 | `prompts/validate.system_prompt.md` | Entry validation prompt |
@@ -74,6 +75,7 @@ OUTPUT_PATH/
 - Simplify timeline to "active items only" (loses context needed for inference)
 - Hardcode medical rules in Python (LLM should apply clinical judgment via prompts)
 - Remove parallel processing (essential for large logs with hundreds of entries)
+- Remove validation checks (critical for detecting LLM output issues and data integrity problems)
 
 **Over-engineering**:
 - Add abstractions, helpers, or utilities for one-time operations
@@ -91,6 +93,17 @@ OUTPUT_PATH/
 1. Check `entries/<date>.processed.md` for the processed content
 2. Check `entries/<date>.failed.md` if processing failed (contains diagnostics)
 3. Check `health_log.csv` for timeline entries
+4. Review validation report at end of run for timeline integrity issues
+
+### Debug Validation Issues
+1. Check console output for validation report after timeline building
+2. Common issues:
+   - Episode ID gaps: LLM skipped numbers (check batch validation warnings in logs)
+   - Orphaned references: RelatedEpisode points to non-existent episode
+   - Out of order: Entries not chronologically sorted
+   - Comprehensive stack: Items not explicitly stopped during "current stack" updates
+3. Run manual validation: `python -c "from validate_timeline import run_all_validations, print_validation_report; print_validation_report(run_all_validations('output/health_log.csv', 'output/entries'))"`
+4. Fix issues by editing prompts or re-running with `--force-reprocess`
 
 ### Update Documentation
 When modifying the pipeline, update `docs/pipeline.md` to reflect changes.

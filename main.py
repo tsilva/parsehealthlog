@@ -551,6 +551,21 @@ class HealthLogProcessor:
         # Build health timeline CSV (chronological events with episode IDs)
         self._build_health_timeline()
 
+        # Run post-processing validation
+        from validate_timeline import run_all_validations, print_validation_report
+
+        self.logger.info("Running timeline validation...")
+        validation_results = run_all_validations(
+            self.output_dir / "health_log.csv",
+            self.entries_dir
+        )
+        print_validation_report(validation_results)
+
+        # Log validation results
+        for check, errors in validation_results.items():
+            if errors:
+                self.logger.warning(f"Validation {check} found issues: {errors}")
+
         # Track run completion
         self._update_state(
             status="completed" if not failed else "completed_with_errors",
@@ -873,11 +888,24 @@ class HealthLogProcessor:
         self.logger.info("Saved health timeline to %s", path)
 
     def _get_last_episode_num(self, timeline_content: str) -> int:
-        """Extract the highest episode number from timeline content."""
-        matches = re.findall(r"ep-(\d+)", timeline_content)
-        if matches:
-            return max(int(m) for m in matches)
-        return 0
+        """Extract the highest episode number from EpisodeID column only."""
+        lines = timeline_content.strip().split("\n")
+        max_ep = 0
+
+        for line in lines[1:]:  # Skip header
+            if not line.strip() or line.startswith("#"):
+                continue
+
+            # Parse CSV row to get EpisodeID column (index 1)
+            # Handle quoted fields by splitting carefully
+            parts = line.split(",")
+            if len(parts) >= 2:
+                ep_id = parts[1].strip().strip('"')
+                match = re.match(r'ep-(\d+)', ep_id)
+                if match:
+                    max_ep = max(max_ep, int(match.group(1)))
+
+        return max_ep
 
     def _format_hashes_line(self, entries: list[tuple[str, str]]) -> str:
         """Format per-entry hashes as a comment line.
@@ -1121,6 +1149,95 @@ class HealthLogProcessor:
         # Ensure at least 1 entry per batch
         return max(1, count)
 
+    def _validate_timeline_batch_output(
+        self,
+        csv_text: str,
+        entries_dates: list[str],
+        next_episode_num: int
+    ) -> tuple[str, list[str]]:
+        """Validate and clean LLM-generated CSV rows.
+
+        Args:
+            csv_text: Raw LLM output (CSV rows)
+            entries_dates: Expected dates for this batch
+            next_episode_num: Starting episode number for this batch
+
+        Returns:
+            (cleaned_csv, validation_errors)
+        """
+        import csv
+        from datetime import datetime
+
+        errors = []
+        valid_rows = []
+
+        VALID_CATEGORIES = {
+            "condition", "symptom", "medication", "supplement",
+            "experiment", "provider", "watch", "todo"
+        }
+        VALID_EVENTS = {
+            "condition": {"diagnosed", "suspected", "flare", "improved", "worsened", "resolved", "stable"},
+            "symptom": {"noted", "improved", "worsened", "resolved", "stable"},
+            "medication": {"started", "adjusted", "stopped"},
+            "supplement": {"started", "adjusted", "stopped"},
+            "experiment": {"started", "update", "ended"},
+            "provider": {"visit"},
+            "watch": {"noted", "resolved"},
+            "todo": {"added", "completed"},
+        }
+
+        for i, line in enumerate(csv_text.strip().split("\n"), 1):
+            if not line.strip():
+                continue
+
+            # Parse CSV row (handles quoted fields)
+            try:
+                row = next(csv.reader([line]))
+            except csv.Error as e:
+                errors.append(f"Row {i}: CSV parse error: {e}")
+                continue
+
+            if len(row) != 7:
+                errors.append(f"Row {i}: Expected 7 columns, got {len(row)}")
+                continue
+
+            date, ep_id, item, category, event, related_ep, details = row
+
+            # Validate Date format
+            try:
+                datetime.strptime(date, "%Y-%m-%d")
+            except ValueError:
+                errors.append(f"Row {i}: Invalid date format: {date} (expected YYYY-MM-DD)")
+
+            # Validate Date is in batch
+            if date not in entries_dates:
+                errors.append(f"Row {i}: Date {date} not in current batch")
+
+            # Validate EpisodeID format
+            if not re.match(r'ep-\d{3}', ep_id):
+                errors.append(f"Row {i}: Invalid episode ID format: {ep_id}")
+            else:
+                # Validate EpisodeID >= next_episode_num
+                ep_num = int(re.match(r'ep-(\d+)', ep_id).group(1))
+                if ep_num < next_episode_num:
+                    errors.append(f"Row {i}: Episode ID {ep_id} less than expected minimum ep-{next_episode_num:03d}")
+
+            # Validate Category
+            if category not in VALID_CATEGORIES:
+                errors.append(f"Row {i}: Invalid category: {category}")
+
+            # Validate Event for Category
+            if category in VALID_EVENTS and event not in VALID_EVENTS[category]:
+                errors.append(f"Row {i}: Invalid event '{event}' for category '{category}'")
+
+            # Validate RelatedEpisode format if present
+            if related_ep and not re.match(r'ep-\d{3}', related_ep):
+                errors.append(f"Row {i}: Invalid related episode format: {related_ep}")
+
+            valid_rows.append(line)
+
+        return "\n".join(valid_rows), errors
+
     def _process_timeline_batch(
         self, existing_timeline: str, entries: list[tuple[str, str]], next_episode_num: int
     ) -> str:
@@ -1187,7 +1304,20 @@ Output only the new CSV rows to append (no header row):"""
         if lines and lines[0].strip().startswith("Date,"):
             lines = lines[1:]
 
-        return "\n".join(lines)
+        # Validate the batch output
+        entries_dates = [date for date, _ in entries]
+        cleaned_response, validation_errors = self._validate_timeline_batch_output(
+            "\n".join(lines), entries_dates, next_episode_num
+        )
+
+        if validation_errors:
+            self.logger.warning(
+                "Timeline batch validation found %d issues:\n  %s",
+                len(validation_errors),
+                "\n  ".join(validation_errors[:5])  # Log first 5
+            )
+
+        return cleaned_response
 
     # --------------------------------------------------------------
     # Section processing (one dated section → validated markdown)

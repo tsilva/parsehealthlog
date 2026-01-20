@@ -77,14 +77,14 @@ class TestConfigFromEnv:
             "MODEL_ID": "custom-default",
             "PROCESS_MODEL_ID": "process-model",
             "VALIDATE_MODEL_ID": "validate-model",
+            "STATUS_MODEL_ID": "status-model",
         }
         with patch.dict(os.environ, env, clear=True):
             config = Config.from_env()
             assert config.model_id == "custom-default"
             assert config.process_model_id == "process-model"
             assert config.validate_model_id == "validate-model"
-            # Unset roles fall back to MODEL_ID
-            assert config.summary_model_id == "custom-default"
+            assert config.status_model_id == "status-model"
 
     def test_default_max_workers(self):
         """Default max_workers is 4."""
@@ -108,17 +108,6 @@ class TestConfigFromEnv:
         with patch.dict(os.environ, env, clear=True):
             config = Config.from_env()
             assert config.max_workers == 8
-
-    def test_default_questions_runs(self):
-        """Default questions_runs is 3."""
-        env = {
-            "OPENROUTER_API_KEY": "test-key",
-            "HEALTH_LOG_PATH": "/path/to/log.md",
-            "OUTPUT_PATH": "/path/to/output",
-        }
-        with patch.dict(os.environ, env, clear=True):
-            config = Config.from_env()
-            assert config.questions_runs == 3
 
     def test_optional_paths_none_by_default(self):
         """Optional paths are None when not set."""
@@ -167,18 +156,6 @@ class TestConfigFromEnv:
             with pytest.raises(ConfigurationError, match="MAX_WORKERS must be an integer"):
                 Config.from_env()
 
-    def test_invalid_questions_runs_raises(self):
-        """Non-integer QUESTIONS_RUNS raises ConfigurationError with clear message."""
-        env = {
-            "OPENROUTER_API_KEY": "test-key",
-            "HEALTH_LOG_PATH": "/path/to/log.md",
-            "OUTPUT_PATH": "/path/to/output",
-            "QUESTIONS_RUNS": "abc",
-        }
-        with patch.dict(os.environ, env, clear=True):
-            with pytest.raises(ConfigurationError, match="QUESTIONS_RUNS must be an integer"):
-                Config.from_env()
-
     def test_negative_max_workers_becomes_one(self):
         """Negative MAX_WORKERS is clamped to 1."""
         env = {
@@ -190,18 +167,6 @@ class TestConfigFromEnv:
         with patch.dict(os.environ, env, clear=True):
             config = Config.from_env()
             assert config.max_workers == 1
-
-    def test_negative_questions_runs_becomes_one(self):
-        """Negative QUESTIONS_RUNS is clamped to 1."""
-        env = {
-            "OPENROUTER_API_KEY": "test-key",
-            "HEALTH_LOG_PATH": "/path/to/log.md",
-            "OUTPUT_PATH": "/path/to/output",
-            "QUESTIONS_RUNS": "-3",
-        }
-        with patch.dict(os.environ, env, clear=True):
-            config = Config.from_env()
-            assert config.questions_runs == 1
 
     def test_large_max_workers_clamped_to_cpu_count(self):
         """Very large MAX_WORKERS is clamped to CPU count."""
