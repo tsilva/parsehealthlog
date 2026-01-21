@@ -38,6 +38,10 @@ This document describes the data processing pipeline used by health-log-parser t
        |             |   7. VALIDATE TIMELINE                     |
        |             |      Episode continuity, references, etc   |-----> validation report
        |             |                                            |
+       |             |   7.5 CORRECT EPISODE ERRORS (if needed)   |
+       |             |       LLM fixes state consistency errors   |-----> corrected CSV
+       |             |       (Type A/B/C corrections, max 3x)     |
+       |             |                                            |
        +-------------+--------------------------------------------+
 
                      All steps use hash-based caching for efficiency
@@ -209,49 +213,73 @@ Change detection algorithm:
 
 ### Step 7: Timeline Validation
 
-**What it does:** Validates the generated timeline CSV for structural integrity, episode continuity, and logical consistency. Runs automatically after timeline building and reports any issues found.
+**What it does:** Validates the generated timeline CSV for structural integrity, episode continuity, and logical consistency. Runs automatically after timeline building and reports any issues found. Critical validation failures block processing to prevent corrupted output.
 
 **Key files/APIs:**
 - `validate_timeline.py` - All validation functions
 - `validate_timeline.run_all_validations()` - Orchestrator function
+- `validate_timeline.get_validation_severity()` - Returns 'critical' or 'warning' for each check
 - `validate_timeline.print_validation_report()` - Human-readable output
 - `main.py:_validate_timeline_batch_output()` - Per-batch CSV validation during LLM generation
 
-**Validation checks:**
+**Validation Severity Levels:**
 
-1. **Episode Continuity** (`validate_episode_continuity`)
+Validation checks are categorized by severity:
+- **CRITICAL**: Blocks processing, raises `ValueError` if failed (data integrity at risk)
+- **WARNING**: Logged but processing continues (potential issues to review)
+
+**Post-Processing Validation Checks:**
+
+1. **Episode Continuity** [CRITICAL] (`validate_episode_continuity`)
    - Detects gaps in episode numbering (ep-001, ep-003 missing ep-002)
    - Detects duplicate episode IDs
    - Ensures sequential assignment
 
-2. **Related Episodes** (`validate_related_episodes`)
-   - Validates all RelatedEpisode references point to existing episodes
-   - Detects orphaned references (ep-999 doesn't exist)
-
-3. **CSV Structure** (`validate_csv_structure`)
+2. **CSV Structure** [CRITICAL] (`validate_csv_structure`)
    - Validates 7-column format: Date, EpisodeID, Item, Category, Event, RelatedEpisode, Details
    - Checks header row format
    - Detects malformed rows
 
-4. **Chronological Order** (`validate_chronological_order`)
+3. **Chronological Order** [CRITICAL] (`validate_chronological_order`)
    - Ensures entries are sorted by date (oldest to newest)
    - Detects out-of-order entries
 
-5. **Comprehensive Stack Updates** (`validate_comprehensive_stack_updates`)
-   - Detects entries with keywords indicating complete supplement/medication lists
-   - Validates that all previously active items were either stopped or continued
-   - Prevents "lost" supplements that weren't explicitly stopped
+4. **Episode State Consistency** [CRITICAL] (`validate_episode_state_consistency`)
+   - Detects events after terminal states (stopped, resolved, ended, completed)
+   - Ensures no activity on terminated episodes
+   - Example error: "ep-005 (Vitamin D 5000IU): Event 'adjusted' on 2024-05-01 after terminal event 'stopped' on 2024-03-01"
 
-6. **Batch Output Validation** (during generation)
-   - Validates Date format (YYYY-MM-DD)
-   - Validates EpisodeID format (ep-XXX)
-   - Validates Category is in allowed set
-   - Validates Event matches Category
-   - Validates RelatedEpisode format
-   - Validates Date is in expected batch
-   - Validates EpisodeID >= expected minimum
+5. **Related Episodes** [WARNING] (`validate_related_episodes`)
+   - Validates all RelatedEpisode references point to existing episodes
+   - Detects orphaned references (ep-999 doesn't exist)
 
-**Output:** Console report showing validation results:
+6. **Comprehensive Stack Updates** [WARNING] (`validate_comprehensive_stack_updates`)
+   - Detects entries with `[STACK_UPDATE]` marker in Details field
+   - Validates that all previously active supplements/medications/experiments were either stopped/ended or continued
+   - Prevents "lost" items that weren't explicitly stopped during comprehensive updates
+   - Checks marker consistency: all stopped/ended items on that date should have marker
+
+**Batch Output Validation (during generation):**
+
+Runs during LLM generation with automatic retry on critical failures (up to 3 attempts):
+
+- Validates Date format (YYYY-MM-DD)
+- Validates EpisodeID format (ep-XXX)
+- Validates Category is in allowed set
+- Validates Event matches Category
+- Validates RelatedEpisode format **and existence** [Triggers Retry]
+- Validates Date is in expected batch
+- Validates EpisodeID >= expected minimum
+- Detects duplicate entries (Date, Item, Category, Event) [Warning]
+- Checks first episode ID matches expected (detects gaps) [Triggers Retry]
+
+**Retry Logic:**
+- Critical batch validation errors trigger automatic retry (max 2 retries = 3 total attempts)
+- Retry triggers: Orphaned RelatedEpisode references, Episode ID gaps
+- Non-critical errors (duplicates, format issues) logged as warnings only
+- After exhausting retries, final output returned but will be caught by post-processing validation
+
+**Output:** Console report showing validation results with severity indicators:
 ```
 ============================================================
 TIMELINE VALIDATION REPORT
@@ -266,29 +294,120 @@ Or if errors found:
 TIMELINE VALIDATION REPORT
 ============================================================
 
-⚠  Found 3 validation error(s):
+Found 5 validation error(s) (3 critical, 2 warnings)
 
-Episode Continuity:
+[CRITICAL] Episode Continuity:
   - Episode ID gap: ep-001 → ep-003
 
-Related Episodes:
+[CRITICAL] Episode State Consistency:
+  - ep-005 (Vitamin D 5000IU): Event 'started' on 2024-05-01 after terminal event 'stopped' on 2024-03-01
+
+[WARNING] Related Episodes:
   - Line 45: 2024-03-15 Levothyroxine 50mcg - RelatedEpisode 'ep-999' does not exist
 
-Chronological Order:
-  - Out of order: 2024-03-20 followed by 2024-03-15 (lines 42, 43)
+[WARNING] Comprehensive Stack Updates:
+  - Date 2024-06-01: Some stopped items lack [STACK_UPDATE] marker: Omega-3 2000mg (ep-015)
 ```
 
 **Behavioral notes:**
 - Validation runs automatically at end of `run()` method
-- Errors are logged as warnings but don't block processing
-- All errors are displayed to user via console report
-- Episode ID extraction now parses only the EpisodeID column (not Details field)
-- Batch validation catches issues during LLM generation (logs warnings)
-- Post-processing validation catches issues in final timeline file
+- **CRITICAL errors block processing:** Raises `ValueError` to prevent corrupted CSV from being saved
+- WARNING errors are logged but processing continues
+- All errors are displayed to user via console report with severity indicators
+- Episode ID extraction parses only the EpisodeID column (not Details field)
+- Batch validation with retry improves data quality by catching LLM errors early
+- Post-processing validation provides final safety check before saving
 
 **Testing:**
 - Unit tests in `tests/test_validation.py`
 - Integration tests in `tests/test_timeline_processing.py`
+
+---
+
+### Step 7.5: Episode State Correction Loop
+
+**What it does:** Automatically corrects `episode_state_consistency` validation errors by feeding them back to an LLM for repair. This handles cases where the timeline builder loses visibility of old terminal events due to context compression.
+
+**Key files/APIs:**
+- `main.py:_correct_timeline_errors()` - Main correction loop orchestrator
+- `main.py:_parse_episode_state_errors()` - Parse validation errors into structured data
+- `main.py:_extract_episode_context()` - Get all CSV rows for affected episodes
+- `main.py:_get_episode_corrections()` - Call LLM for correction decisions
+- `main.py:_apply_episode_corrections()` - Apply corrections to CSV file
+- `prompts/correct_episode_state.system_prompt.md` - LLM prompt for correction decisions
+
+**When it runs:** After initial validation (Step 7), only if `episode_state_consistency` errors are found.
+
+**Correction Types:**
+
+The LLM chooses one of three correction strategies per episode:
+
+| Type | Description | When to Use | Example |
+|------|-------------|-------------|---------|
+| **A** | Change terminal event to non-terminal | Condition is chronic, not cured | `resolved` → `stable` |
+| **B** | Create new episode ID | Genuine recurrence/restart | Assign post-terminal rows to new ep-ID |
+| **C** | Delete invalid rows | Erroneous duplicates | Remove the problematic rows entirely |
+
+**Correction Flow:**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    CORRECTION LOOP                          │
+│                                                             │
+│  Validation finds episode_state_consistency errors          │
+│                         │                                   │
+│                         v                                   │
+│  Parse errors → group by episode ID                         │
+│                         │                                   │
+│                         v                                   │
+│  Extract all CSV rows for affected episodes                 │
+│                         │                                   │
+│                         v                                   │
+│  LLM decides: Type A, B, or C correction per episode        │
+│                         │                                   │
+│                         v                                   │
+│  Apply corrections to CSV file                              │
+│                         │                                   │
+│                         v                                   │
+│  Re-validate → loop if errors remain (max 3 iterations)     │
+│                         │                                   │
+│                         v                                   │
+│  Return updated validation results                          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Error Format Parsed:**
+```
+ep-XXX (Item Name): Event 'event' on YYYY-MM-DD after terminal event 'terminal' on YYYY-MM-DD
+```
+
+**LLM Output Format (JSON):**
+```json
+{
+  "corrections": [
+    {
+      "episode_id": "ep-042",
+      "correction_type": "A",
+      "explanation": "Chronic condition, not cured",
+      "change_event": {
+        "date": "2024-03-01",
+        "old_event": "resolved",
+        "new_event": "stable"
+      }
+    }
+  ]
+}
+```
+
+**Behavioral notes:**
+- Runs up to 3 iterations (configurable via `max_iterations`)
+- Stops early if all errors are resolved
+- Uses the same `status` LLM model as timeline building
+- Type A is preferred for conditions (chronic by nature)
+- Type B is preferred for supplements/medications (clear stop/restart pattern)
+- Type C is used sparingly for obvious data errors
+- After correction loop, final validation report is printed
+- If errors remain after max iterations, warning is logged but processing continues to critical failure check
 
 ---
 
@@ -359,6 +478,24 @@ Chronological Order:
                          |
                          v
                  validation report
+                         |
+          (if episode_state_consistency errors)
+                         |
+                         v
+               +------------------+
+               | CORRECT EPISODE  |
+               | STATE ERRORS     |
+               |                  |
+               | - Parse errors   |
+               | - LLM chooses    |
+               |   Type A/B/C     |
+               | - Apply fixes    |
+               | - Re-validate    |
+               | (max 3 loops)    |
+               +------------------+
+                         |
+                         v
+                 final validation
 ```
 
 ## Key Files
@@ -373,6 +510,7 @@ Chronological Order:
 | `prompts/validate.system_prompt.md` | Validates processed output (checks for `$OK$`) |
 | `prompts/validate.user_prompt.md` | User prompt template for validation |
 | `prompts/update_timeline.system_prompt.md` | Builds chronological CSV timeline with episode IDs |
+| `prompts/correct_episode_state.system_prompt.md` | Corrects episode state consistency errors |
 | `tests/test_validation.py` | Unit tests for validation functions |
 | `tests/test_timeline_processing.py` | Integration tests for timeline processing |
 

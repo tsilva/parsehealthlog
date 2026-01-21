@@ -40,6 +40,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
+import io
 import json
 import logging
 import re
@@ -552,19 +553,51 @@ class HealthLogProcessor:
         self._build_health_timeline()
 
         # Run post-processing validation
-        from validate_timeline import run_all_validations, print_validation_report
+        from validate_timeline import (
+            run_all_validations,
+            print_validation_report,
+            get_validation_severity
+        )
 
         self.logger.info("Running timeline validation...")
         validation_results = run_all_validations(
-            self.output_dir / "health_log.csv",
+            self.OUTPUT_PATH / "health_log.csv",
             self.entries_dir
         )
         print_validation_report(validation_results)
 
-        # Log validation results
+        # Attempt to correct episode state errors before failing
+        if validation_results.get('episode_state_consistency'):
+            self.logger.info("Attempting to correct episode state errors...")
+            validation_results = self._correct_timeline_errors(
+                self.OUTPUT_PATH / "health_log.csv",
+                validation_results,
+                max_iterations=3
+            )
+            print_validation_report(validation_results)
+
+        # Check for critical validation failures
+        critical_failures = {
+            check: errors
+            for check, errors in validation_results.items()
+            if errors and get_validation_severity(check) == 'critical'
+        }
+
+        if critical_failures:
+            error_summary = "; ".join(
+                f"{check}: {len(errors)} error(s)"
+                for check, errors in critical_failures.items()
+            )
+            self.logger.error(f"Critical validation failures: {error_summary}")
+            raise ValueError(
+                f"Timeline validation failed with critical errors: {error_summary}. "
+                "Output may be corrupted. See validation report above for details."
+            )
+
+        # Log non-critical warnings
         for check, errors in validation_results.items():
-            if errors:
-                self.logger.warning(f"Validation {check} found issues: {errors}")
+            if errors and get_validation_severity(check) == 'warning':
+                self.logger.warning(f"Validation {check} found {len(errors)} issue(s)")
 
         # Track run completion
         self._update_state(
@@ -872,6 +905,29 @@ class HealthLogProcessor:
             skip += 1
         return "\n".join(lines[skip:])
 
+    def _sort_timeline_content(self, content: str) -> str:
+        """Sort timeline CSV rows by date (chronological order).
+
+        Args:
+            content: Timeline CSV content (header + data rows).
+
+        Returns:
+            Sorted CSV content with header preserved.
+        """
+        lines = content.strip().split("\n")
+        if len(lines) <= 1:
+            return content
+
+        header = lines[0]
+        data_lines = [line for line in lines[1:] if line.strip()]
+
+        # Sort by date (first column)
+        def get_date(line: str) -> str:
+            return line.split(",")[0].strip().strip('"')
+
+        sorted_lines = sorted(data_lines, key=get_date)
+        return header + "\n" + "\n".join(sorted_lines)
+
     def _save_timeline(
         self, path: Path, content: str, processed_through: str, entries: list[tuple[str, str]], last_ep: int
     ) -> None:
@@ -881,6 +937,9 @@ class HealthLogProcessor:
             # Last updated: YYYY-MM-DD | Processed through: YYYY-MM-DD | LastEp: N
             # HASHES: date1=hash1,date2=hash2,...
         """
+        # Sort rows by date before saving
+        content = self._sort_timeline_content(content)
+
         today = datetime.now().strftime("%Y-%m-%d")
         header_line1 = f"# Last updated: {today} | Processed through: {processed_through} | LastEp: {last_ep}"
         header_line2 = self._format_hashes_line(entries)
@@ -1153,7 +1212,8 @@ class HealthLogProcessor:
         self,
         csv_text: str,
         entries_dates: list[str],
-        next_episode_num: int
+        next_episode_num: int,
+        existing_episode_ids: set[str] = None
     ) -> tuple[str, list[str]]:
         """Validate and clean LLM-generated CSV rows.
 
@@ -1161,15 +1221,20 @@ class HealthLogProcessor:
             csv_text: Raw LLM output (CSV rows)
             entries_dates: Expected dates for this batch
             next_episode_num: Starting episode number for this batch
+            existing_episode_ids: Episode IDs that exist in the timeline before this batch
 
         Returns:
             (cleaned_csv, validation_errors)
         """
+        if existing_episode_ids is None:
+            existing_episode_ids = set()
         import csv
         from datetime import datetime
 
         errors = []
         valid_rows = []
+        batch_episode_ids = set()
+        seen_combinations = set()  # Track (Date, Item, Category, Event) for duplicate detection
 
         VALID_CATEGORIES = {
             "condition", "symptom", "medication", "supplement",
@@ -1186,6 +1251,20 @@ class HealthLogProcessor:
             "todo": {"added", "completed"},
         }
 
+        # First pass: collect episode IDs from this batch
+        for line in csv_text.strip().split("\n"):
+            if not line.strip():
+                continue
+            try:
+                row = next(csv.reader([line]))
+                if len(row) >= 2:
+                    ep_id = row[1]
+                    if re.match(r'ep-\d{3}', ep_id):
+                        batch_episode_ids.add(ep_id)
+            except csv.Error:
+                pass
+
+        # Second pass: validate each row
         for i, line in enumerate(csv_text.strip().split("\n"), 1):
             if not line.strip():
                 continue
@@ -1202,6 +1281,15 @@ class HealthLogProcessor:
                 continue
 
             date, ep_id, item, category, event, related_ep, details = row
+
+            # Check for duplicates (Date, Item, Category, Event)
+            row_key = (date, item, category, event)
+            if row_key in seen_combinations:
+                errors.append(
+                    f"Row {i}: Duplicate entry - {date} {item} ({category}) {event} "
+                    "already appears in this batch"
+                )
+            seen_combinations.add(row_key)
 
             # Validate Date format
             try:
@@ -1230,9 +1318,15 @@ class HealthLogProcessor:
             if category in VALID_EVENTS and event not in VALID_EVENTS[category]:
                 errors.append(f"Row {i}: Invalid event '{event}' for category '{category}'")
 
-            # Validate RelatedEpisode format if present
-            if related_ep and not re.match(r'ep-\d{3}', related_ep):
-                errors.append(f"Row {i}: Invalid related episode format: {related_ep}")
+            # Validate RelatedEpisode format and existence if present
+            if related_ep:
+                if not re.match(r'ep-\d{3}', related_ep):
+                    errors.append(f"Row {i}: Invalid related episode format: {related_ep}")
+                elif related_ep not in existing_episode_ids and related_ep not in batch_episode_ids:
+                    errors.append(
+                        f"Row {i}: RelatedEpisode {related_ep} does not exist "
+                        f"(in {date} {item} {event})"
+                    )
 
             valid_rows.append(line)
 
@@ -1279,45 +1373,434 @@ Use ep-{next_episode_num:03d} for the first new episode, then increment as neede
 
 Output only the new CSV rows to append (no header row):"""
 
-        response = self.llm["status"](
-            [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
-            ],
-            max_tokens=32768,
-            temperature=0.0,
-        )
+        # Extract existing episode IDs from timeline (needed for validation)
+        import csv
+        existing_episode_ids = set()
+        if existing_timeline:
+            for line in existing_timeline.split("\n"):
+                if line.strip() and not line.startswith("#") and not line.startswith("Date,"):
+                    try:
+                        row = next(csv.reader([line]))
+                        if len(row) >= 2 and re.match(r'ep-\d{3}', row[1]):
+                            existing_episode_ids.add(row[1])
+                    except csv.Error:
+                        pass
 
-        # Clean up response - remove any markdown code blocks
-        cleaned = response.strip()
-        if cleaned.startswith("```"):
-            # Remove code block markers
-            lines = cleaned.split("\n")
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            cleaned = "\n".join(lines)
-
-        # Remove any accidental header row
-        lines = cleaned.split("\n")
-        if lines and lines[0].strip().startswith("Date,"):
-            lines = lines[1:]
-
-        # Validate the batch output
+        # Retry loop for handling validation failures
+        max_retries = 2
         entries_dates = [date for date, _ in entries]
-        cleaned_response, validation_errors = self._validate_timeline_batch_output(
-            "\n".join(lines), entries_dates, next_episode_num
-        )
 
-        if validation_errors:
-            self.logger.warning(
-                "Timeline batch validation found %d issues:\n  %s",
-                len(validation_errors),
-                "\n  ".join(validation_errors[:5])  # Log first 5
+        for attempt in range(max_retries + 1):
+            response = self.llm["status"](
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                max_tokens=32768,
+                temperature=0.0,
             )
 
+            # Clean up response - remove any markdown code blocks
+            cleaned = response.strip()
+            if cleaned.startswith("```"):
+                # Remove code block markers
+                lines = cleaned.split("\n")
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                cleaned = "\n".join(lines)
+
+            # Remove any accidental header row
+            lines = cleaned.split("\n")
+            if lines and lines[0].strip().startswith("Date,"):
+                lines = lines[1:]
+
+            # Validate the batch output
+            cleaned_response, validation_errors = self._validate_timeline_batch_output(
+                "\n".join(lines), entries_dates, next_episode_num, existing_episode_ids
+            )
+
+            # Check for critical errors that warrant retry
+            critical_errors = []
+            episode_id_gap = False
+
+            for error in validation_errors:
+                if "does not exist" in error:  # Orphaned RelatedEpisode
+                    critical_errors.append(error)
+
+            # Check if first episode ID matches expected
+            if cleaned_response.strip():
+                first_line = cleaned_response.strip().split("\n")[0]
+                try:
+                    first_row = next(csv.reader([first_line]))
+                    if len(first_row) >= 2:
+                        first_ep_id = first_row[1]
+                        if re.match(r'ep-(\d+)', first_ep_id):
+                            first_ep_num = int(re.match(r'ep-(\d+)', first_ep_id).group(1))
+                            if first_ep_num != next_episode_num:
+                                episode_id_gap = True
+                                critical_errors.append(
+                                    f"Episode ID gap: Expected ep-{next_episode_num:03d}, got {first_ep_id}"
+                                )
+                except csv.Error:
+                    pass
+
+            # If no critical errors, we're done
+            if not critical_errors:
+                if validation_errors:
+                    self.logger.warning(
+                        "Timeline batch validation found %d non-critical issues:\n  %s",
+                        len(validation_errors),
+                        "\n  ".join(validation_errors[:5])
+                    )
+                return cleaned_response
+
+            # If we have attempts left, retry
+            if attempt < max_retries:
+                self.logger.warning(
+                    "Batch validation attempt %d/%d failed with %d critical error(s). Retrying...\n  %s",
+                    attempt + 1, max_retries + 1, len(critical_errors),
+                    "\n  ".join(critical_errors[:3])
+                )
+            else:
+                # Final attempt exhausted
+                self.logger.error(
+                    "Batch validation failed after %d attempts with %d critical error(s):\n  %s",
+                    max_retries + 1, len(critical_errors),
+                    "\n  ".join(critical_errors[:5])
+                )
+                # Return what we have, but it will be caught by post-processing validation
+                return cleaned_response
+
         return cleaned_response
+
+    # --------------------------------------------------------------
+    # Timeline error correction
+    # --------------------------------------------------------------
+
+    def _correct_timeline_errors(
+        self,
+        timeline_path: Path,
+        validation_results: dict[str, list[str]],
+        max_iterations: int = 3
+    ) -> dict[str, list[str]]:
+        """Correct episode state consistency errors in the timeline.
+
+        Iterates until all errors are fixed or max attempts reached.
+
+        Args:
+            timeline_path: Path to the timeline CSV file.
+            validation_results: Current validation results dict.
+            max_iterations: Maximum correction attempts.
+
+        Returns:
+            Updated validation results after corrections.
+        """
+        from validate_timeline import run_all_validations
+
+        for iteration in range(max_iterations):
+            errors = validation_results.get('episode_state_consistency', [])
+            if not errors:
+                self.logger.info("No episode state errors to correct")
+                return validation_results
+
+            self.logger.info(
+                "Correction iteration %d/%d: %d episode state error(s)",
+                iteration + 1, max_iterations, len(errors)
+            )
+
+            # Parse errors and group by episode
+            episode_errors = self._parse_episode_state_errors(errors)
+            if not episode_errors:
+                self.logger.warning("Could not parse any episode state errors")
+                return validation_results
+
+            # Extract context (all rows) for affected episodes
+            episode_context = self._extract_episode_context(
+                timeline_path, set(episode_errors.keys())
+            )
+
+            # Get next available episode ID for Type B corrections
+            timeline_content = self._read_timeline_content(timeline_path)
+            next_ep_num = self._get_last_episode_num(timeline_content) + 1
+
+            # Call LLM for corrections
+            corrections = self._get_episode_corrections(
+                episode_errors, episode_context, next_ep_num
+            )
+
+            if not corrections:
+                self.logger.warning("LLM returned no corrections")
+                return validation_results
+
+            # Apply corrections to the CSV
+            applied = self._apply_episode_corrections(timeline_path, corrections)
+            if applied == 0:
+                self.logger.warning("No corrections were applied")
+                return validation_results
+
+            self.logger.info("Applied %d correction(s)", applied)
+
+            # Re-validate
+            validation_results = run_all_validations(
+                timeline_path, self.entries_dir
+            )
+
+        remaining = len(validation_results.get('episode_state_consistency', []))
+        if remaining > 0:
+            self.logger.warning(
+                "Correction loop exhausted after %d iterations, %d error(s) remain",
+                max_iterations, remaining
+            )
+
+        return validation_results
+
+    def _parse_episode_state_errors(
+        self, errors: list[str]
+    ) -> dict[str, list[dict]]:
+        """Parse episode state error strings into structured data.
+
+        Args:
+            errors: List of error strings from validation.
+
+        Returns:
+            Dict mapping episode ID to list of error details.
+        """
+        # Error format: "ep-XXX (Item Name): Event 'event' on YYYY-MM-DD after terminal event 'terminal' on YYYY-MM-DD"
+        pattern = re.compile(
+            r"(ep-\d+)\s+\(([^)]+)\):\s+Event\s+'(\w+)'\s+on\s+(\d{4}-\d{2}-\d{2})\s+"
+            r"after\s+terminal\s+event\s+'(\w+)'\s+on\s+(\d{4}-\d{2}-\d{2})"
+        )
+
+        episode_errors: dict[str, list[dict]] = {}
+
+        for error in errors:
+            match = pattern.match(error)
+            if match:
+                ep_id, item_name, event, event_date, terminal_event, terminal_date = match.groups()
+                if ep_id not in episode_errors:
+                    episode_errors[ep_id] = []
+                episode_errors[ep_id].append({
+                    "item_name": item_name,
+                    "event": event,
+                    "event_date": event_date,
+                    "terminal_event": terminal_event,
+                    "terminal_date": terminal_date,
+                })
+            else:
+                self.logger.warning("Could not parse error: %s", error)
+
+        return episode_errors
+
+    def _extract_episode_context(
+        self, timeline_path: Path, episode_ids: set[str]
+    ) -> dict[str, list[str]]:
+        """Extract all CSV rows for the specified episodes.
+
+        Args:
+            timeline_path: Path to the timeline CSV.
+            episode_ids: Set of episode IDs to extract.
+
+        Returns:
+            Dict mapping episode ID to list of CSV row strings.
+        """
+        import csv
+
+        episode_rows: dict[str, list[str]] = {ep_id: [] for ep_id in episode_ids}
+
+        content = self._read_timeline_content(timeline_path)
+        lines = content.strip().split("\n")
+
+        # Include header for context
+        header = lines[0] if lines else ""
+
+        for line in lines[1:]:  # Skip header
+            if not line.strip():
+                continue
+            try:
+                row = next(csv.reader([line]))
+                if len(row) >= 2:
+                    ep_id = row[1]
+                    if ep_id in episode_ids:
+                        episode_rows[ep_id].append(line)
+            except csv.Error:
+                continue
+
+        # Add header to each episode's context
+        for ep_id in episode_rows:
+            episode_rows[ep_id] = [header] + episode_rows[ep_id]
+
+        return episode_rows
+
+    def _get_episode_corrections(
+        self,
+        episode_errors: dict[str, list[dict]],
+        episode_context: dict[str, list[str]],
+        next_ep_num: int
+    ) -> list[dict]:
+        """Call LLM to get correction decisions for each episode.
+
+        Args:
+            episode_errors: Parsed errors grouped by episode.
+            episode_context: All rows for each affected episode.
+            next_ep_num: Next available episode number for Type B corrections.
+
+        Returns:
+            List of correction dictionaries from LLM.
+        """
+        system_prompt = self._prompt("correct_episode_state.system_prompt")
+
+        # Build user prompt with errors and context
+        error_lines = ["Errors:"]
+        for ep_id, errs in episode_errors.items():
+            for err in errs:
+                error_lines.append(
+                    f"- {ep_id} ({err['item_name']}): Event '{err['event']}' on {err['event_date']} "
+                    f"after terminal event '{err['terminal_event']}' on {err['terminal_date']}"
+                )
+
+        context_lines = ["\nEpisode context:"]
+        for ep_id, rows in episode_context.items():
+            context_lines.append(f"\nEpisode {ep_id} rows:")
+            context_lines.extend(rows)
+
+        user_content = (
+            "\n".join(error_lines) +
+            "\n".join(context_lines) +
+            f"\n\nNext available episode ID: ep-{next_ep_num:03d}"
+        )
+
+        try:
+            response = self.llm["status"](
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                max_tokens=4096,
+                temperature=0.0,
+            )
+
+            result = self._parse_json_response(response)
+            return result.get("corrections", [])
+
+        except (json.JSONDecodeError, KeyError) as e:
+            self.logger.error("Failed to parse LLM correction response: %s", e)
+            return []
+
+    def _apply_episode_corrections(
+        self, timeline_path: Path, corrections: list[dict]
+    ) -> int:
+        """Apply corrections to the timeline CSV.
+
+        Args:
+            timeline_path: Path to the timeline CSV.
+            corrections: List of correction dictionaries from LLM.
+
+        Returns:
+            Number of corrections successfully applied.
+        """
+        import csv
+
+        # Read current timeline
+        content = timeline_path.read_text(encoding="utf-8")
+        lines = content.split("\n")
+
+        # Separate header lines (comments) from data
+        header_lines = []
+        data_lines = []
+        for line in lines:
+            if line.startswith("#"):
+                header_lines.append(line)
+            else:
+                data_lines.append(line)
+
+        # Parse data lines into rows
+        csv_header = data_lines[0] if data_lines else ""
+        rows = []
+        for line in data_lines[1:]:
+            if line.strip():
+                try:
+                    parsed = next(csv.reader([line]))
+                    rows.append(parsed)
+                except csv.Error:
+                    continue
+
+        applied = 0
+
+        for correction in corrections:
+            ep_id = correction.get("episode_id")
+            correction_type = correction.get("correction_type")
+
+            if correction_type == "A":
+                # Change terminal events to non-terminal (supports multiple)
+                change_events = correction.get("change_events", [])
+                # Backwards compatibility: support old singular format
+                if not change_events and correction.get("change_event"):
+                    change_events = [correction.get("change_event")]
+
+                for change in change_events:
+                    target_date = change.get("date")
+                    old_event = change.get("old_event")
+                    new_event = change.get("new_event")
+
+                    for row in rows:
+                        if len(row) >= 5 and row[1] == ep_id and row[0] == target_date and row[4] == old_event:
+                            row[4] = new_event
+                            applied += 1
+                            self.logger.info(
+                                "Type A: Changed %s %s event from '%s' to '%s'",
+                                ep_id, target_date, old_event, new_event
+                            )
+                            break
+
+            elif correction_type == "B":
+                # Reassign rows to new episode
+                new_ep_id = correction.get("new_episode_id")
+                dates_to_reassign = set(correction.get("rows_to_reassign", []))
+
+                for row in rows:
+                    if len(row) >= 2 and row[1] == ep_id and row[0] in dates_to_reassign:
+                        old_ep = row[1]
+                        row[1] = new_ep_id
+                        applied += 1
+                        self.logger.info(
+                            "Type B: Reassigned %s row from %s to %s",
+                            row[0], old_ep, new_ep_id
+                        )
+
+            elif correction_type == "C":
+                # Delete rows
+                dates_to_delete = set(correction.get("rows_to_delete", []))
+                original_len = len(rows)
+                rows = [
+                    row for row in rows
+                    if not (len(row) >= 2 and row[1] == ep_id and row[0] in dates_to_delete)
+                ]
+                deleted = original_len - len(rows)
+                if deleted > 0:
+                    applied += deleted
+                    self.logger.info(
+                        "Type C: Deleted %d row(s) for %s on dates %s",
+                        deleted, ep_id, dates_to_delete
+                    )
+
+        # Sort rows by date before rebuilding
+        rows.sort(key=lambda r: r[0] if r else "")
+
+        # Rebuild CSV content
+        output = io.StringIO()
+        writer = csv.writer(output)
+        for row in rows:
+            writer.writerow(row)
+
+        new_data = csv_header + "\n" + output.getvalue().strip()
+
+        # Write back with headers
+        final_content = "\n".join(header_lines) + "\n" + new_data
+        timeline_path.write_text(final_content, encoding="utf-8")
+
+        return applied
 
     # --------------------------------------------------------------
     # Section processing (one dated section → validated markdown)
