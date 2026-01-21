@@ -76,22 +76,90 @@ The Details field captures important clinical context that the fixed Event types
 - `worsened,"Significant flare, possibly stress-related"`
 - `started,"Trial period 4 weeks, reassess"` (with RelatedEpisode=ep-002 if treating that condition)
 
-## Episode ID Rules
+## Episode ID Rules - Decision Tree
+
+Before assigning an episode ID, **always search the existing timeline** for matching items:
+
+### Step 1: Check for Existing Item
+
+Search the timeline for an item with the **same base name** (case-insensitive, ignoring dosage variations):
+- "Vitamin D 5000IU" matches "Vitamin D 2000IU" (same base: Vitamin D)
+- "Pantoprazole 20mg" matches "Pantoprazole 40mg" (same base: Pantoprazole)
+- "Lower back pain" matches "Lower Back Pain" (case-insensitive)
+
+### Step 2: Determine Episode Action
+
+**If matching item found in timeline:**
+
+1. **Check if episode is terminated:**
+   - Terminated events: `stopped`, `resolved`, `ended`, `completed`
+   - If most recent event is terminated → **CREATE NEW EPISODE** (it's a restart)
+   - If most recent event is NOT terminated → Go to step 2
+
+2. **Determine event type:**
+   - **Dosage change** (supplement/medication): Use `Event=adjusted` with **REUSE episode ID**
+   - **Follow-up status** (condition/symptom): Use appropriate event (`improved`, `worsened`, `stable`, `resolved`) with **REUSE episode ID**
+   - **Experiment update**: Use `Event=update` with **REUSE episode ID**
+   - **Restart after stop**: Use `Event=started` with **CREATE NEW EPISODE**
+
+**If matching item NOT found in timeline:**
+- **CREATE NEW EPISODE** (use next available ID)
+
+### Step 3: Apply Category-Specific Rules
 
 **Creating new episodes (use next available ID):**
 - New condition diagnosis or first flare
 - New symptom appearing
-- Starting a new medication/supplement course
+- Starting a new medication/supplement course (or restarting after stop)
 - Starting a new experiment
-- Each provider visit
-- Each watch item
-- Each TODO item
+- Each provider visit (always new episode)
+- Each watch item (always new episode)
+- Each TODO item (always new episode)
 
 **Reusing existing episode ID:**
-- Follow-up events for the same condition episode (improved, worsened, resolved)
-- Follow-up events for the same symptom (stable, improved, resolved)
+- Follow-up events for the same condition episode (improved, worsened, resolved, stable)
+- Follow-up events for the same symptom (improved, worsened, resolved, stable)
 - Experiment updates (same experiment, new observation)
-- Medication adjustment or stop (same course that was started)
+- Medication/supplement adjustment (dosage change) or stop (same course that was started)
+
+**Examples:**
+
+| Scenario | Existing Timeline | New Event | Action | Episode ID | Reasoning |
+|----------|-------------------|-----------|--------|------------|-----------|
+| Dosage change | ep-010: Vitamin D 5000IU started | Vitamin D 2000IU started | REUSE with adjusted | ep-010 | Same item, use adjusted event |
+| Restart after stop | ep-010: Vitamin D 5000IU stopped | Vitamin D 5000IU started | CREATE NEW | ep-042 | Previously terminated |
+| Condition follow-up | ep-005: Gastritis diagnosed | Gastritis improved | REUSE | ep-005 | Same condition, status update |
+| New symptom | (none) | Headache noted | CREATE NEW | ep-042 | First occurrence |
+
+## Item Naming Conventions
+
+Consistent naming enables accurate episode matching and reuse. Follow these guidelines:
+
+**Medications and Supplements:**
+- Format: `Base Name Dose Unit` (e.g., "Vitamin D 5000IU", "Pantoprazole 20mg")
+- Base name is case-insensitive for matching purposes
+- Include dose and unit for clarity, but match on base name only
+- Dosage changes: Use `Event=adjusted` with new dose in Details field
+
+**Conditions and Symptoms:**
+- Use clinically standard names (e.g., "Gastritis" not "stomach inflammation")
+- Be specific when possible (e.g., "Lumbar scoliosis" not just "scoliosis")
+- Consistent capitalization (Title Case preferred)
+
+**Examples of Consistent Naming:**
+
+| Category | Good Examples | Bad Examples | Reasoning |
+|----------|---------------|--------------|-----------|
+| Supplement | Vitamin D 5000IU | vitamin d (no dose), Vit D 5000 (abbreviated) | Full name + dose |
+| Medication | Pantoprazole 20mg | Pantoprazole (no dose), 20mg Pantoprazole (reversed) | Name + dose |
+| Condition | Gastritis | stomach issues (vague) | Clinically standard |
+| Symptom | Lower back pain | back pain (too broad) | Specific location |
+
+**When recording dosage changes:**
+- Keep the same Item name with old dose
+- Use Event=adjusted
+- Put new dose in Details: "Adjusted to 10000IU from 5000IU"
+- Reuse the same episode ID
 
 **RelatedEpisode column - when to populate:**
 - Medication/supplement started FOR a condition → RelatedEpisode = condition's ep-ID
@@ -137,8 +205,10 @@ When processing follow-up diagnostic tests (ECGs, imaging, labs) for previously 
   - Action: Create entry with Status=`worsened`, Details="Progression on follow-up imaging: [details]"
 
 **When to use `resolved` vs `stable`:**
-- `resolved`: Condition fully cleared (e.g., infection resolved, fracture healed, acute symptom gone)
-- `stable`: Condition normalized but may recur (e.g., bradycardia normalized but patient prone to it)
+- `resolved`: Condition fully cleared AND unlikely to recur (e.g., acute infection resolved, fracture healed, acute symptom gone)
+- `stable`: Condition normalized but may recur OR is chronic in nature (e.g., bradycardia normalized but patient prone to it, chronic condition well-controlled)
+
+**IMPORTANT:** For chronic or recurring conditions, prefer `stable` over `resolved`. Using `resolved` creates a terminal state - if the condition recurs later, a NEW episode ID must be created (per the rules in "Step 2: Determine Episode Action"). This loses continuity with the original episode. Use `resolved` only when the condition is truly gone permanently.
 
 **Linking:**
 The follow-up test visit should have RelatedEpisode pointing to the condition's episode ID.
@@ -253,12 +323,15 @@ When a journal entry describes the patient's **complete current stack** of suppl
 ```
 
 **Your output MUST include stopped/ended events for everything not in current stack:**
+
+IMPORTANT: When stopping items as part of a comprehensive stack update, prefix the Details field with "[STACK_UPDATE] " to mark these as comprehensive update stops.
+
 ```csv
-2024-06-01,ep-010,Vitamin D 5000IU,supplement,stopped,,Not in current stack per comprehensive update
-2024-06-01,ep-015,Omega-3 2000mg,supplement,stopped,,Not in current stack per comprehensive update
-2024-06-01,ep-020,Creatine 1g,supplement,stopped,,Not in current stack per comprehensive update
-2024-06-01,ep-025,5-HTP 50mg,supplement,stopped,,Not in current stack per comprehensive update
-2024-06-01,ep-028,Taurine 500mg,experiment,ended,,Not in current stack per comprehensive update
+2024-06-01,ep-010,Vitamin D 5000IU,supplement,stopped,,[STACK_UPDATE] Not in current stack
+2024-06-01,ep-015,Omega-3 2000mg,supplement,stopped,,[STACK_UPDATE] Not in current stack
+2024-06-01,ep-020,Creatine 1g,supplement,stopped,,[STACK_UPDATE] Not in current stack
+2024-06-01,ep-025,5-HTP 50mg,supplement,stopped,,[STACK_UPDATE] Not in current stack
+2024-06-01,ep-028,Taurine 500mg,experiment,ended,,[STACK_UPDATE] Not in current stack
 2024-06-01,ep-030,NAC 600mg PRN,supplement,started,,Occasional use when feeling down
 2024-06-01,ep-031,Psyllium 5g,supplement,started,,Daily for regularity
 ```
