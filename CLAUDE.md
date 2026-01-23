@@ -61,7 +61,7 @@ OUTPUT_PATH/
 | File | Purpose |
 |------|---------|
 | `main.py` | All processing logic (HealthLogProcessor, LLM wrapper) |
-| `entity_registry.py` | EntityRegistry class, state machine, output generators |
+| `entity_registry.py` | EntityRegistry class, active/inactive tracking, output generators |
 | `config.py` | Environment variable loading and validation |
 | `docs/pipeline.md` | Detailed pipeline documentation |
 | `prompts/process.system_prompt.md` | Entry processing prompt |
@@ -77,7 +77,7 @@ OUTPUT_PATH/
 
 **Architecture**:
 - Remove entity linking (critical for relating treatments to conditions)
-- Move state machine logic to LLM prompts (causes state inconsistencies)
+- Move active/inactive logic to LLM prompts (causes state inconsistencies)
 - Hardcode medical rules in Python (LLM should apply clinical judgment via prompts)
 - Remove parallel processing (essential for large logs with hundreds of entries)
 
@@ -103,10 +103,16 @@ OUTPUT_PATH/
 1. Check `entities.json` for the complete entity state
 2. Check `history.csv` for the event log
 3. Common issues (logged as warnings):
-   - Invalid state transitions (code enforces state machine)
+   - Stop events on unknown entities (may indicate extraction issue)
    - Missing for_condition references (condition not found)
-   - Non-initial events on new entities (may indicate extraction issue)
+   - Unknown event types (treated as detail updates)
 4. Fix by editing extraction prompt or source entries
+
+### Clean Up Stale Active Entities
+1. Run `uv run python main.py --profile <name> --generate-audit`
+2. Edit the generated `audit_template.md` - delete entries that are still active
+3. Add remaining entries (things to stop/resolve) to your health log
+4. Re-run processing to apply changes
 
 ### Update Documentation
 When modifying the pipeline, update `docs/pipeline.md` to reflect changes.

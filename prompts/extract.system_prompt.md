@@ -14,19 +14,18 @@ Read the entry and output a JSON object listing all health-related items mention
     {
       "type": "condition",
       "name": "Gastritis",
-      "event": "improved",
-      "details": "Less epigastric pain, mild discomfort persists",
+      "event": "diagnosed",
+      "details": "Stress-triggered, epigastric pain",
       "for_condition": null
     },
     {
       "type": "medication",
       "name": "Pantoprazole 20mg",
       "event": "stopped",
-      "details": "Symptoms mostly resolved",
+      "details": "Symptoms resolved",
       "for_condition": "Gastritis"
     }
-  ],
-  "stack_update": null
+  ]
 }
 ```
 
@@ -37,33 +36,50 @@ Read the entry and output a JSON object listing all health-related items mention
 | type | Yes | One of: condition, symptom, medication, supplement, experiment, provider, todo |
 | name | Yes | Canonical name (include dose for meds/supplements: "Vitamin D 5000IU") |
 | event | Yes | What happened (see Events below) |
-| details | No | Clinical nuance, context, uncertainty |
+| details | No | Clinical nuance, context, changes, observations |
 | for_condition | No | Condition this item treats/relates to (for meds, supplements, experiments, providers) |
 
 ## Events by Type
 
-| Type | Valid Events |
-|------|--------------|
-| condition | diagnosed, suspected, flare, improved, worsened, resolved, stable |
-| symptom | noted, improved, worsened, resolved, stable |
-| medication | started, adjusted, stopped |
-| supplement | started, adjusted, stopped |
-| experiment | started, update, ended |
-| provider | visit |
-| todo | added, completed |
+**Simplified model:** Each type has start events (creates/activates) and stop events (deactivates).
+
+| Type | Start Events | Stop Events |
+|------|--------------|-------------|
+| condition | `diagnosed`, `suspected`, `noted` | `resolved` |
+| symptom | `noted` | `resolved` |
+| medication | `started` | `stopped` |
+| supplement | `started` | `stopped` |
+| experiment | `started` | `ended` |
+| provider | `visit` | - |
+| todo | `added` | `completed` |
+
+**Important:** Changes, updates, and observations go in the `details` field, not as separate events.
+
+## How to Handle Updates and Changes
+
+**Status changes become details:**
+- "Gastritis improved, less pain" → `event: noted, details: "improved, less pain"`
+- "Gastritis worsening with stress" → `event: noted, details: "worsening with stress"`
+- "Gastritis stable, no changes" → `event: noted, details: "stable, no changes"`
+
+**Dosage changes become new starts:**
+- "Increased Vitamin D to 5000IU" → `event: started, name: "Vitamin D 5000IU", details: "increased from 2000IU"`
+
+**Condition flares are noted:**
+- "Gastritis flare after alcohol" → `event: noted, details: "flare after alcohol"`
 
 ## Condition Resolution Criteria
 
-Use `resolved` (not `improved`) when:
+Use `resolved` when:
 - Lab values that defined the condition have normalized (e.g., anemia with normal hemoglobin/ferritin)
 - Test/biopsy explicitly rules out or shows resolution of condition
 - Acute infection completed treatment course (streptococcal, UTI, etc.)
 - Patient explicitly states condition is "gone", "cured", or "no longer present"
 
-Use `improved` when:
-- Symptoms are better but condition still present
-- Lab values trending toward normal but not yet normalized
-- Ongoing management still required
+Use `noted` with details when:
+- Symptoms are better but condition still present → `details: "improved, symptoms better"`
+- Lab values trending toward normal but not yet normalized → `details: "improving, labs trending normal"`
+- Ongoing management still required → `details: "stable with continued treatment"`
 
 ## Historical vs Current Events
 
@@ -74,7 +90,7 @@ Use `improved` when:
 
 **Only extract events for conditions that are currently active or changing:**
 - "Labs show anemia" → Extract diagnosed/noted
-- "Anemia improving with treatment" → Extract improved
+- "Anemia improving with treatment" → Extract noted with details
 - "Labs now normal, anemia resolved" → Extract resolved
 
 ## Naming Conventions
@@ -99,45 +115,23 @@ Populate when an item is being used to treat or investigate a specific condition
 - Experiment testing hypothesis → `"for_condition": "Fatigue"`
 - Leave null if no specific condition relationship
 
-## Comprehensive Stack Updates
-
-When an entry describes the patient's **complete current stack** of supplements or medications (not just individual additions/removals), set `stack_update`:
-
-```json
-{
-  "items": [...],
-  "stack_update": {
-    "categories": ["supplement"],
-    "items_mentioned": ["NAC 600mg", "Psyllium 5g"]
-  }
-}
-```
-
-**Signals for stack update:**
-- "I am currently taking X, Y, Z" (exhaustive list)
-- "I am not taking any supplements except..."
-- "My current stack is..."
-- "I stopped all supplements except..."
-
-**NOT a stack update:**
-- "I started X" (just an addition)
-- "I stopped Y" (just a removal)
-
 ## What to Extract
 
 **DO extract:**
-- All condition diagnoses, flares, improvements, resolutions
-- All medication starts, adjustments, stops (with dose)
+- All condition diagnoses and resolutions
+- All medication starts and stops (with dose)
 - All supplement starts and stops (with dose)
 - Significant symptoms (recurring, concerning, or being tracked)
 - Doctor/provider visits
 - Experiments and their observations
 - TODO items and follow-ups
+- Status updates as `noted` events with details
 
 **DO NOT extract:**
 - Individual lab abnormalities (labs are separate data)
 - Minor one-off symptoms that never recur
 - Routine observations without clinical significance
+- The `<!-- RESET_STATE -->` marker (handled separately by the system)
 
 ## Examples
 
@@ -157,8 +151,8 @@ When an entry describes the patient's **complete current stack** of supplements 
     {
       "type": "condition",
       "name": "Gastritis",
-      "event": "improved",
-      "details": "Less epigastric pain",
+      "event": "noted",
+      "details": "Improving, less epigastric pain",
       "for_condition": null
     },
     {
@@ -189,8 +183,7 @@ When an entry describes the patient's **complete current stack** of supplements 
       "details": "In 3 months",
       "for_condition": "Gastritis"
     }
-  ],
-  "stack_update": null
+  ]
 }
 ```
 
@@ -212,8 +205,28 @@ Output:
       "details": "Lab values normalized: hemoglobin 13.1 (within ref), ferritin 116 (within ref)",
       "for_condition": null
     }
-  ],
-  "stack_update": null
+  ]
+}
+```
+
+**Dosage Change Example:**
+Input:
+```
+- Increased Vitamin D from 2000IU to 5000IU due to low levels
+```
+
+Output:
+```json
+{
+  "items": [
+    {
+      "type": "supplement",
+      "name": "Vitamin D 5000IU",
+      "event": "started",
+      "details": "Increased from 2000IU due to low levels",
+      "for_condition": null
+    }
+  ]
 }
 ```
 
@@ -226,8 +239,7 @@ Input:
 Output:
 ```json
 {
-  "items": [],
-  "stack_update": null
+  "items": []
 }
 ```
 (No extraction - this is historical context, not a current event)
