@@ -120,6 +120,7 @@ def setup_logging() -> None:
 PROMPTS_DIR: Final = Path(__file__).with_suffix("").parent / "prompts"
 LAB_SECTION_HEADER: Final = "Lab test results:"
 MEDICAL_EXAMS_SECTION_HEADER: Final = "Medical exam results:"
+RESET_STATE_MARKER: Final = "<!-- RESET_STATE -->"
 
 def load_prompt(name: str) -> str:
     path = PROMPTS_DIR / f"{name}.md"
@@ -571,6 +572,18 @@ class HealthLogProcessor:
             len(registry.history),
         )
 
+        # Always generate audit template for user review
+        active_count = sum(1 for e in registry.entities.values() if e.active)
+        if active_count > 0:
+            audit_content = registry.generate_audit_template()
+            audit_path = self.OUTPUT_PATH / "audit_template.md"
+            audit_path.write_text(audit_content, encoding="utf-8")
+            self.logger.info(
+                "Generated audit template with %d active entities: %s",
+                active_count,
+                audit_path,
+            )
+
         # Track run completion
         self._update_state(
             status="completed" if not failed else "completed_with_errors",
@@ -681,6 +694,16 @@ class HealthLogProcessor:
 
         # Process each entry chronologically
         for date, content in tqdm(entries, desc="Extracting facts"):
+            # Check for state reset marker in RAW content (LLM strips HTML comments)
+            raw_path = self.entries_dir / f"{date}.raw.md"
+            raw_content = raw_path.read_text(encoding="utf-8") if raw_path.exists() else ""
+            if RESET_STATE_MARKER in raw_content:
+                reset_events = registry.reset_active_entities(date)
+                self.logger.info(
+                    "State reset at %s: %d entities deactivated",
+                    date, len(reset_events)
+                )
+
             # Extract facts from the entry
             facts = self._extract_entry_facts(date, content)
             if not facts:
@@ -707,26 +730,6 @@ class HealthLogProcessor:
                     for_condition=for_condition,
                 )
                 all_warnings.extend(warnings)
-
-            # Handle comprehensive stack updates
-            stack_update = facts.get("stack_update")
-            if stack_update:
-                categories = stack_update.get("categories", [])
-                items_mentioned = stack_update.get("items_mentioned", [])
-                if categories and items_mentioned is not None:
-                    stop_events = registry.process_stack_update(
-                        date, categories, items_mentioned
-                    )
-                    if stop_events:
-                        self.logger.info(
-                            "%s: Stack update stopped %d items in %s",
-                            date, len(stop_events), categories
-                        )
-
-        # Apply time-based decay to auto-resolve stale conditions
-        decay_events = registry.apply_time_based_decay(cutoff_years=5)
-        for event in decay_events:
-            self.logger.info("Auto-resolved stale condition: %s", event.name)
 
         self.logger.info(
             "Entity registry built: %d entities, %d history events",
@@ -1241,6 +1244,56 @@ class HealthLogProcessor:
 
 
 # --------------------------------------------------------------------------------------
+# Audit template generation
+# --------------------------------------------------------------------------------------
+
+
+def generate_audit_template(config: Config, logger: logging.Logger) -> Path | None:
+    """Generate an audit template from existing entity registry.
+
+    Reads the current entities.json and generates a markdown template
+    listing all active entities with their appropriate stop events.
+
+    Args:
+        config: Application configuration
+        logger: Logger instance
+
+    Returns:
+        Path to generated audit file, or None if no entities found
+    """
+    entities_path = config.output_path / "entities.json"
+
+    if not entities_path.exists():
+        logger.error("No entities.json found at %s", entities_path)
+        logger.error("Run processing first to build the entity registry")
+        return None
+
+    # Load existing registry
+    try:
+        data = json.loads(entities_path.read_text(encoding="utf-8"))
+        registry = EntityRegistry.from_dict(data)
+    except (json.JSONDecodeError, IOError) as e:
+        logger.error("Failed to load entities.json: %s", e)
+        return None
+
+    # Check if there are any active entities
+    active_count = sum(1 for e in registry.entities.values() if e.active)
+    if active_count == 0:
+        logger.info("No active entities found - nothing to audit")
+        return None
+
+    # Generate audit template
+    template_content = registry.generate_audit_template()
+
+    # Save to output directory
+    audit_path = config.output_path / "audit_template.md"
+    audit_path.write_text(template_content, encoding="utf-8")
+
+    logger.info("Generated audit template with %d active entities", active_count)
+    return audit_path
+
+
+# --------------------------------------------------------------------------------------
 # CLI entry point
 # --------------------------------------------------------------------------------------
 
@@ -1254,6 +1307,7 @@ def main() -> None:
 Examples:
   uv run python main.py --profile tiago
   uv run python main.py --profile tiago --force-reprocess
+  uv run python main.py --profile tiago --generate-audit
   uv run python main.py --list-profiles
         """,
     )
@@ -1272,6 +1326,11 @@ Examples:
         "--force-reprocess",
         action="store_true",
         help="Clear all cached outputs and reprocess everything from scratch",
+    )
+    parser.add_argument(
+        "--generate-audit",
+        action="store_true",
+        help="Generate audit template only (without running full processing)",
     )
     args = parser.parse_args()
 
@@ -1329,6 +1388,19 @@ Examples:
         config = Config.from_profile(profile)
     except ValueError as e:
         raise SystemExit(f"Configuration error: {e}")
+
+    # Handle --generate-audit flag: generate audit template and exit
+    if args.generate_audit:
+        audit_path = generate_audit_template(config, logger)
+        if audit_path:
+            print(f"Generated audit template: {audit_path}")
+            print()
+            print("Next steps:")
+            print("1. Edit the file - DELETE entries for items still active")
+            print("2. KEEP entries for items you want to stop/resolve")
+            print("3. Add the content to your health log")
+            print("4. Re-run processing to apply changes")
+        sys.exit(0)
 
     # Handle --force-reprocess flag: clear cached outputs
     if args.force_reprocess:
