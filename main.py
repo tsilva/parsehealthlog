@@ -57,6 +57,7 @@ from tqdm import tqdm
 
 from config import Config, ProfileConfig
 from exceptions import DateExtractionError, PromptError, LabParsingError
+from entity_registry import EntityRegistry
 
 # --------------------------------------------------------------------------------------
 # Logging helpers
@@ -301,6 +302,8 @@ class LLM:
             temperature=temperature,
             timeout=120.0,  # 2 minute timeout per request
         )
+        if not resp or not resp.choices:
+            raise ValueError(f"Empty response from API for model {self.model}")
         content = resp.choices[0].message.content
         return content.strip() if content else ""
 
@@ -361,7 +364,7 @@ class HealthLogProcessor:
             "process.system_prompt",
             "validate.system_prompt",
             "validate.user_prompt",
-            "update_timeline.system_prompt",
+            "extract.system_prompt",
         ]
 
         missing = [p for p in required_prompts if not (PROMPTS_DIR / f"{p}.md").exists()]
@@ -549,55 +552,24 @@ class HealthLogProcessor:
                 encoding="utf-8",
             )
 
-        # Build health timeline CSV (chronological events with episode IDs)
-        self._build_health_timeline()
+        # Build entity registry from extracted facts
+        registry, warnings = self._build_entity_registry()
 
-        # Run post-processing validation
-        from validate_timeline import (
-            run_all_validations,
-            print_validation_report,
-            get_validation_severity
+        # Log any warnings from entity processing
+        if warnings:
+            self.logger.warning("Entity processing warnings (%d):", len(warnings))
+            for w in warnings[:10]:  # Show first 10
+                self.logger.warning("  - %s", w)
+            if len(warnings) > 10:
+                self.logger.warning("  ... and %d more", len(warnings) - 10)
+
+        # Save entity-centric outputs
+        registry.save_outputs(self.OUTPUT_PATH)
+        self.logger.info(
+            "Saved entity registry outputs: %d entities, %d history events",
+            len(registry.entities),
+            len(registry.history),
         )
-
-        self.logger.info("Running timeline validation...")
-        validation_results = run_all_validations(
-            self.OUTPUT_PATH / "health_log.csv",
-            self.entries_dir
-        )
-        print_validation_report(validation_results)
-
-        # Attempt to correct episode state errors before failing
-        if validation_results.get('episode_state_consistency'):
-            self.logger.info("Attempting to correct episode state errors...")
-            validation_results = self._correct_timeline_errors(
-                self.OUTPUT_PATH / "health_log.csv",
-                validation_results,
-                max_iterations=3
-            )
-            print_validation_report(validation_results)
-
-        # Check for critical validation failures
-        critical_failures = {
-            check: errors
-            for check, errors in validation_results.items()
-            if errors and get_validation_severity(check) == 'critical'
-        }
-
-        if critical_failures:
-            error_summary = "; ".join(
-                f"{check}: {len(errors)} error(s)"
-                for check, errors in critical_failures.items()
-            )
-            self.logger.error(f"Critical validation failures: {error_summary}")
-            raise ValueError(
-                f"Timeline validation failed with critical errors: {error_summary}. "
-                "Output may be corrupted. See validation report above for details."
-            )
-
-        # Log non-critical warnings
-        for check, errors in validation_results.items():
-            if errors and get_validation_severity(check) == 'warning':
-                self.logger.warning(f"Validation {check} found {len(errors)} issue(s)")
 
         # Track run completion
         self._update_state(
@@ -684,147 +656,133 @@ class HealthLogProcessor:
         return False
 
     # --------------------------------------------------------------
-    # Health Timeline building (replaces entity extraction + aggregation)
+    # Entity Registry building (deterministic state machine)
     # --------------------------------------------------------------
 
-    def _build_health_timeline(self) -> str:
-        """Build health timeline CSV from processed entries.
+    def _build_entity_registry(self) -> tuple[EntityRegistry, list[str]]:
+        """Build entity registry from extracted facts.
 
-        Processes entries chronologically (oldest first), building a CSV timeline
-        with episode IDs linking related events. Supports incremental updates:
-        - Cache hit: No changes detected, return existing timeline
-        - Append mode: Only new entries at end, append new rows
-        - Incremental rebuild: Entry modified/deleted/inserted, rebuild from change point
-        - Full rebuild: First run or migration from old format
+        Processes entries chronologically (oldest first), extracting facts
+        and applying them to a deterministic state machine.
 
-        Returns the timeline CSV content.
+        Returns:
+            Tuple of (EntityRegistry, list of warning messages)
         """
-        self.logger.info("Building health timeline from processed entries...")
-
-        timeline_path = self.OUTPUT_PATH / "health_log.csv"
+        self.logger.info("Building entity registry from processed entries...")
 
         # Get all processed entries sorted chronologically (oldest first)
         entries = self._get_chronological_entries()
         if not entries:
-            self.logger.warning("No processed entries found for timeline")
-            return self._get_empty_timeline()
+            self.logger.warning("No processed entries found for registry")
+            return EntityRegistry(), []
 
-        # Parse existing timeline header if it exists
-        processed_through, last_episode_num, entry_hashes = self._parse_timeline_header(timeline_path)
+        registry = EntityRegistry()
+        all_warnings: list[str] = []
 
-        # No HASHES line - full rebuild (migration or first run)
-        if not entry_hashes:
-            self.logger.info("Full timeline rebuild: processing %d entries", len(entries))
-            return self._full_timeline_rebuild(timeline_path, entries)
+        # Process each entry chronologically
+        for date, content in tqdm(entries, desc="Extracting facts"):
+            # Extract facts from the entry
+            facts = self._extract_entry_facts(date, content)
+            if not facts:
+                continue
 
-        # Detect what changed
-        change = self._find_earliest_change(entries, entry_hashes, processed_through)
+            # Process each extracted item
+            for item in facts.get("items", []):
+                entity_type = item.get("type", "")
+                name = item.get("name", "")
+                event = item.get("event", "")
+                details = item.get("details", "")
+                for_condition = item.get("for_condition")
 
-        if change is None:
-            # Cache hit - timeline is up-to-date
-            self.logger.info("Health timeline is up-to-date (processed through %s)", processed_through)
-            return self._read_timeline_content(timeline_path)
+                if not entity_type or not name or not event:
+                    all_warnings.append(f"{date}: Incomplete item: {item}")
+                    continue
 
-        if change == "append":
-            # Only new entries after processed_through
-            new_entries = [(d, c) for d, c in entries if d > processed_through]
-            self.logger.info(
-                "Incremental timeline update: %d new entries after %s",
-                len(new_entries), processed_through
-            )
-            existing_content = self._read_timeline_content(timeline_path)
-            new_rows = self._process_timeline_batch(
-                existing_content, new_entries, last_episode_num + 1
-            )
-            # Append new rows
-            if new_rows.strip():
-                updated_content = existing_content.rstrip() + "\n" + new_rows
-            else:
-                updated_content = existing_content
-            # Update header and save
-            new_last_date = entries[-1][0]
-            new_last_ep = self._get_last_episode_num(updated_content)
-            self._save_timeline(timeline_path, updated_content, new_last_date, entries, new_last_ep)
-            return updated_content
+                _, _, warnings = registry.apply_event(
+                    date=date,
+                    entity_type=entity_type,
+                    name=name,
+                    event=event,
+                    details=details,
+                    for_condition=for_condition,
+                )
+                all_warnings.extend(warnings)
 
-        # Incremental rebuild from change point
-        self.logger.info("Rebuilding timeline from %s", change)
+            # Handle comprehensive stack updates
+            stack_update = facts.get("stack_update")
+            if stack_update:
+                categories = stack_update.get("categories", [])
+                items_mentioned = stack_update.get("items_mentioned", [])
+                if categories and items_mentioned is not None:
+                    stop_events = registry.process_stack_update(
+                        date, categories, items_mentioned
+                    )
+                    if stop_events:
+                        self.logger.info(
+                            "%s: Stack update stopped %d items in %s",
+                            date, len(stop_events), categories
+                        )
 
-        existing_content = self._read_timeline_content(timeline_path)
-        truncated, last_ep_kept = self._truncate_timeline_to_date(existing_content, change)
+        self.logger.info(
+            "Entity registry built: %d entities, %d history events",
+            len(registry.entities),
+            len(registry.history),
+        )
 
-        # Get entries to reprocess (date >= change point)
-        to_process = [(d, c) for d, c in entries if d >= change]
+        return registry, all_warnings
 
-        # Process in batches, starting from truncated timeline
-        timeline_content = truncated
-        next_ep = last_ep_kept + 1
-
-        batch_start = 0
-        while batch_start < len(to_process):
-            batch_size = self._calculate_batch_size(to_process[batch_start:], len(timeline_content))
-            batch = to_process[batch_start:batch_start + batch_size]
-
-            new_rows = self._process_timeline_batch(
-                timeline_content, batch, next_ep
-            )
-
-            if new_rows.strip():
-                timeline_content = timeline_content.rstrip() + "\n" + new_rows
-                next_ep = self._get_last_episode_num(timeline_content) + 1
-
-            batch_start += batch_size
-            self.logger.info(
-                "Processed batch: %d entries through %s (%d remaining)",
-                len(batch), batch[-1][0], len(to_process) - batch_start
-            )
-
-        # Save with header
-        last_date = entries[-1][0]
-        last_ep = self._get_last_episode_num(timeline_content)
-        self._save_timeline(timeline_path, timeline_content, last_date, entries, last_ep)
-
-        return timeline_content
-
-    def _full_timeline_rebuild(self, timeline_path: Path, entries: list[tuple[str, str]]) -> str:
-        """Perform a full timeline rebuild from scratch.
+    def _extract_entry_facts(self, date: str, content: str) -> dict | None:
+        """Extract structured facts from a processed entry using LLM.
 
         Args:
-            timeline_path: Path to save the timeline.
-            entries: All entries sorted chronologically (oldest first).
+            date: Entry date (YYYY-MM-DD)
+            content: Processed entry content
 
         Returns:
-            The complete timeline CSV content.
+            Extracted facts dict or None if extraction failed
         """
-        timeline_content = self._get_empty_timeline()
+        # Check cache first
+        extracted_path = self.entries_dir / f"{date}.extracted.json"
+        content_hash = hash_content(content)
 
-        # Process in batches to stay within context limits
-        next_episode_num = 1
-        batch_start = 0
-        while batch_start < len(entries):
-            batch_size = self._calculate_batch_size(entries[batch_start:], len(timeline_content))
-            batch = entries[batch_start:batch_start + batch_size]
+        if extracted_path.exists():
+            try:
+                cached = json.loads(extracted_path.read_text(encoding="utf-8"))
+                if cached.get("_content_hash") == content_hash:
+                    return cached.get("facts")
+            except (json.JSONDecodeError, IOError):
+                pass
 
-            new_rows = self._process_timeline_batch(
-                timeline_content, batch, next_episode_num
+        # Call LLM to extract facts
+        system_prompt = self._prompt("extract.system_prompt")
+
+        try:
+            response = self.llm["status"](
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": content},
+                ],
+                max_tokens=4096,
+                temperature=0.0,
             )
 
-            if new_rows.strip():
-                timeline_content = timeline_content.rstrip() + "\n" + new_rows
-                next_episode_num = self._get_last_episode_num(timeline_content) + 1
+            facts = self._parse_json_response(response)
 
-            batch_start += batch_size
-            self.logger.info(
-                "Processed batch: %d entries through %s (%d remaining)",
-                len(batch), batch[-1][0], len(entries) - batch_start
+            # Cache the result
+            cache_data = {
+                "_content_hash": content_hash,
+                "facts": facts,
+            }
+            extracted_path.write_text(
+                json.dumps(cache_data, indent=2),
+                encoding="utf-8"
             )
 
-        # Save with header
-        last_date = entries[-1][0]
-        last_ep = self._get_last_episode_num(timeline_content)
-        self._save_timeline(timeline_path, timeline_content, last_date, entries, last_ep)
+            return facts
 
-        return timeline_content
+        except (json.JSONDecodeError, KeyError) as e:
+            self.logger.error("Failed to extract facts from %s: %s", date, e)
+            return None
 
     def _get_chronological_entries(self) -> list[tuple[str, str]]:
         """Get all processed entries sorted chronologically (oldest first).
@@ -838,969 +796,6 @@ class HealthLogProcessor:
             content = self._read_without_deps_comment(path)
             entries.append((date, content))
         return sorted(entries, key=lambda x: x[0])  # Oldest first
-
-    def _get_empty_timeline(self) -> str:
-        """Return empty timeline with just the CSV header."""
-        return "Date,EpisodeID,Item,Category,Event,RelatedEpisode,Details"
-
-    def _parse_timeline_header(self, path: Path) -> tuple[str | None, int, dict[str, str]]:
-        """Parse timeline header to get processed_through, last episode ID, and per-entry hashes.
-
-        Expected header format (two lines):
-            # Last updated: YYYY-MM-DD | Processed through: YYYY-MM-DD | LastEp: N
-            # HASHES: 2024-01-15=a1b2c3d4,2024-01-20=b2c3d4e5
-
-        Returns:
-            (processed_through_date, last_episode_num, entry_hashes_dict)
-        """
-        if not path.exists():
-            return None, 0, {}
-
-        try:
-            lines = path.read_text(encoding="utf-8").split("\n")
-            if not lines:
-                return None, 0, {}
-
-            first_line = lines[0]
-
-            # New format: # Last updated: YYYY-MM-DD | Processed through: YYYY-MM-DD | LastEp: N
-            match = re.match(
-                r"#\s*Last updated:.*\|\s*Processed through:\s*(\d{4}-\d{2}-\d{2})\s*\|\s*LastEp:\s*(\d+)",
-                first_line
-            )
-            if match:
-                processed_through = match.group(1)
-                last_ep = int(match.group(2))
-                # Parse second line for HASHES
-                entry_hashes = {}
-                if len(lines) > 1 and lines[1].startswith("# HASHES:"):
-                    entry_hashes = self._parse_hashes_line(lines[1])
-                return processed_through, last_ep, entry_hashes
-
-            # Legacy format: # Last updated: ... | Hash: xxx | LastEp: N
-            # Return empty entry_hashes to trigger full rebuild
-            legacy_match = re.match(
-                r"#\s*Last updated:.*\|\s*Processed through:\s*(\d{4}-\d{2}-\d{2})\s*\|\s*Hash:\s*\w+\s*\|\s*LastEp:\s*(\d+)",
-                first_line
-            )
-            if legacy_match:
-                # Legacy format - return empty hashes to force migration rebuild
-                return legacy_match.group(1), int(legacy_match.group(2)), {}
-
-        except (IOError, IndexError):
-            pass
-        return None, 0, {}
-
-    def _read_timeline_content(self, path: Path) -> str:
-        """Read timeline content, skipping the header comment lines.
-
-        Skips up to two comment lines at the start:
-        - Line 1: Metadata (Last updated, Processed through, LastEp)
-        - Line 2: HASHES line (per-entry hashes)
-        """
-        lines = path.read_text(encoding="utf-8").split("\n")
-        # Skip header comment lines
-        skip = 0
-        while skip < len(lines) and lines[skip].startswith("#"):
-            skip += 1
-        return "\n".join(lines[skip:])
-
-    def _sort_timeline_content(self, content: str) -> str:
-        """Sort timeline CSV rows by date (chronological order).
-
-        Args:
-            content: Timeline CSV content (header + data rows).
-
-        Returns:
-            Sorted CSV content with header preserved.
-        """
-        lines = content.strip().split("\n")
-        if len(lines) <= 1:
-            return content
-
-        header = lines[0]
-        data_lines = [line for line in lines[1:] if line.strip()]
-
-        # Sort by date (first column)
-        def get_date(line: str) -> str:
-            return line.split(",")[0].strip().strip('"')
-
-        sorted_lines = sorted(data_lines, key=get_date)
-        return header + "\n" + "\n".join(sorted_lines)
-
-    def _save_timeline(
-        self, path: Path, content: str, processed_through: str, entries: list[tuple[str, str]], last_ep: int
-    ) -> None:
-        """Save timeline with two-line metadata header.
-
-        Header format:
-            # Last updated: YYYY-MM-DD | Processed through: YYYY-MM-DD | LastEp: N
-            # HASHES: date1=hash1,date2=hash2,...
-        """
-        # Sort rows by date before saving
-        content = self._sort_timeline_content(content)
-
-        today = datetime.now().strftime("%Y-%m-%d")
-        header_line1 = f"# Last updated: {today} | Processed through: {processed_through} | LastEp: {last_ep}"
-        header_line2 = self._format_hashes_line(entries)
-        path.write_text(f"{header_line1}\n{header_line2}\n{content}", encoding="utf-8")
-        self.logger.info("Saved health timeline to %s", path)
-
-    def _get_last_episode_num(self, timeline_content: str) -> int:
-        """Extract the highest episode number from EpisodeID column only."""
-        lines = timeline_content.strip().split("\n")
-        max_ep = 0
-
-        for line in lines[1:]:  # Skip header
-            if not line.strip() or line.startswith("#"):
-                continue
-
-            # Parse CSV row to get EpisodeID column (index 1)
-            # Handle quoted fields by splitting carefully
-            parts = line.split(",")
-            if len(parts) >= 2:
-                ep_id = parts[1].strip().strip('"')
-                match = re.match(r'ep-(\d+)', ep_id)
-                if match:
-                    max_ep = max(max_ep, int(match.group(1)))
-
-        return max_ep
-
-    def _format_hashes_line(self, entries: list[tuple[str, str]]) -> str:
-        """Format per-entry hashes as a comment line.
-
-        Args:
-            entries: List of (date, content) tuples.
-
-        Returns:
-            Formatted line like: # HASHES: 2024-01-15=a1b2c3d4,2024-01-20=b2c3d4e5
-        """
-        hashes = []
-        for date, content in sorted(entries, key=lambda x: x[0]):
-            h = hash_content(content)
-            hashes.append(f"{date}={h}")
-        return "# HASHES: " + ",".join(hashes)
-
-    def _parse_hashes_line(self, line: str) -> dict[str, str]:
-        """Parse HASHES line into a dict of date -> hash.
-
-        Args:
-            line: Line like "# HASHES: 2024-01-15=a1b2c3d4,2024-01-20=b2c3d4e5"
-
-        Returns:
-            Dict mapping date strings to their content hashes.
-        """
-        if not line.startswith("# HASHES:"):
-            return {}
-
-        hashes_part = line[len("# HASHES:"):].strip()
-        if not hashes_part:
-            return {}
-
-        result = {}
-        for pair in hashes_part.split(","):
-            if "=" in pair:
-                date, h = pair.split("=", 1)
-                result[date.strip()] = h.strip()
-        return result
-
-    def _find_earliest_change(
-        self,
-        entries: list[tuple[str, str]],
-        entry_hashes: dict[str, str],
-        processed_through: str | None,
-    ) -> str | None:
-        """Find the earliest date where an entry changed, was deleted, or was inserted.
-
-        Args:
-            entries: Current list of (date, content) tuples.
-            entry_hashes: Dict of date -> hash from the stored HASHES line.
-            processed_through: The date through which the timeline was last processed.
-
-        Returns:
-            - A date string if we need to rebuild from that date
-            - "append" if only new entries after processed_through exist
-            - None if cache is valid (no changes)
-        """
-        # Build current hashes
-        current = {date: hash_content(content) for date, content in entries}
-        current_dates = set(current.keys())
-        existing_dates = set(entry_hashes.keys())
-
-        change_points = []
-
-        # Case 1: Entry deleted
-        for date in existing_dates - current_dates:
-            change_points.append(date)
-
-        # Case 2: Entry modified
-        for date in current_dates & existing_dates:
-            if current[date] != entry_hashes[date]:
-                change_points.append(date)
-
-        # Case 3: New entry inserted in middle (not appended)
-        for date in current_dates - existing_dates:
-            if processed_through and date <= processed_through:
-                change_points.append(date)
-
-        if change_points:
-            return min(change_points)  # Earliest change
-
-        # No changes to existing - check for append mode
-        if processed_through:
-            new_entries = [d for d in current_dates if d > processed_through]
-            if new_entries:
-                return "append"  # Use existing append logic
-
-        return None  # Cache hit
-
-    def _truncate_timeline_to_date(self, content: str, cutoff_date: str) -> tuple[str, int]:
-        """Keep timeline rows where Date < cutoff_date.
-
-        Args:
-            content: Timeline CSV content (without header comment lines).
-            cutoff_date: Date to truncate from (exclusive - rows before this are kept).
-
-        Returns:
-            Tuple of (truncated content, max episode number in kept rows).
-        """
-        lines = content.split("\n")
-        kept = []
-        last_ep = 0
-
-        for line in lines:
-            stripped = line.strip()
-            if not stripped:
-                continue
-
-            # Keep CSV header
-            if stripped.startswith("Date,"):
-                kept.append(line)
-                continue
-
-            # Parse date from first column (handle quoted/unquoted)
-            row_date = line.split(",")[0].strip().strip('"')
-
-            if row_date < cutoff_date:
-                kept.append(line)
-                # Track max episode number
-                match = re.search(r"ep-(\d+)", line)
-                if match:
-                    last_ep = max(last_ep, int(match.group(1)))
-
-        return "\n".join(kept), last_ep
-
-    def _compress_timeline_context(self, timeline: str, max_chars: int = 50_000) -> str:
-        """Compress timeline to fit within context limits while preserving essential info.
-
-        Keeps:
-        - All "active" items (last event is not stopped/resolved/ended)
-        - Recent rows for context
-        - Enough info for episode linking
-
-        Args:
-            timeline: Full timeline CSV content
-            max_chars: Maximum characters for the compressed context
-
-        Returns:
-            Compressed timeline CSV content
-        """
-        lines = timeline.strip().split("\n")
-        if not lines:
-            return timeline
-
-        header = lines[0]
-        data_lines = lines[1:] if len(lines) > 1 else []
-
-        if len(timeline) <= max_chars:
-            return timeline
-
-        # Track episode states to find active items
-        # Active = last event is NOT (stopped, resolved, ended, completed)
-        terminal_events = {"stopped", "resolved", "ended", "completed"}
-        episode_last_event: dict[str, tuple[str, int]] = {}  # ep_id -> (event, line_index)
-
-        for i, line in enumerate(data_lines):
-            if not line.strip():
-                continue
-            parts = line.split(",")
-            if len(parts) >= 5:
-                ep_id = parts[1].strip().strip('"')
-                event = parts[4].strip().strip('"').lower()
-                episode_last_event[ep_id] = (event, i)
-
-        # Find active episodes (last event not terminal)
-        active_episodes = {
-            ep_id for ep_id, (event, _) in episode_last_event.items()
-            if event not in terminal_events
-        }
-
-        # Collect lines for active episodes
-        active_lines = []
-        for i, line in enumerate(data_lines):
-            if not line.strip():
-                continue
-            parts = line.split(",")
-            if len(parts) >= 2:
-                ep_id = parts[1].strip().strip('"')
-                if ep_id in active_episodes:
-                    active_lines.append((i, line))
-
-        # Get recent lines (last 150 rows not already included)
-        active_indices = {idx for idx, _ in active_lines}
-        recent_start = max(0, len(data_lines) - 150)
-        recent_lines = [
-            (i, line) for i, line in enumerate(data_lines[recent_start:], start=recent_start)
-            if i not in active_indices and line.strip()
-        ]
-
-        # Combine and sort by original index
-        combined = sorted(active_lines + recent_lines, key=lambda x: x[0])
-        selected_lines = [line for _, line in combined]
-
-        # Build compressed output
-        compressed = header + "\n" + "\n".join(selected_lines)
-
-        # If still too large, keep only recent rows
-        if len(compressed) > max_chars:
-            keep_rows = max_chars // 100  # Rough estimate of chars per row
-            selected_lines = data_lines[-keep_rows:] if keep_rows < len(data_lines) else data_lines
-            compressed = header + "\n" + "\n".join(selected_lines)
-
-        return compressed
-
-    def _calculate_batch_size(self, entries: list[tuple[str, str]], timeline_size: int) -> int:
-        """Calculate how many entries fit in a batch given current timeline size.
-
-        Args:
-            entries: List of (date, content) tuples to potentially include
-            timeline_size: Current character count of timeline (ignored, we use compressed size)
-
-        Returns:
-            Number of entries to include in this batch
-        """
-        # Use conservative context limit for broad model compatibility
-        CONTEXT_LIMIT = 100_000  # Conservative limit for various models via OpenRouter
-        SYSTEM_PROMPT_TOKENS = 3_000
-        MAX_OUTPUT_TOKENS = 32_768  # Match max_tokens in _process_timeline_batch
-        OUTPUT_TOKENS_PER_ENTRY = 60  # ~1.5 rows per entry, ~40 tokens per row
-        SAFETY_MARGIN = 10_000
-        CHARS_PER_TOKEN = 4
-        # Timeline is compressed to max 50K chars, use that as the timeline budget
-        COMPRESSED_TIMELINE_CHARS = 50_000
-
-        timeline_tokens = COMPRESSED_TIMELINE_CHARS // CHARS_PER_TOKEN
-        available_input_tokens = CONTEXT_LIMIT - SYSTEM_PROMPT_TOKENS - timeline_tokens - MAX_OUTPUT_TOKENS - SAFETY_MARGIN
-
-        batch_chars = 0
-        count = 0
-        for _, content in entries:
-            entry_chars = len(content)
-            # Check both input token limit and output token limit
-            estimated_output_tokens = (count + 1) * OUTPUT_TOKENS_PER_ENTRY
-            if batch_chars + entry_chars > available_input_tokens * CHARS_PER_TOKEN:
-                break
-            if estimated_output_tokens > MAX_OUTPUT_TOKENS - 1000:  # Leave buffer
-                break
-            batch_chars += entry_chars
-            count += 1
-
-        # Ensure at least 1 entry per batch
-        return max(1, count)
-
-    def _validate_timeline_batch_output(
-        self,
-        csv_text: str,
-        entries_dates: list[str],
-        next_episode_num: int,
-        existing_episode_ids: set[str] = None
-    ) -> tuple[str, list[str]]:
-        """Validate and clean LLM-generated CSV rows.
-
-        Args:
-            csv_text: Raw LLM output (CSV rows)
-            entries_dates: Expected dates for this batch
-            next_episode_num: Starting episode number for this batch
-            existing_episode_ids: Episode IDs that exist in the timeline before this batch
-
-        Returns:
-            (cleaned_csv, validation_errors)
-        """
-        if existing_episode_ids is None:
-            existing_episode_ids = set()
-        import csv
-        from datetime import datetime
-
-        errors = []
-        valid_rows = []
-        batch_episode_ids = set()
-        seen_combinations = set()  # Track (Date, Item, Category, Event) for duplicate detection
-
-        VALID_CATEGORIES = {
-            "condition", "symptom", "medication", "supplement",
-            "experiment", "provider", "watch", "todo"
-        }
-        VALID_EVENTS = {
-            "condition": {"diagnosed", "suspected", "flare", "improved", "worsened", "resolved", "stable"},
-            "symptom": {"noted", "improved", "worsened", "resolved", "stable"},
-            "medication": {"started", "adjusted", "stopped"},
-            "supplement": {"started", "adjusted", "stopped"},
-            "experiment": {"started", "update", "ended"},
-            "provider": {"visit"},
-            "watch": {"noted", "resolved"},
-            "todo": {"added", "completed"},
-        }
-
-        # First pass: collect episode IDs from this batch
-        for line in csv_text.strip().split("\n"):
-            if not line.strip():
-                continue
-            try:
-                row = next(csv.reader([line]))
-                if len(row) >= 2:
-                    ep_id = row[1]
-                    if re.match(r'ep-\d{3}', ep_id):
-                        batch_episode_ids.add(ep_id)
-            except csv.Error:
-                pass
-
-        # Second pass: validate each row
-        for i, line in enumerate(csv_text.strip().split("\n"), 1):
-            if not line.strip():
-                continue
-
-            # Parse CSV row (handles quoted fields)
-            try:
-                row = next(csv.reader([line]))
-            except csv.Error as e:
-                errors.append(f"Row {i}: CSV parse error: {e}")
-                continue
-
-            if len(row) != 7:
-                errors.append(f"Row {i}: Expected 7 columns, got {len(row)}")
-                continue
-
-            date, ep_id, item, category, event, related_ep, details = row
-
-            # Check for duplicates (Date, Item, Category, Event)
-            row_key = (date, item, category, event)
-            if row_key in seen_combinations:
-                errors.append(
-                    f"Row {i}: Duplicate entry - {date} {item} ({category}) {event} "
-                    "already appears in this batch"
-                )
-            seen_combinations.add(row_key)
-
-            # Validate Date format
-            try:
-                datetime.strptime(date, "%Y-%m-%d")
-            except ValueError:
-                errors.append(f"Row {i}: Invalid date format: {date} (expected YYYY-MM-DD)")
-
-            # Validate Date is in batch
-            if date not in entries_dates:
-                errors.append(f"Row {i}: Date {date} not in current batch")
-
-            # Validate EpisodeID format
-            if not re.match(r'ep-\d{3}', ep_id):
-                errors.append(f"Row {i}: Invalid episode ID format: {ep_id}")
-            else:
-                # Validate EpisodeID >= next_episode_num
-                ep_num = int(re.match(r'ep-(\d+)', ep_id).group(1))
-                if ep_num < next_episode_num:
-                    errors.append(f"Row {i}: Episode ID {ep_id} less than expected minimum ep-{next_episode_num:03d}")
-
-            # Validate Category
-            if category not in VALID_CATEGORIES:
-                errors.append(f"Row {i}: Invalid category: {category}")
-
-            # Validate Event for Category
-            if category in VALID_EVENTS and event not in VALID_EVENTS[category]:
-                errors.append(f"Row {i}: Invalid event '{event}' for category '{category}'")
-
-            # Validate RelatedEpisode format and existence if present
-            if related_ep:
-                if not re.match(r'ep-\d{3}', related_ep):
-                    errors.append(f"Row {i}: Invalid related episode format: {related_ep}")
-                elif related_ep not in existing_episode_ids and related_ep not in batch_episode_ids:
-                    errors.append(
-                        f"Row {i}: RelatedEpisode {related_ep} does not exist "
-                        f"(in {date} {item} {event})"
-                    )
-
-            valid_rows.append(line)
-
-        return "\n".join(valid_rows), errors
-
-    def _process_timeline_batch(
-        self, existing_timeline: str, entries: list[tuple[str, str]], next_episode_num: int
-    ) -> str:
-        """Process a batch of entries and return new CSV rows to append.
-
-        Args:
-            existing_timeline: Current timeline CSV content (for context)
-            entries: List of (date, content) tuples to process
-            next_episode_num: The next episode ID number to use
-
-        Returns:
-            New CSV rows to append (without header)
-        """
-        system_prompt = self._prompt("update_timeline.system_prompt")
-
-        # Compress timeline to avoid exceeding context limits
-        # Keep active items + recent history for episode linking
-        timeline_context = self._compress_timeline_context(existing_timeline)
-
-        # Format entries for the batch
-        entries_text = "\n\n---\n\n".join(
-            f"### Entry: {date}\n\n{content}"
-            for date, content in entries
-        )
-
-        user_content = f"""## Current Timeline (for context)
-
-```csv
-{timeline_context}
-```
-
-## Next Episode ID
-
-Use ep-{next_episode_num:03d} for the first new episode, then increment as needed.
-
-## Entries to Process (oldest first)
-
-{entries_text}
-
-Output only the new CSV rows to append (no header row):"""
-
-        # Extract existing episode IDs from timeline (needed for validation)
-        import csv
-        existing_episode_ids = set()
-        if existing_timeline:
-            for line in existing_timeline.split("\n"):
-                if line.strip() and not line.startswith("#") and not line.startswith("Date,"):
-                    try:
-                        row = next(csv.reader([line]))
-                        if len(row) >= 2 and re.match(r'ep-\d{3}', row[1]):
-                            existing_episode_ids.add(row[1])
-                    except csv.Error:
-                        pass
-
-        # Retry loop for handling validation failures
-        max_retries = 2
-        entries_dates = [date for date, _ in entries]
-
-        for attempt in range(max_retries + 1):
-            response = self.llm["status"](
-                [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content},
-                ],
-                max_tokens=32768,
-                temperature=0.0,
-            )
-
-            # Clean up response - remove any markdown code blocks
-            cleaned = response.strip()
-            if cleaned.startswith("```"):
-                # Remove code block markers
-                lines = cleaned.split("\n")
-                if lines[0].startswith("```"):
-                    lines = lines[1:]
-                if lines and lines[-1].strip() == "```":
-                    lines = lines[:-1]
-                cleaned = "\n".join(lines)
-
-            # Remove any accidental header row
-            lines = cleaned.split("\n")
-            if lines and lines[0].strip().startswith("Date,"):
-                lines = lines[1:]
-
-            # Validate the batch output
-            cleaned_response, validation_errors = self._validate_timeline_batch_output(
-                "\n".join(lines), entries_dates, next_episode_num, existing_episode_ids
-            )
-
-            # Check for critical errors that warrant retry
-            critical_errors = []
-            episode_id_gap = False
-
-            for error in validation_errors:
-                if "does not exist" in error:  # Orphaned RelatedEpisode
-                    critical_errors.append(error)
-
-            # Check if first episode ID matches expected
-            if cleaned_response.strip():
-                first_line = cleaned_response.strip().split("\n")[0]
-                try:
-                    first_row = next(csv.reader([first_line]))
-                    if len(first_row) >= 2:
-                        first_ep_id = first_row[1]
-                        if re.match(r'ep-(\d+)', first_ep_id):
-                            first_ep_num = int(re.match(r'ep-(\d+)', first_ep_id).group(1))
-                            if first_ep_num != next_episode_num:
-                                episode_id_gap = True
-                                critical_errors.append(
-                                    f"Episode ID gap: Expected ep-{next_episode_num:03d}, got {first_ep_id}"
-                                )
-                except csv.Error:
-                    pass
-
-            # If no critical errors, we're done
-            if not critical_errors:
-                if validation_errors:
-                    self.logger.warning(
-                        "Timeline batch validation found %d non-critical issues:\n  %s",
-                        len(validation_errors),
-                        "\n  ".join(validation_errors[:5])
-                    )
-                return cleaned_response
-
-            # If we have attempts left, retry
-            if attempt < max_retries:
-                self.logger.warning(
-                    "Batch validation attempt %d/%d failed with %d critical error(s). Retrying...\n  %s",
-                    attempt + 1, max_retries + 1, len(critical_errors),
-                    "\n  ".join(critical_errors[:3])
-                )
-            else:
-                # Final attempt exhausted
-                self.logger.error(
-                    "Batch validation failed after %d attempts with %d critical error(s):\n  %s",
-                    max_retries + 1, len(critical_errors),
-                    "\n  ".join(critical_errors[:5])
-                )
-                # Return what we have, but it will be caught by post-processing validation
-                return cleaned_response
-
-        return cleaned_response
-
-    # --------------------------------------------------------------
-    # Timeline error correction
-    # --------------------------------------------------------------
-
-    def _correct_timeline_errors(
-        self,
-        timeline_path: Path,
-        validation_results: dict[str, list[str]],
-        max_iterations: int = 3
-    ) -> dict[str, list[str]]:
-        """Correct episode state consistency errors in the timeline.
-
-        Iterates until all errors are fixed or max attempts reached.
-
-        Args:
-            timeline_path: Path to the timeline CSV file.
-            validation_results: Current validation results dict.
-            max_iterations: Maximum correction attempts.
-
-        Returns:
-            Updated validation results after corrections.
-        """
-        from validate_timeline import run_all_validations
-
-        for iteration in range(max_iterations):
-            errors = validation_results.get('episode_state_consistency', [])
-            if not errors:
-                self.logger.info("No episode state errors to correct")
-                return validation_results
-
-            self.logger.info(
-                "Correction iteration %d/%d: %d episode state error(s)",
-                iteration + 1, max_iterations, len(errors)
-            )
-
-            # Parse errors and group by episode
-            episode_errors = self._parse_episode_state_errors(errors)
-            if not episode_errors:
-                self.logger.warning("Could not parse any episode state errors")
-                return validation_results
-
-            # Extract context (all rows) for affected episodes
-            episode_context = self._extract_episode_context(
-                timeline_path, set(episode_errors.keys())
-            )
-
-            # Get next available episode ID for Type B corrections
-            timeline_content = self._read_timeline_content(timeline_path)
-            next_ep_num = self._get_last_episode_num(timeline_content) + 1
-
-            # Call LLM for corrections
-            corrections = self._get_episode_corrections(
-                episode_errors, episode_context, next_ep_num
-            )
-
-            if not corrections:
-                self.logger.warning("LLM returned no corrections")
-                return validation_results
-
-            # Apply corrections to the CSV
-            applied = self._apply_episode_corrections(timeline_path, corrections)
-            if applied == 0:
-                self.logger.warning("No corrections were applied")
-                return validation_results
-
-            self.logger.info("Applied %d correction(s)", applied)
-
-            # Re-validate
-            validation_results = run_all_validations(
-                timeline_path, self.entries_dir
-            )
-
-        remaining = len(validation_results.get('episode_state_consistency', []))
-        if remaining > 0:
-            self.logger.warning(
-                "Correction loop exhausted after %d iterations, %d error(s) remain",
-                max_iterations, remaining
-            )
-
-        return validation_results
-
-    def _parse_episode_state_errors(
-        self, errors: list[str]
-    ) -> dict[str, list[dict]]:
-        """Parse episode state error strings into structured data.
-
-        Args:
-            errors: List of error strings from validation.
-
-        Returns:
-            Dict mapping episode ID to list of error details.
-        """
-        # Error format: "ep-XXX (Item Name): Event 'event' on YYYY-MM-DD after terminal event 'terminal' on YYYY-MM-DD"
-        pattern = re.compile(
-            r"(ep-\d+)\s+\(([^)]+)\):\s+Event\s+'(\w+)'\s+on\s+(\d{4}-\d{2}-\d{2})\s+"
-            r"after\s+terminal\s+event\s+'(\w+)'\s+on\s+(\d{4}-\d{2}-\d{2})"
-        )
-
-        episode_errors: dict[str, list[dict]] = {}
-
-        for error in errors:
-            match = pattern.match(error)
-            if match:
-                ep_id, item_name, event, event_date, terminal_event, terminal_date = match.groups()
-                if ep_id not in episode_errors:
-                    episode_errors[ep_id] = []
-                episode_errors[ep_id].append({
-                    "item_name": item_name,
-                    "event": event,
-                    "event_date": event_date,
-                    "terminal_event": terminal_event,
-                    "terminal_date": terminal_date,
-                })
-            else:
-                self.logger.warning("Could not parse error: %s", error)
-
-        return episode_errors
-
-    def _extract_episode_context(
-        self, timeline_path: Path, episode_ids: set[str]
-    ) -> dict[str, list[str]]:
-        """Extract all CSV rows for the specified episodes.
-
-        Args:
-            timeline_path: Path to the timeline CSV.
-            episode_ids: Set of episode IDs to extract.
-
-        Returns:
-            Dict mapping episode ID to list of CSV row strings.
-        """
-        import csv
-
-        episode_rows: dict[str, list[str]] = {ep_id: [] for ep_id in episode_ids}
-
-        content = self._read_timeline_content(timeline_path)
-        lines = content.strip().split("\n")
-
-        # Include header for context
-        header = lines[0] if lines else ""
-
-        for line in lines[1:]:  # Skip header
-            if not line.strip():
-                continue
-            try:
-                row = next(csv.reader([line]))
-                if len(row) >= 2:
-                    ep_id = row[1]
-                    if ep_id in episode_ids:
-                        episode_rows[ep_id].append(line)
-            except csv.Error:
-                continue
-
-        # Add header to each episode's context
-        for ep_id in episode_rows:
-            episode_rows[ep_id] = [header] + episode_rows[ep_id]
-
-        return episode_rows
-
-    def _get_episode_corrections(
-        self,
-        episode_errors: dict[str, list[dict]],
-        episode_context: dict[str, list[str]],
-        next_ep_num: int
-    ) -> list[dict]:
-        """Call LLM to get correction decisions for each episode.
-
-        Args:
-            episode_errors: Parsed errors grouped by episode.
-            episode_context: All rows for each affected episode.
-            next_ep_num: Next available episode number for Type B corrections.
-
-        Returns:
-            List of correction dictionaries from LLM.
-        """
-        system_prompt = self._prompt("correct_episode_state.system_prompt")
-
-        # Build user prompt with errors and context
-        error_lines = ["Errors:"]
-        for ep_id, errs in episode_errors.items():
-            for err in errs:
-                error_lines.append(
-                    f"- {ep_id} ({err['item_name']}): Event '{err['event']}' on {err['event_date']} "
-                    f"after terminal event '{err['terminal_event']}' on {err['terminal_date']}"
-                )
-
-        context_lines = ["\nEpisode context:"]
-        for ep_id, rows in episode_context.items():
-            context_lines.append(f"\nEpisode {ep_id} rows:")
-            context_lines.extend(rows)
-
-        user_content = (
-            "\n".join(error_lines) +
-            "\n".join(context_lines) +
-            f"\n\nNext available episode ID: ep-{next_ep_num:03d}"
-        )
-
-        try:
-            response = self.llm["status"](
-                [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content},
-                ],
-                max_tokens=4096,
-                temperature=0.0,
-            )
-
-            result = self._parse_json_response(response)
-            return result.get("corrections", [])
-
-        except (json.JSONDecodeError, KeyError) as e:
-            self.logger.error("Failed to parse LLM correction response: %s", e)
-            return []
-
-    def _apply_episode_corrections(
-        self, timeline_path: Path, corrections: list[dict]
-    ) -> int:
-        """Apply corrections to the timeline CSV.
-
-        Args:
-            timeline_path: Path to the timeline CSV.
-            corrections: List of correction dictionaries from LLM.
-
-        Returns:
-            Number of corrections successfully applied.
-        """
-        import csv
-
-        # Read current timeline
-        content = timeline_path.read_text(encoding="utf-8")
-        lines = content.split("\n")
-
-        # Separate header lines (comments) from data
-        header_lines = []
-        data_lines = []
-        for line in lines:
-            if line.startswith("#"):
-                header_lines.append(line)
-            else:
-                data_lines.append(line)
-
-        # Parse data lines into rows
-        csv_header = data_lines[0] if data_lines else ""
-        rows = []
-        for line in data_lines[1:]:
-            if line.strip():
-                try:
-                    parsed = next(csv.reader([line]))
-                    rows.append(parsed)
-                except csv.Error:
-                    continue
-
-        applied = 0
-
-        for correction in corrections:
-            ep_id = correction.get("episode_id")
-            correction_type = correction.get("correction_type")
-
-            if correction_type == "A":
-                # Change terminal events to non-terminal (supports multiple)
-                change_events = correction.get("change_events", [])
-                # Backwards compatibility: support old singular format
-                if not change_events and correction.get("change_event"):
-                    change_events = [correction.get("change_event")]
-
-                for change in change_events:
-                    target_date = change.get("date")
-                    old_event = change.get("old_event")
-                    new_event = change.get("new_event")
-
-                    for row in rows:
-                        if len(row) >= 5 and row[1] == ep_id and row[0] == target_date and row[4] == old_event:
-                            row[4] = new_event
-                            applied += 1
-                            self.logger.info(
-                                "Type A: Changed %s %s event from '%s' to '%s'",
-                                ep_id, target_date, old_event, new_event
-                            )
-                            break
-
-            elif correction_type == "B":
-                # Reassign rows to new episode
-                new_ep_id = correction.get("new_episode_id")
-                dates_to_reassign = set(correction.get("rows_to_reassign", []))
-
-                for row in rows:
-                    if len(row) >= 2 and row[1] == ep_id and row[0] in dates_to_reassign:
-                        old_ep = row[1]
-                        row[1] = new_ep_id
-                        applied += 1
-                        self.logger.info(
-                            "Type B: Reassigned %s row from %s to %s",
-                            row[0], old_ep, new_ep_id
-                        )
-
-            elif correction_type == "C":
-                # Delete rows
-                dates_to_delete = set(correction.get("rows_to_delete", []))
-                original_len = len(rows)
-                rows = [
-                    row for row in rows
-                    if not (len(row) >= 2 and row[1] == ep_id and row[0] in dates_to_delete)
-                ]
-                deleted = original_len - len(rows)
-                if deleted > 0:
-                    applied += deleted
-                    self.logger.info(
-                        "Type C: Deleted %d row(s) for %s on dates %s",
-                        deleted, ep_id, dates_to_delete
-                    )
-
-        # Sort rows by date before rebuilding
-        rows.sort(key=lambda r: r[0] if r else "")
-
-        # Rebuild CSV content
-        output = io.StringIO()
-        writer = csv.writer(output)
-        for row in rows:
-            writer.writerow(row)
-
-        new_data = csv_header + "\n" + output.getvalue().strip()
-
-        # Write back with headers
-        final_content = "\n".join(header_lines) + "\n" + new_data
-        timeline_path.write_text(final_content, encoding="utf-8")
-
-        return applied
 
     # --------------------------------------------------------------
     # Section processing (one dated section → validated markdown)

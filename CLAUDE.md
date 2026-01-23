@@ -5,7 +5,9 @@
 health-log-parser is a **data extraction and curation tool** that transforms health journal entries into structured, validated data:
 
 1. **`health_log.md`** - All processed entries (newest to oldest) with labs/exams integrated
-2. **`health_log.csv`** - Chronological timeline with episode IDs linking related events
+2. **`current.yaml`** - Active conditions, medications, supplements, and pending TODOs
+3. **`history.csv`** - Chronological event log with entity IDs linking related events
+4. **`entities.json`** - Single source of truth for all tracked health entities
 
 The tool processes, validates, and enriches health log entries but does **not** generate reports, summaries, or recommendations. Those are left to downstream consumers of the structured data.
 
@@ -31,21 +33,24 @@ See `docs/pipeline.md` for full configuration options.
 
 ## Architecture Overview
 
-**Monolithic design**: All logic in `main.py` (`HealthLogProcessor` class).
+**Entity-centric design**: Separates extraction (LLM) from state management (code).
 
 **Pipeline flow**:
 ```
-health.md → Split Sections → Process (parallel) → Build Timeline → Validate → Output
+health.md → Split Sections → Process (parallel) → Extract Facts (LLM) → Build Registry (code) → Output
 ```
 
 **Output structure**:
 ```
 OUTPUT_PATH/
 ├─ health_log.md          # PRIMARY: All entries (newest to oldest)
-├─ health_log.csv         # PRIMARY: Timeline with episode IDs
+├─ current.yaml           # PRIMARY: Active state for downstream consumers
+├─ history.csv            # PRIMARY: Flat event log with entity IDs
+├─ entities.json          # PRIMARY: Entity registry (source of truth)
 └─ entries/               # INTERMEDIATE (kept for caching)
    ├─ YYYY-MM-DD.raw.md
    ├─ YYYY-MM-DD.processed.md
+   ├─ YYYY-MM-DD.extracted.json
    └─ YYYY-MM-DD.labs.md
 ```
 
@@ -56,12 +61,12 @@ OUTPUT_PATH/
 | File | Purpose |
 |------|---------|
 | `main.py` | All processing logic (HealthLogProcessor, LLM wrapper) |
+| `entity_registry.py` | EntityRegistry class, state machine, output generators |
 | `config.py` | Environment variable loading and validation |
-| `validate_timeline.py` | Timeline integrity validation (episode IDs, references, structure) |
 | `docs/pipeline.md` | Detailed pipeline documentation |
 | `prompts/process.system_prompt.md` | Entry processing prompt |
 | `prompts/validate.system_prompt.md` | Entry validation prompt |
-| `prompts/update_timeline.system_prompt.md` | Timeline building prompt |
+| `prompts/extract.system_prompt.md` | Fact extraction prompt (JSON output) |
 
 ## Do NOT
 
@@ -71,11 +76,10 @@ OUTPUT_PATH/
 - Simplify dependency tracking (causes stale cache issues)
 
 **Architecture**:
-- Remove episode linking in timeline (critical for relating treatments to conditions)
-- Simplify timeline to "active items only" (loses context needed for inference)
+- Remove entity linking (critical for relating treatments to conditions)
+- Move state machine logic to LLM prompts (causes state inconsistencies)
 - Hardcode medical rules in Python (LLM should apply clinical judgment via prompts)
 - Remove parallel processing (essential for large logs with hundreds of entries)
-- Remove validation checks (critical for detecting LLM output issues and data integrity problems)
 
 **Over-engineering**:
 - Add abstractions, helpers, or utilities for one-time operations
@@ -92,21 +96,21 @@ OUTPUT_PATH/
 ### Debug Processing Issues
 1. Check `entries/<date>.processed.md` for the processed content
 2. Check `entries/<date>.failed.md` if processing failed (contains diagnostics)
-3. Check `health_log.csv` for timeline entries
-4. Review validation report at end of run for timeline integrity issues
+3. Check `entries/<date>.extracted.json` for extracted facts
+4. Review console warnings for state transition issues
 
-### Debug Validation Issues
-1. Check console output for validation report after timeline building
-2. Common issues:
-   - Episode ID gaps: LLM skipped numbers (check batch validation warnings in logs)
-   - Orphaned references: RelatedEpisode points to non-existent episode
-   - Out of order: Entries not chronologically sorted
-   - Comprehensive stack: Items not explicitly stopped during "current stack" updates
-3. Run manual validation: `python -c "from validate_timeline import run_all_validations, print_validation_report; print_validation_report(run_all_validations('output/health_log.csv', 'output/entries'))"`
-4. Fix issues by editing prompts or re-running with `--force-reprocess`
+### Debug Entity Registry Issues
+1. Check `entities.json` for the complete entity state
+2. Check `history.csv` for the event log
+3. Common issues (logged as warnings):
+   - Invalid state transitions (code enforces state machine)
+   - Missing for_condition references (condition not found)
+   - Non-initial events on new entities (may indicate extraction issue)
+4. Fix by editing extraction prompt or source entries
 
 ### Update Documentation
 When modifying the pipeline, update `docs/pipeline.md` to reflect changes.
+**IMPORTANT:** Keep README.md up to date with any significant project changes.
 
 ## Logs
 
