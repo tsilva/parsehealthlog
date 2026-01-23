@@ -723,6 +723,11 @@ class HealthLogProcessor:
                             date, len(stop_events), categories
                         )
 
+        # Apply time-based decay to auto-resolve stale conditions
+        decay_events = registry.apply_time_based_decay(cutoff_years=5)
+        for event in decay_events:
+            self.logger.info("Auto-resolved stale condition: %s", event.name)
+
         self.logger.info(
             "Entity registry built: %d entities, %d history events",
             len(registry.entities),

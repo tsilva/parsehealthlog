@@ -52,6 +52,31 @@ Read the entry and output a JSON object listing all health-related items mention
 | provider | visit |
 | todo | added, completed |
 
+## Condition Resolution Criteria
+
+Use `resolved` (not `improved`) when:
+- Lab values that defined the condition have normalized (e.g., anemia with normal hemoglobin/ferritin)
+- Test/biopsy explicitly rules out or shows resolution of condition
+- Acute infection completed treatment course (streptococcal, UTI, etc.)
+- Patient explicitly states condition is "gone", "cured", or "no longer present"
+
+Use `improved` when:
+- Symptoms are better but condition still present
+- Lab values trending toward normal but not yet normalized
+- Ongoing management still required
+
+## Historical vs Current Events
+
+**DO NOT extract events for conditions mentioned as historical context:**
+- "I had strep back in 1991" → NOT a current diagnosis
+- "History of appendectomy in 2010" → NOT a current event
+- "Previously had anemia" → NOT a current diagnosis
+
+**Only extract events for conditions that are currently active or changing:**
+- "Labs show anemia" → Extract diagnosed/noted
+- "Anemia improving with treatment" → Extract improved
+- "Labs now normal, anemia resolved" → Extract resolved
+
 ## Naming Conventions
 
 **Medications & Supplements:**
@@ -168,5 +193,43 @@ When an entry describes the patient's **complete current stack** of supplements 
   "stack_update": null
 }
 ```
+
+**Resolution Example:**
+Input:
+```
+- Labs show hemoglobin 13.1 (ref 12-16), ferritin 116 (ref 30-340)
+- Previously diagnosed iron deficiency anemia now resolved based on normalized values
+```
+
+Output:
+```json
+{
+  "items": [
+    {
+      "type": "condition",
+      "name": "Iron deficiency anemia",
+      "event": "resolved",
+      "details": "Lab values normalized: hemoglobin 13.1 (within ref), ferritin 116 (within ref)",
+      "for_condition": null
+    }
+  ],
+  "stack_update": null
+}
+```
+
+**Historical context example (DO NOT extract):**
+Input:
+```
+- Patient history includes streptococcal infection in 1991, treated with penicillin
+```
+
+Output:
+```json
+{
+  "items": [],
+  "stack_update": null
+}
+```
+(No extraction - this is historical context, not a current event)
 
 Output ONLY the JSON object, no explanation:

@@ -448,6 +448,47 @@ class EntityRegistry:
             result.append(entity)
         return result
 
+    def apply_time_based_decay(self, cutoff_years: int = 5) -> list[HistoryEvent]:
+        """Auto-resolve conditions not mentioned for N years.
+
+        Args:
+            cutoff_years: Number of years without events before auto-resolution
+
+        Returns:
+            List of synthetic resolved events added
+        """
+        from datetime import timedelta
+
+        cutoff_date = datetime.now() - timedelta(days=cutoff_years * 365)
+        events_added = []
+
+        for entity in self.entities.values():
+            if entity.entity_type != "condition":
+                continue
+            if entity.is_terminal():
+                continue
+
+            # Parse last event date
+            last_event_date = datetime.strptime(entity.last_updated, "%Y-%m-%d")
+
+            if last_event_date < cutoff_date:
+                # Auto-resolve stale condition
+                entity.current_state = "resolved"
+
+                event = HistoryEvent(
+                    date=datetime.now().strftime("%Y-%m-%d"),
+                    entity_id=entity.id,
+                    name=entity.canonical_name,
+                    entity_type="condition",
+                    event="resolved",
+                    details=f"Auto-resolved: no events since {entity.last_updated} ({cutoff_years}+ years)",
+                    related_entity="",
+                )
+                self.history.append(event)
+                events_added.append(event)
+
+        return events_added
+
     # -------------------------------------------------------------------------
     # Output generation
     # -------------------------------------------------------------------------
