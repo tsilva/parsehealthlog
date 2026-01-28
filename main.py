@@ -359,13 +359,8 @@ class HealthLogProcessor:
         self.prompts: dict[str, str] = {}
 
         # OpenAI client + per-role models
-        self.client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=config.openrouter_api_key)
-        self.models = {
-            "process": config.process_model_id,
-            "validate": config.validate_model_id,
-            "status": config.status_model_id,
-        }
-        self.llm = {k: LLM(self.client, v) for k, v in self.models.items()}
+        self.client = OpenAI(base_url=config.openrouter_base_url, api_key=config.openrouter_api_key)
+        self.llm = {role: LLM(self.client, config.model_id) for role in ("process", "validate", "status")}
 
         # Lab data per date – populated lazily
         self.labs_by_date: dict[str, pd.DataFrame] = {}
@@ -1359,7 +1354,8 @@ Examples:
     parser.add_argument(
         "--env",
         type=str,
-        help="Environment name to load (loads .env.{name} instead of .env)",
+        default="claude",
+        help="Environment name to load (loads .env.{name} instead of .env, default: claude)",
     )
     args = parser.parse_args()
 
