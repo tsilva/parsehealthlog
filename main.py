@@ -32,7 +32,31 @@ Configuration via environment variables (see config.py):
 """
 
 from dotenv import load_dotenv
-load_dotenv(override=True)
+from pathlib import Path as _Path
+import sys as _sys
+
+def _load_dotenv_with_env() -> str | None:
+    """Load .env file, or .env.{name} if --env flag is specified."""
+    env_name = None
+    for i, arg in enumerate(_sys.argv):
+        if arg == '--env' and i + 1 < len(_sys.argv):
+            env_name = _sys.argv[i + 1]
+            break
+        if arg.startswith('--env='):
+            env_name = arg.split('=', 1)[1]
+            break
+
+    if env_name:
+        env_file = _Path(f".env.{env_name}")
+        if env_file.exists():
+            load_dotenv(env_file, override=True)
+        else:
+            print(f"Warning: .env.{env_name} not found")
+    else:
+        load_dotenv(override=True)
+    return env_name
+
+_load_dotenv_with_env()
 
 import argparse
 from collections.abc import Iterable
@@ -1331,6 +1355,11 @@ Examples:
         "--generate-audit",
         action="store_true",
         help="Generate audit template only (without running full processing)",
+    )
+    parser.add_argument(
+        "--env",
+        type=str,
+        help="Environment name to load (loads .env.{name} instead of .env)",
     )
     args = parser.parse_args()
 
