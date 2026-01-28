@@ -491,7 +491,8 @@ class HealthLogProcessor:
 
             exams_content = ""
             if date in self.medical_exams_by_date and self.medical_exams_by_date[date]:
-                exams_content = f"{MEDICAL_EXAMS_SECTION_HEADER}\n{"\n\n".join(self.medical_exams_by_date[date])}\n"
+                joined_exams = "\n\n".join(self.medical_exams_by_date[date])
+                exams_content = f"{MEDICAL_EXAMS_SECTION_HEADER}\n{joined_exams}\n"
 
             processed_path = self.entries_dir / f"{date}.processed.md"
             deps = self._get_section_dependencies(sec, labs_content, exams_content)
@@ -545,8 +546,9 @@ class HealthLogProcessor:
             if not exams_list:
                 continue
             exams_path = self.entries_dir / f"{date}.exams.md"
+            joined_exams = "\n\n".join(exams_list)
             exams_path.write_text(
-                f"{MEDICAL_EXAMS_SECTION_HEADER}\n{"\n\n".join(exams_list)}\n",
+                f"{MEDICAL_EXAMS_SECTION_HEADER}\n{joined_exams}\n",
                 encoding="utf-8",
             )
 
@@ -816,7 +818,8 @@ class HealthLogProcessor:
         # Get medical exams content for this date
         exams_content = ""
         if date in self.medical_exams_by_date and self.medical_exams_by_date[date]:
-            exams_content = f"{MEDICAL_EXAMS_SECTION_HEADER}\n{"\n\n".join(self.medical_exams_by_date[date])}\n"
+            joined_exams = "\n\n".join(self.medical_exams_by_date[date])
+            exams_content = f"{MEDICAL_EXAMS_SECTION_HEADER}\n{joined_exams}\n"
 
         # Compute dependencies for this section
         deps = self._get_section_dependencies(section, labs_content, exams_content)
@@ -1179,7 +1182,8 @@ class HealthLogProcessor:
             exams_content = ""
             exams_list = self.medical_exams_by_date.get(date)
             if exams_list:
-                exams_content = f"{MEDICAL_EXAMS_SECTION_HEADER}\n{"\n\n".join(exams_list)}\n"
+                joined_exams = "\n\n".join(exams_list)
+                exams_content = f"{MEDICAL_EXAMS_SECTION_HEADER}\n{joined_exams}\n"
 
             # Skip if neither labs nor exams exist
             if not labs_content and not exams_content:
