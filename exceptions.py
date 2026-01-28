@@ -24,23 +24,6 @@ class DateExtractionError(HealthLogParserError):
         self.section = section
 
 
-class ValidationError(HealthLogParserError):
-    """Raised when LLM validation fails after all retries."""
-
-    def __init__(self, message: str, date: str, attempts: int = 3):
-        super().__init__(message)
-        self.date = date
-        self.attempts = attempts
-
-
-class LabParsingError(HealthLogParserError):
-    """Raised when lab CSV parsing fails."""
-
-    def __init__(self, message: str, path: str | None = None):
-        super().__init__(message)
-        self.path = path
-
-
 class PromptError(HealthLogParserError):
     """Raised when a required prompt file is missing or invalid."""
 
@@ -49,10 +32,3 @@ class PromptError(HealthLogParserError):
         self.prompt_name = prompt_name
 
 
-class ProcessingError(HealthLogParserError):
-    """Raised when section processing fails."""
-
-    def __init__(self, message: str, date: str | None = None, cause: Exception | None = None):
-        super().__init__(message)
-        self.date = date
-        self.cause = cause

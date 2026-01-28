@@ -7,7 +7,6 @@ from main import (
     extract_date,
     parse_deps_comment,
     format_deps_comment,
-    hash_content,
     short_hash,
     format_labs,
 )
@@ -130,10 +129,10 @@ class TestHashFunctions:
         """Different inputs produce different hashes."""
         assert short_hash("content A") != short_hash("content B")
 
-    def test_hash_content_same_as_short_hash(self):
-        """hash_content is an alias for short_hash."""
-        content = "test"
-        assert hash_content(content) == short_hash(content)
+    def test_short_hash_hex_chars(self):
+        """short_hash returns only hex characters."""
+        result = short_hash("test")
+        assert all(c in "0123456789abcdef" for c in result)
 
 
 class TestFormatLabs:

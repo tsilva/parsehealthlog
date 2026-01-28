@@ -11,7 +11,7 @@ Transforms markdown health journal entries into structured, curated data:
 Output structure:
     OUTPUT_PATH/
     ├─ health_log.md          # PRIMARY: All entries (newest to oldest) with labs/exams
-    ├─ health_log.csv         # PRIMARY: Chronological timeline with episode IDs
+    ├─ history.csv            # PRIMARY: Chronological event log with entity IDs
     └─ entries/               # INTERMEDIATE (kept for caching)
         ├─ <date>.raw.md
         ├─ <date>.processed.md
@@ -64,7 +64,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
-import io
 import json
 import logging
 import re
@@ -80,7 +79,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 from tqdm import tqdm
 
 from config import Config, ProfileConfig
-from exceptions import DateExtractionError, PromptError, LabParsingError
+from exceptions import DateExtractionError, PromptError
 from entity_registry import EntityRegistry
 
 # --------------------------------------------------------------------------------------
@@ -162,18 +161,6 @@ def short_hash(text: str) -> str:  # 12-char SHA-256 hex prefix (48 bits, collis
 # --------------------------------------------------------------------------------------
 
 
-def hash_content(content: str) -> str:
-    """Compute 8-char SHA-256 hash of content."""
-    return short_hash(content)
-
-
-def hash_file(path: Path) -> str | None:
-    """Compute hash of file content, return None if file doesn't exist."""
-    if not path.exists():
-        return None
-    return hash_content(path.read_text(encoding="utf-8"))
-
-
 def parse_deps_comment(line: str) -> dict[str, str]:
     """Parse dependency hash comment from first line.
 
@@ -245,15 +232,6 @@ def format_labs(df: pd.DataFrame) -> str:
 
         out.append(line)
     return "\n".join(out)
-
-
-def format_medical_exams(exams: list[str]) -> str:
-    """Format medical exam summaries for inclusion in health entries.
-
-    Each exam is already in markdown format with its own headers.
-    Multiple exams on the same date are separated by blank lines.
-    """
-    return "\n\n".join(exams)
 
 
 def normalize_markdown_headers(content: str, target_base_level: int) -> str:
@@ -513,7 +491,7 @@ class HealthLogProcessor:
 
             exams_content = ""
             if date in self.medical_exams_by_date and self.medical_exams_by_date[date]:
-                exams_content = f"{MEDICAL_EXAMS_SECTION_HEADER}\n{format_medical_exams(self.medical_exams_by_date[date])}\n"
+                exams_content = f"{MEDICAL_EXAMS_SECTION_HEADER}\n{"\n\n".join(self.medical_exams_by_date[date])}\n"
 
             processed_path = self.entries_dir / f"{date}.processed.md"
             deps = self._get_section_dependencies(sec, labs_content, exams_content)
@@ -568,7 +546,7 @@ class HealthLogProcessor:
                 continue
             exams_path = self.entries_dir / f"{date}.exams.md"
             exams_path.write_text(
-                f"{MEDICAL_EXAMS_SECTION_HEADER}\n{format_medical_exams(exams_list)}\n",
+                f"{MEDICAL_EXAMS_SECTION_HEADER}\n{"\n\n".join(exams_list)}\n",
                 encoding="utf-8",
             )
 
@@ -640,7 +618,7 @@ class HealthLogProcessor:
         Uses cached content from _prompt() to ensure hash matches
         the actual content being used (not file on disk which may have changed).
         """
-        return hash_content(self._prompt(name))
+        return short_hash(self._prompt(name))
 
     def _hash_files_without_deps(self, paths: Iterable[Path]) -> str:
         """Compute combined hash of multiple files, excluding deps comments."""
@@ -648,18 +626,14 @@ class HealthLogProcessor:
         for path in sorted(paths):
             if path.exists():
                 contents.append(self._read_without_deps_comment(path))
-        return hash_content("\n\n".join(contents)) if contents else ""
-
-    def _hash_all_processed(self) -> str:
-        """Compute combined hash of all processed sections."""
-        return self._hash_files_without_deps(self.entries_dir.glob("*.processed.md"))
+        return short_hash("\n\n".join(contents)) if contents else ""
 
     def _get_section_dependencies(self, section: str, labs_content: str, exams_content: str = "") -> dict[str, str]:
         """Compute all dependencies for a processed section."""
         return {
-            "raw": hash_content(section),
-            "labs": hash_content(labs_content) if labs_content else "none",
-            "exams": hash_content(exams_content) if exams_content else "none",
+            "raw": short_hash(section),
+            "labs": short_hash(labs_content) if labs_content else "none",
+            "exams": short_hash(exams_content) if exams_content else "none",
             "process_prompt": self._hash_prompt("process.system_prompt"),
             "validate_prompt": self._hash_prompt("validate.system_prompt"),
         }
@@ -770,7 +744,7 @@ class HealthLogProcessor:
         """
         # Check cache first
         extracted_path = self.entries_dir / f"{date}.extracted.json"
-        content_hash = hash_content(content)
+        content_hash = short_hash(content)
 
         if extracted_path.exists():
             try:
@@ -842,7 +816,7 @@ class HealthLogProcessor:
         # Get medical exams content for this date
         exams_content = ""
         if date in self.medical_exams_by_date and self.medical_exams_by_date[date]:
-            exams_content = f"{MEDICAL_EXAMS_SECTION_HEADER}\n{format_medical_exams(self.medical_exams_by_date[date])}\n"
+            exams_content = f"{MEDICAL_EXAMS_SECTION_HEADER}\n{"\n\n".join(self.medical_exams_by_date[date])}\n"
 
         # Compute dependencies for this section
         deps = self._get_section_dependencies(section, labs_content, exams_content)
@@ -893,16 +867,6 @@ class HealthLogProcessor:
                 # Write with dependency hash in first line
                 deps_comment = format_deps_comment(deps)
                 processed_path.write_text(f"{deps_comment}\n{final_content}", encoding="utf-8")
-
-                # Labs are also written to separate .labs.md file
-                if (df := self.labs_by_date.get(date)) is not None and not df.empty:
-                    lab_path = self.entries_dir / f"{date}.labs.md"
-                    lab_path.write_text(labs_content, encoding="utf-8")
-
-                # Exams are also written to separate .exams.md file
-                if self.medical_exams_by_date.get(date):
-                    exams_path = self.entries_dir / f"{date}.exams.md"
-                    exams_path.write_text(exams_content, encoding="utf-8")
 
                 return date, True
 
@@ -1165,7 +1129,7 @@ class HealthLogProcessor:
         content = "\n\n".join(parts)
 
         # Compute hash for dependency tracking
-        content_hash = hash_content(content)
+        content_hash = short_hash(content)
         deps_comment = format_deps_comment({"content": content_hash})
 
         # Check if file needs update
@@ -1215,7 +1179,7 @@ class HealthLogProcessor:
             exams_content = ""
             exams_list = self.medical_exams_by_date.get(date)
             if exams_list:
-                exams_content = f"{MEDICAL_EXAMS_SECTION_HEADER}\n{format_medical_exams(exams_list)}\n"
+                exams_content = f"{MEDICAL_EXAMS_SECTION_HEADER}\n{"\n\n".join(exams_list)}\n"
 
             # Skip if neither labs nor exams exist
             if not labs_content and not exams_content:
@@ -1224,8 +1188,8 @@ class HealthLogProcessor:
             # Dependencies for data-only entries (no raw content, no LLM processing)
             deps = {
                 "raw": "none",  # No raw health log content
-                "labs": hash_content(labs_content) if labs_content else "none",
-                "exams": hash_content(exams_content) if exams_content else "none",
+                "labs": short_hash(labs_content) if labs_content else "none",
+                "exams": short_hash(exams_content) if exams_content else "none",
                 "process_prompt": "none",  # Not processed by LLM
                 "validate_prompt": "none",  # Not validated
             }
@@ -1444,7 +1408,7 @@ Examples:
                 logger.info("Cleared %d generated files from %s", deleted, entries_dir)
 
         # Delete primary output files
-        for filename in ["health_log.md", "health_log.csv"]:
+        for filename in ["health_log.md"]:
             filepath = output_path / filename
             if filepath.exists():
                 filepath.unlink()
