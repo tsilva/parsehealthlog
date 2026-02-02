@@ -18,17 +18,15 @@ Output structure:
         ├─ <date>.labs.md
         └─ <date>.exams.md
 
-Configuration via environment variables (see config.py):
-    OPENROUTER_API_KEY           – mandatory (forwarded to openrouter.ai)
-    HEALTH_LOG_PATH              – mandatory (path to the markdown health log)
-    OUTPUT_PATH                  – mandatory (base directory for generated output)
-    MODEL_ID                     – default model (fallback for all roles, default: gpt-4o-mini)
-    PROCESS_MODEL_ID             – (optional) override for PROCESS stage
-    VALIDATE_MODEL_ID            – (optional) override for VALIDATE stage
-    STATUS_MODEL_ID              – (optional) override for timeline building
-    LABS_PARSER_OUTPUT_PATH      – (optional) path to aggregated lab CSVs
-    MEDICAL_EXAMS_PARSER_OUTPUT_PATH – (optional) path to medical exam summaries
-    MAX_WORKERS                  – (optional) ThreadPoolExecutor size (default 4)
+Configuration via profile YAML (see config.py):
+    model_id                     – mandatory (model identifier)
+    base_url                     – API base URL (default: http://127.0.0.1:8082/api/v1)
+    api_key                      – API key (default: claude-bridge)
+    health_log_path              – mandatory (path to the markdown health log)
+    output_path                  – mandatory (base directory for generated output)
+    labs_parser_output_path      – (optional) path to aggregated lab CSVs
+    medical_exams_parser_output_path – (optional) path to medical exam summaries
+    workers                      – (optional) ThreadPoolExecutor size (default 4)
 """
 
 from dotenv import load_dotenv
@@ -337,7 +335,7 @@ class HealthLogProcessor:
         self.prompts: dict[str, str] = {}
 
         # OpenAI client + per-role models
-        self.client = OpenAI(base_url=config.openrouter_base_url, api_key=config.openrouter_api_key)
+        self.client = OpenAI(base_url=config.base_url, api_key=config.api_key)
         self.llm = {role: LLM(self.client, config.model_id) for role in ("process", "validate", "status")}
 
         # Lab data per date – populated lazily

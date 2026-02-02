@@ -1,6 +1,6 @@
 """Configuration management for health-log-parser.
 
-Centralizes all environment variable loading and validation.
+Centralizes profile-based configuration loading and validation.
 """
 
 import json
@@ -17,8 +17,7 @@ from exceptions import ConfigurationError
 class ProfileConfig:
     """Profile configuration loaded from YAML file.
 
-    Contains user-specific paths and optional setting overrides.
-    API keys are NOT stored in profiles (kept in environment).
+    Contains user-specific paths, API configuration, and optional setting overrides.
     """
 
     name: str
@@ -29,6 +28,11 @@ class ProfileConfig:
 
     # Processing configuration
     workers: int | None = None
+
+    # API configuration
+    base_url: str = "http://127.0.0.1:8082/api/v1"
+    api_key: str = "claude-bridge"
+    model_id: str | None = None
 
     @classmethod
     def from_file(cls, profile_path: Path) -> "ProfileConfig":
@@ -54,6 +58,9 @@ class ProfileConfig:
             labs_parser_output_path=get_path("labs_parser_output_path"),
             medical_exams_parser_output_path=get_path("medical_exams_parser_output_path"),
             workers=data.get("workers"),
+            base_url=data.get("base_url", "http://127.0.0.1:8082/api/v1"),
+            api_key=data.get("api_key", "claude-bridge"),
+            model_id=data.get("model_id"),
         )
 
     @classmethod
@@ -73,13 +80,13 @@ class ProfileConfig:
 class Config:
     """Configuration for the health log parser.
 
-    All configuration values are loaded from environment variables.
-    Required variables will raise an error if not set.
+    All configuration values are loaded from profile YAML files.
+    Required fields will raise an error if not set.
     """
 
     # API Configuration
-    openrouter_base_url: str
-    openrouter_api_key: str
+    base_url: str
+    api_key: str
 
     # Model Configuration
     model_id: str
@@ -95,7 +102,7 @@ class Config:
 
     @classmethod
     def from_profile(cls, profile: ProfileConfig) -> "Config":
-        """Load configuration from a profile, with API key from environment.
+        """Load configuration from a profile.
 
         Args:
             profile: ProfileConfig loaded from YAML/JSON file.
@@ -106,23 +113,13 @@ class Config:
         Raises:
             ConfigurationError: If required fields are missing.
         """
-        # API config always from environment (security)
-        openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-
-        openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
-        if not openrouter_api_key:
-            raise ConfigurationError("OPENROUTER_API_KEY environment variable is required")
-
         # Validate required profile fields
         if not profile.health_log_path:
             raise ConfigurationError(f"Profile '{profile.name}' missing required field: health_log_path")
         if not profile.output_path:
             raise ConfigurationError(f"Profile '{profile.name}' missing required field: output_path")
-
-        # Model configuration from environment variables
-        model_id = os.getenv("MODEL_ID")
-        if not model_id:
-            raise ConfigurationError("MODEL_ID environment variable is required")
+        if not profile.model_id:
+            raise ConfigurationError(f"Profile '{profile.name}' missing required field: model_id")
 
         # Workers with priority: profile > env > default (clamped to CPU count)
         if profile.workers is not None:
@@ -136,9 +133,9 @@ class Config:
         max_workers = max(1, min(max_workers_raw, max_cpu))
 
         return cls(
-            openrouter_base_url=openrouter_base_url,
-            openrouter_api_key=openrouter_api_key,
-            model_id=model_id,
+            base_url=profile.base_url,
+            api_key=profile.api_key,
+            model_id=profile.model_id,
             health_log_path=profile.health_log_path,
             output_path=profile.output_path,
             labs_parser_output_path=profile.labs_parser_output_path,
