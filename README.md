@@ -4,7 +4,7 @@
   [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
   [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 
-  **Transform messy health journals into structured, validated medical data**
+  **📓 Transform health journal entries into structured, validated data 🏥**
 
   [Documentation](docs/pipeline.md)
 </div>
