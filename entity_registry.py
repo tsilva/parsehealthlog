@@ -29,6 +29,98 @@ START_EVENTS: Final[set[str]] = {"diagnosed", "suspected", "noted", "started", "
 # Stop events: mark an entity as inactive
 STOP_EVENTS: Final[set[str]] = {"resolved", "stopped", "ended", "completed"}
 
+# Valid entity types (from extraction prompt)
+VALID_ENTITY_TYPES: Final[set[str]] = {
+    "condition", "symptom", "medication", "supplement", "experiment", "provider", "todo",
+}
+
+# Valid events per entity type (from extraction prompt Events table)
+VALID_EVENTS: Final[dict[str, set[str]]] = {
+    "condition": {"diagnosed", "suspected", "noted", "resolved"},
+    "symptom": {"noted", "resolved"},
+    "medication": {"started", "stopped"},
+    "supplement": {"started", "stopped"},
+    "experiment": {"started", "ended"},
+    "provider": {"visit"},
+    "todo": {"added", "completed"},
+}
+
+# Schema version for cached extraction files — bump to invalidate old caches
+EXTRACTION_SCHEMA_VERSION: Final[int] = 1
+
+
+def validate_extracted_facts(facts: object) -> list[str]:
+    """Validate the structure of extracted facts from LLM output.
+
+    Args:
+        facts: Parsed JSON output from the extraction LLM.
+
+    Returns:
+        List of error strings. Empty list means valid.
+    """
+    errors: list[str] = []
+
+    if not isinstance(facts, dict):
+        errors.append(f"Expected dict, got {type(facts).__name__}")
+        return errors
+
+    if "items" not in facts:
+        errors.append("Missing required key 'items'")
+        return errors
+
+    items = facts["items"]
+    if not isinstance(items, list):
+        errors.append(f"'items' must be a list, got {type(items).__name__}")
+        return errors
+
+    for i, item in enumerate(items):
+        prefix = f"items[{i}]"
+
+        if not isinstance(item, dict):
+            errors.append(f"{prefix}: expected dict, got {type(item).__name__}")
+            continue
+
+        # Check required fields
+        for field in ("type", "name", "event"):
+            val = item.get(field)
+            if not isinstance(val, str) or not val.strip():
+                errors.append(f"{prefix}: '{field}' must be a non-empty string")
+
+        entity_type = item.get("type", "")
+        event = item.get("event", "")
+
+        # Validate type
+        if isinstance(entity_type, str) and entity_type and entity_type not in VALID_ENTITY_TYPES:
+            errors.append(
+                f"{prefix}: invalid type '{entity_type}', "
+                f"must be one of {sorted(VALID_ENTITY_TYPES)}"
+            )
+
+        # Validate event for type
+        if (
+            isinstance(entity_type, str)
+            and entity_type in VALID_EVENTS
+            and isinstance(event, str)
+            and event
+            and event not in VALID_EVENTS[entity_type]
+        ):
+            errors.append(
+                f"{prefix}: invalid event '{event}' for type '{entity_type}', "
+                f"must be one of {sorted(VALID_EVENTS[entity_type])}"
+            )
+
+        # Validate optional fields
+        for opt_field in ("details", "for_condition"):
+            if opt_field in item:
+                val = item[opt_field]
+                if val is not None and not isinstance(val, str):
+                    errors.append(
+                        f"{prefix}: '{opt_field}' must be a string or null, "
+                        f"got {type(val).__name__}"
+                    )
+
+    return errors
+
 
 @dataclass
 class Entity:
