@@ -26,7 +26,7 @@ health_log_path: /path/to/health.md    # Required
 output_path: /path/to/output           # Required
 model_id: model-name                   # Required
 base_url: http://127.0.0.1:8082/api/v1 # Optional (default shown)
-api_key: claude-bridge                  # Optional (default shown)
+api_key: health-log-parser              # Optional (default shown)
 ```
 
 See `docs/pipeline.md` for full configuration options.

@@ -13,6 +13,20 @@ import yaml
 from exceptions import ConfigurationError
 
 
+def check_api_accessibility(base_url: str, timeout: int = 10) -> bool:
+    """Check if the API base URL is accessible."""
+    import urllib.request
+    import urllib.error
+    try:
+        req = urllib.request.Request(base_url, method='HEAD')
+        urllib.request.urlopen(req, timeout=timeout)
+        return True
+    except urllib.error.HTTPError:
+        return True
+    except (urllib.error.URLError, TimeoutError):
+        return False
+
+
 @dataclass
 class ProfileConfig:
     """Profile configuration loaded from YAML file.
@@ -31,7 +45,7 @@ class ProfileConfig:
 
     # API configuration
     base_url: str = "http://127.0.0.1:8082/api/v1"
-    api_key: str = "claude-bridge"
+    api_key: str = "health-log-parser"
     model_id: str | None = None
 
     @classmethod
@@ -59,7 +73,7 @@ class ProfileConfig:
             medical_exams_parser_output_path=get_path("medical_exams_parser_output_path"),
             workers=data.get("workers"),
             base_url=data.get("base_url", "http://127.0.0.1:8082/api/v1"),
-            api_key=data.get("api_key", "claude-bridge"),
+            api_key=data.get("api_key", "health-log-parser"),
             model_id=data.get("model_id"),
         )
 

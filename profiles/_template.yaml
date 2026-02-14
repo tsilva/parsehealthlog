@@ -16,4 +16,4 @@ medical_exams_parser_output_path: null
 
 # API configuration
 # base_url: "http://127.0.0.1:8082/api/v1"
-# api_key: "claude-bridge"
+# api_key: "health-log-parser"
