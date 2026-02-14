@@ -32,3 +32,12 @@ class PromptError(HealthLogParserError):
         self.prompt_name = prompt_name
 
 
+class ExtractionError(HealthLogParserError):
+    """Raised when fact extraction fails validation."""
+
+    def __init__(self, message: str, date: str | None = None, errors: list[str] | None = None):
+        super().__init__(message)
+        self.date = date
+        self.errors = errors or []
+
+

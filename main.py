@@ -77,8 +77,12 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 from tqdm import tqdm
 
 from config import Config, ProfileConfig
-from exceptions import DateExtractionError, PromptError
-from entity_registry import EntityRegistry
+from exceptions import DateExtractionError, ExtractionError, PromptError
+from entity_registry import (
+    EXTRACTION_SCHEMA_VERSION,
+    EntityRegistry,
+    validate_extracted_facts,
+)
 
 # --------------------------------------------------------------------------------------
 # Logging helpers
@@ -406,6 +410,7 @@ class HealthLogProcessor:
         - sections_total: Total number of sections to process
         - sections_processed: Number of successfully processed sections
         - sections_failed: List of failed section dates
+        - extractions_failed: List of failed extraction dates
         - reports_generated: List of generated report names
         """
         state = self._load_state()
@@ -413,6 +418,7 @@ class HealthLogProcessor:
         # Count processed sections from filesystem
         processed_files = list(self.entries_dir.glob("*.processed.md"))
         failed_files = list(self.entries_dir.glob("*.failed.md"))
+        extraction_failed_files = list(self.entries_dir.glob("*.failed.json"))
 
         return {
             "status": state.get("status", "not_started"),
@@ -421,6 +427,7 @@ class HealthLogProcessor:
             "sections_total": state.get("sections_total", 0),
             "sections_processed": len(processed_files),
             "sections_failed": [f.stem.replace(".failed", "") for f in failed_files],
+            "extractions_failed": [f.stem.replace(".failed", "") for f in extraction_failed_files],
             "reports_generated": state.get("reports_generated", []),
         }
 
@@ -561,6 +568,16 @@ class HealthLogProcessor:
             if len(warnings) > 10:
                 self.logger.warning("  ... and %d more", len(warnings) - 10)
 
+        # Surface extraction failures prominently
+        extraction_failed_files = list(self.entries_dir.glob("*.failed.json"))
+        if extraction_failed_files:
+            dates = sorted(f.stem.replace(".failed", "") for f in extraction_failed_files)
+            self.logger.error(
+                "EXTRACTION FAILED for %d entries: %s — see entries/*.failed.json for diagnostics",
+                len(dates),
+                ", ".join(dates),
+            )
+
         # Save entity-centric outputs
         registry.save_outputs(self.OUTPUT_PATH)
         self.logger.info(
@@ -684,6 +701,7 @@ class HealthLogProcessor:
 
         registry = EntityRegistry()
         all_warnings: list[str] = []
+        extraction_failures: list[str] = []
 
         # Process each entry chronologically
         for date, content in tqdm(entries, desc="Extracting facts"):
@@ -700,6 +718,7 @@ class HealthLogProcessor:
             # Extract facts from the entry
             facts = self._extract_entry_facts(date, content)
             if not facts:
+                extraction_failures.append(date)
                 continue
 
             # Process each extracted item
@@ -724,6 +743,13 @@ class HealthLogProcessor:
                 )
                 all_warnings.extend(warnings)
 
+        if extraction_failures:
+            self.logger.warning(
+                "Extraction failed for %d entries: %s",
+                len(extraction_failures),
+                ", ".join(extraction_failures),
+            )
+
         self.logger.info(
             "Entity registry built: %d entities, %d history events",
             len(registry.entities),
@@ -735,6 +761,10 @@ class HealthLogProcessor:
     def _extract_entry_facts(self, date: str, content: str) -> dict | None:
         """Extract structured facts from a processed entry using LLM.
 
+        Uses a 3-attempt validation loop: extract, validate schema, retry
+        with feedback on failure. Caches valid results with a schema version
+        to allow automatic re-extraction when the schema changes.
+
         Args:
             date: Entry date (YYYY-MM-DD)
             content: Processed entry content
@@ -742,48 +772,105 @@ class HealthLogProcessor:
         Returns:
             Extracted facts dict or None if extraction failed
         """
-        # Check cache first
         extracted_path = self.entries_dir / f"{date}.extracted.json"
         content_hash = short_hash(content)
 
+        # Check cache — must match both content hash and schema version
         if extracted_path.exists():
             try:
                 cached = json.loads(extracted_path.read_text(encoding="utf-8"))
-                if cached.get("_content_hash") == content_hash:
+                if (
+                    cached.get("_content_hash") == content_hash
+                    and cached.get("_schema_version") == EXTRACTION_SCHEMA_VERSION
+                ):
                     return cached.get("facts")
             except (json.JSONDecodeError, IOError):
                 pass
 
-        # Call LLM to extract facts
         system_prompt = self._prompt("extract.system_prompt")
+        last_response = ""
+        last_errors: list[str] = []
 
-        try:
-            response = self.llm["status"](
-                [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": content},
-                ],
-                max_tokens=4096,
-                temperature=0.0,
+        for attempt in range(1, 4):
+            # Build messages — include feedback on retries
+            messages: list[dict[str, str]] = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": content},
+            ]
+            if attempt > 1 and last_response:
+                messages.append({"role": "assistant", "content": last_response})
+                feedback = (
+                    "Your JSON output had validation errors:\n"
+                    + "\n".join(f"- {e}" for e in last_errors)
+                    + "\n\nPlease fix these errors and output valid JSON."
+                )
+                messages.append({"role": "user", "content": feedback})
+
+            try:
+                response = self.llm["status"](
+                    messages,
+                    max_tokens=4096,
+                    temperature=0.0,
+                )
+                last_response = response
+                facts = self._parse_json_response(response)
+            except (json.JSONDecodeError, KeyError) as e:
+                last_errors = [f"JSON parse error: {e}"]
+                self.logger.error(
+                    "Extraction JSON parse failed (%s attempt %d): %s",
+                    date, attempt, e,
+                )
+                continue
+
+            # Validate schema
+            validation_errors = validate_extracted_facts(facts)
+            if not validation_errors:
+                # Valid — cache and return
+                cache_data = {
+                    "_content_hash": content_hash,
+                    "_schema_version": EXTRACTION_SCHEMA_VERSION,
+                    "facts": facts,
+                }
+                extracted_path.write_text(
+                    json.dumps(cache_data, indent=2), encoding="utf-8"
+                )
+                return facts
+
+            last_errors = validation_errors
+            self.logger.error(
+                "Extraction validation failed (%s attempt %d): %s",
+                date, attempt, "; ".join(validation_errors),
             )
 
-            facts = self._parse_json_response(response)
+        # All attempts failed — write diagnostic file
+        self._write_extraction_failure(date, last_errors, last_response, content)
+        return None
 
-            # Cache the result
-            cache_data = {
-                "_content_hash": content_hash,
-                "facts": facts,
-            }
-            extracted_path.write_text(
-                json.dumps(cache_data, indent=2),
-                encoding="utf-8"
-            )
+    def _write_extraction_failure(
+        self,
+        date: str,
+        errors: list[str],
+        last_response: str,
+        input_content: str,
+    ) -> None:
+        """Write a .failed.json diagnostic for a failed extraction.
 
-            return facts
-
-        except (json.JSONDecodeError, KeyError) as e:
-            self.logger.error("Failed to extract facts from %s: %s", date, e)
-            return None
+        Args:
+            date: Entry date
+            errors: Validation error list from last attempt
+            last_response: Raw LLM output from last attempt
+            input_content: The processed entry content that was sent to the LLM
+        """
+        failed_path = self.entries_dir / f"{date}.failed.json"
+        diagnostic = {
+            "date": date,
+            "error": "All 3 extraction attempts failed validation",
+            "last_errors": errors,
+            "last_response": last_response[:2000],
+            "input_content_preview": input_content[:500],
+        }
+        failed_path.write_text(json.dumps(diagnostic, indent=2), encoding="utf-8")
+        self.logger.error("Saved extraction diagnostic to %s", failed_path)
 
     def _get_chronological_entries(self) -> list[tuple[str, str]]:
         """Get all processed entries sorted chronologically (oldest first).
@@ -1400,7 +1487,7 @@ Examples:
 
         # Delete all generated entry files
         if entries_dir.exists():
-            patterns = ["*.processed.md", "*.labs.md", "*.exams.md", "*.failed.md"]
+            patterns = ["*.processed.md", "*.labs.md", "*.exams.md", "*.failed.md", "*.extracted.json", "*.failed.json"]
             deleted = 0
             for pattern in patterns:
                 for f in entries_dir.glob(pattern):
