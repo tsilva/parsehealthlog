@@ -38,7 +38,7 @@ class TestConfigFromProfile:
 
     def test_valid_minimal_config(self):
         config = Config.from_profile(_profile())
-        assert config.api_key == "claude-bridge"
+        assert config.api_key == "health-log-parser"
         assert config.model_id == "test-model"
         assert config.health_log_path == Path("/path/to/log.md")
         assert config.output_path == Path("/path/to/output")

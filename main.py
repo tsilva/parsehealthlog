@@ -21,7 +21,7 @@ Output structure:
 Configuration via profile YAML (see config.py):
     model_id                     – mandatory (model identifier)
     base_url                     – API base URL (default: http://127.0.0.1:8082/api/v1)
-    api_key                      – API key (default: claude-bridge)
+    api_key                      – API key (default: health-log-parser)
     health_log_path              – mandatory (path to the markdown health log)
     output_path                  – mandatory (base directory for generated output)
     labs_parser_output_path      – (optional) path to aggregated lab CSVs
@@ -76,7 +76,7 @@ from openai import OpenAI, APIError, APIConnectionError, RateLimitError, APITime
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from tqdm import tqdm
 
-from config import Config, ProfileConfig
+from config import Config, ProfileConfig, check_api_accessibility
 from exceptions import DateExtractionError, ExtractionError, PromptError
 from entity_registry import (
     EXTRACTION_SCHEMA_VERSION,
@@ -1517,6 +1517,10 @@ Examples:
                 else:
                     legacy_path.unlink()
                 logger.info("Cleared legacy %s", legacy_path)
+
+    if not check_api_accessibility(config.base_url):
+        logger.warning("API base URL is not accessible: %s", config.base_url)
+        logger.warning("Processing will likely fail on LLM-dependent tasks.")
 
     start = datetime.now()
     HealthLogProcessor(config).run()
