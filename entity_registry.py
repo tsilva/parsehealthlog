@@ -296,15 +296,28 @@ class EntityRegistry:
                 )
                 return existing, history_event, warnings
             else:
-                # Check if there's an inactive entity we could potentially reactivate
-                # but for simplicity, we create new entities (cleaner history)
-                entity = self._create_entity(
-                    entity_type, name, event, date, related_entity_id
-                )
-                history_event = self._record_event(
-                    date, entity, event, details, related_entity_id
-                )
-                return entity, history_event, warnings
+                # Check for inactive entity to reactivate
+                inactive = self.find_entity(name, entity_type, include_inactive=True)
+                if inactive and not inactive.active:
+                    inactive.active = True
+                    inactive.last_updated = date
+                    if name != inactive.canonical_name:
+                        inactive.canonical_name = name
+                    if related_entity_id:
+                        inactive.related_to = related_entity_id
+                    history_event = self._record_event(
+                        date, inactive, event, details, related_entity_id
+                    )
+                    return inactive, history_event, warnings
+                else:
+                    # Truly new entity
+                    entity = self._create_entity(
+                        entity_type, name, event, date, related_entity_id
+                    )
+                    history_event = self._record_event(
+                        date, entity, event, details, related_entity_id
+                    )
+                    return entity, history_event, warnings
 
         elif event in STOP_EVENTS:
             if existing and existing.active:
@@ -529,7 +542,7 @@ class EntityRegistry:
                 event.name,
                 event.entity_type,
                 event.event,
-                event.details,
+                event.details.replace('\n', ' ').replace('\r', ''),
                 event.related_entity,
             ])
 

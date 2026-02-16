@@ -55,6 +55,17 @@ Read the entry and output a JSON object listing all health-related items mention
 
 **Important:** Changes, updates, and observations go in the `details` field, not as separate events.
 
+## STRICT Event Validation
+
+The event field MUST be exactly one of the values listed above. Common mistakes:
+
+- "flare" is NOT valid → Use: event: "noted", details: "flare after ..."
+- "improved" is NOT valid → Use: event: "noted", details: "improved ..."
+- "stable" is NOT valid → Use: event: "noted", details: "stable ..."
+- "worsened" is NOT valid → Use: event: "noted", details: "worsened ..."
+- "prescribed" is NOT valid → Use: event: "started"
+- "discontinued" is NOT valid → Use: event: "stopped"
+
 ## How to Handle Updates and Changes
 
 **Status changes become details:**
@@ -103,6 +114,10 @@ Use `noted` with details when:
 - Use clinically standard names (e.g., "Gastritis" not "stomach inflammation")
 - Be specific when possible (e.g., "Lumbar scoliosis" not just "scoliosis")
 - Title Case preferred
+- Use American English spelling (e.g., "Hemorrhoid" not "Haemorrhoid")
+- Use singular form for conditions (e.g., "Hemorrhoid" not "Hemorrhoids")
+- Never use abbreviations (e.g., "Irritable bowel syndrome" not "IBS")
+- The for_condition value MUST exactly match the condition's name field
 
 **Providers:**
 - Format: `Dr. Name (Specialty)` (e.g., "Dr. Chen (Gastroenterology)")
