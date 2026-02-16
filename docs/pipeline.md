@@ -32,8 +32,10 @@ This document describes the data processing pipeline used by health-log-parser t
        |             |      All entries newest to oldest          |-----> health_log.md
        |             |                                            |
        |             |   6. BUILD ENTITY REGISTRY                 |
-       |             |      LLM extracts facts -> active/inactive |-----> current.yaml
-       |             |      Simple state model                    |-----> history.csv
+       |             |      a. LLM extracts facts (per entry)     |
+       |             |      b. LLM resolves entity names          |-----> entity_resolution.json
+       |             |      c. Apply resolved facts to registry   |-----> current.yaml
+       |             |                                            |-----> history.csv
        |             |                                            |-----> entities.json
        |             |                                            |
        +-------------+--------------------------------------------+
@@ -48,10 +50,12 @@ The pipeline uses an **entity-centric architecture** with a simplified active/in
 | Responsibility | Component | Implementation |
 |----------------|-----------|----------------|
 | Extract facts from prose | LLM | `extract.system_prompt.md` |
+| Resolve entity name variants | LLM | `resolve_entities.system_prompt.md` |
 | Normalize entity names | Code | `EntityRegistry._normalize_name()` |
 | Track active/inactive state | Code | Simple `active: bool` field |
 | Assign IDs | Code | `EntityRegistry._generate_id()` |
 | Link related entities | Code | Validated at creation time |
+| Reactivate stopped entities | Code | `EntityRegistry.apply_event()` |
 
 **Key simplification:** Instead of a complex state machine with many transitions, entities have a simple `active: true/false` state plus an `origin` field that records how they started.
 
@@ -155,13 +159,15 @@ The pipeline uses an **entity-centric architecture** with a simplified active/in
 
 ### Step 6: Entity Registry Building
 
-**What it does:** Builds a deterministic entity registry from processed entries using a two-phase approach: LLM extraction followed by code-managed state tracking.
+**What it does:** Builds a deterministic entity registry from processed entries using a three-phase approach: LLM extraction, LLM entity name resolution, and code-managed state tracking.
 
 **Key files/APIs:**
 - `main.py:_build_entity_registry()` - Orchestration
 - `main.py:_extract_entry_facts()` - LLM extraction with caching
+- `main.py:_resolve_entity_names()` - LLM entity name resolution with caching
 - `entity_registry.py` - `EntityRegistry` class
 - `prompts/extract.system_prompt.md` - Fact extraction prompt
+- `prompts/resolve_entities.system_prompt.md` - Entity name resolution prompt
 
 **Phase 1: LLM Extraction (per entry)**
 
@@ -192,14 +198,23 @@ The LLM extracts structured facts from each processed entry as JSON:
 
 Extracted facts are cached in `entries/<date>.extracted.json` with content hash for invalidation.
 
-**Phase 2: Active/Inactive Tracking (deterministic)**
+**Phase 2: LLM Entity Name Resolution**
 
-For each extracted fact, the `EntityRegistry` code:
+After all facts are extracted, unique entity names (grouped by type) are sent to the LLM to identify duplicates caused by spelling variants, plurals, abbreviations, or case differences. For example, "Haemorrhoid", "Hemorrhoid", and "hemorrhoids" would all map to "Hemorrhoid".
+
+The resolution prompt enforces conservative merging — clinically distinct entities (different dosages, different body regions, acute vs chronic) are never merged.
+
+The mapping is cached in `entity_resolution.json` with a hash of the input names + prompt content as the cache key.
+
+**Phase 3: Active/Inactive Tracking (deterministic)**
+
+For each extracted fact (with resolved names applied), the `EntityRegistry` code:
 1. **Matches/creates entity** - Fuzzy name matching (case-insensitive, ignores dosage)
-2. **Updates active state** - Start events activate, stop events deactivate
-3. **Assigns entity ID** - Sequential, guaranteed no gaps
-4. **Links relationships** - Validated at creation time
-5. **Records event in history**
+2. **Reactivates inactive entities** - Start events on previously stopped entities reactivate them instead of creating duplicates
+3. **Updates active state** - Start events activate, stop events deactivate
+4. **Assigns entity ID** - Sequential, guaranteed no gaps
+5. **Links relationships** - Validated at creation time
+6. **Records event in history**
 
 **Simplified Event Model:**
 
@@ -222,6 +237,7 @@ Status changes, dosage adjustments, and observations are captured in the `detail
 | `current.yaml` | Active conditions and treatments (medications/supplements) |
 | `history.csv` | Flat event log (Date, EntityID, Name, Type, Event, Details, RelatedEntity) |
 | `entities.json` | Single source of truth for all entities |
+| `entity_resolution.json` | Cached entity name resolution mapping (intermediate) |
 
 **current.yaml format:**
 ```yaml
@@ -396,9 +412,18 @@ The user edits this file, removes entries for items still active, and adds the r
                          |
                          v
                +------------------+
+               | RESOLVE ENTITIES |  (LLM, cached)
+               |                  |
+               |  Deduplicate     |
+               |  name variants   |
+               +------------------+
+                         |
+                         v
+               +------------------+
                |  BUILD REGISTRY  |  (code, deterministic)
                |                  |
                |  - Match entity  |
+               |  - Reactivate    |
                |  - Update active |
                |  - Assign ID     |
                |  - Record event  |
@@ -422,6 +447,7 @@ The user edits this file, removes entries for items still active, and adds the r
 | `prompts/validate.system_prompt.md` | Validates processed output (checks for `$OK$`) |
 | `prompts/validate.user_prompt.md` | User prompt template for validation |
 | `prompts/extract.system_prompt.md` | Extracts structured facts from processed entries |
+| `prompts/resolve_entities.system_prompt.md` | Resolves entity name duplicates across all entries |
 
 ## Configuration
 
@@ -452,10 +478,11 @@ All generated files use hash-based dependency tracking stored in the first line:
 
 **Cache dependencies by file type:**
 - `.processed.md`: `raw` (section content), `labs`, `exams`, `process_prompt`, `validate_prompt`
-- `.extracted.json`: Content hash of the processed entry
+- `.extracted.json`: Content hash of the processed entry + schema version
+- `entity_resolution.json`: Hash of all unique entity names + resolution prompt content
 - `health_log.md`: Content hash of assembled content
 
-**Entity registry:** Rebuilt from scratch each run by replaying all extracted facts chronologically. This ensures consistency and simplicity.
+**Entity registry:** Rebuilt from scratch each run by replaying all extracted facts (with resolved names) chronologically. This ensures consistency and simplicity.
 
 ### Reprocessing Logic
 

@@ -37,7 +37,7 @@ See `docs/pipeline.md` for full configuration options.
 
 **Pipeline flow**:
 ```
-health.md → Split Sections → Process (parallel) → Extract Facts (LLM) → Build Registry (code) → Output
+health.md → Split Sections → Process (parallel) → Extract Facts (LLM) → Resolve Names (LLM) → Build Registry (code) → Output
 ```
 
 **Output structure**:
@@ -47,6 +47,7 @@ OUTPUT_PATH/
 ├─ current.yaml           # PRIMARY: Active state for downstream consumers
 ├─ history.csv            # PRIMARY: Flat event log with entity IDs
 ├─ entities.json          # PRIMARY: Entity registry (source of truth)
+├─ entity_resolution.json # INTERMEDIATE: Cached entity name mapping
 └─ entries/               # INTERMEDIATE (kept for caching)
    ├─ YYYY-MM-DD.raw.md
    ├─ YYYY-MM-DD.processed.md
@@ -67,6 +68,7 @@ OUTPUT_PATH/
 | `prompts/process.system_prompt.md` | Entry processing prompt |
 | `prompts/validate.system_prompt.md` | Entry validation prompt |
 | `prompts/extract.system_prompt.md` | Fact extraction prompt (JSON output) |
+| `prompts/resolve_entities.system_prompt.md` | Entity name deduplication prompt |
 
 ## Do NOT
 
@@ -100,13 +102,14 @@ OUTPUT_PATH/
 4. Review console warnings for state transition issues
 
 ### Debug Entity Registry Issues
-1. Check `entities.json` for the complete entity state
-2. Check `history.csv` for the event log
-3. Common issues (logged as warnings):
+1. Check `entity_resolution.json` for the name mapping (verify merges are correct)
+2. Check `entities.json` for the complete entity state
+3. Check `history.csv` for the event log
+4. Common issues (logged as warnings):
    - Stop events on unknown entities (may indicate extraction issue)
    - Missing for_condition references (condition not found)
    - Unknown event types (treated as detail updates)
-4. Fix by editing extraction prompt or source entries
+5. Fix by editing extraction prompt, resolution prompt, or source entries
 
 ### Clean Up Stale Active Entities
 1. Run `uv run python main.py --profile <name> --generate-audit`
