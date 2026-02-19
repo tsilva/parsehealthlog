@@ -1513,6 +1513,13 @@ Examples:
         default="claude",
         help="Environment name to load (loads .env.{name} instead of .env, default: claude)",
     )
+    parser.add_argument(
+        "--workers",
+        "-w",
+        type=int,
+        default=None,
+        help="Number of parallel processing workers (overrides profile/env setting)",
+    )
     args = parser.parse_args()
 
     setup_logging()
@@ -1569,6 +1576,12 @@ Examples:
         config = Config.from_profile(profile)
     except ValueError as e:
         raise SystemExit(f"Configuration error: {e}")
+
+    # CLI --workers overrides profile/env setting
+    if args.workers is not None:
+        import os as _os
+        max_cpu = _os.cpu_count() or 8
+        config.max_workers = max(1, min(args.workers, max_cpu))
 
     # Handle --generate-audit flag: generate audit template and exit
     if args.generate_audit:
