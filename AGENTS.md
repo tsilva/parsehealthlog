@@ -2,12 +2,9 @@
 
 ## Project Goal
 
-health-log-parser is a **data extraction and curation tool** that transforms health journal entries into structured, validated data:
+health-log-parser is a **data extraction and curation tool** that transforms health journal entries into structured, validated markdown:
 
 1. **`health_log.md`** - All processed entries (newest to oldest) with labs/exams integrated
-2. **`current.yaml`** - Active conditions, medications, supplements, and pending TODOs
-3. **`history.csv`** - Chronological event log with entity IDs linking related events
-4. **`entities.json`** - Single source of truth for all tracked health entities
 
 The tool processes, validates, and enriches health log entries but does **not** generate reports, summaries, or recommendations. Those are left to downstream consumers of the structured data.
 
@@ -33,26 +30,20 @@ See `docs/pipeline.md` for full configuration options.
 
 ## Architecture Overview
 
-**Entity-centric design**: Separates extraction (LLM) from state management (code).
-
 **Pipeline flow**:
 ```
-health.md → Split Sections → Process (parallel) → Extract Facts (LLM) → Resolve Names (LLM) → Build Registry (code) → Output
+health.md → Split Sections → Process (parallel) → Validate → Output
 ```
 
 **Output structure**:
 ```
 OUTPUT_PATH/
 ├─ health_log.md          # PRIMARY: All entries (newest to oldest)
-├─ current.yaml           # PRIMARY: Active state for downstream consumers
-├─ history.csv            # PRIMARY: Flat event log with entity IDs
-├─ entities.json          # PRIMARY: Entity registry (source of truth)
-├─ entity_resolution.json # INTERMEDIATE: Cached entity name mapping
 └─ entries/               # INTERMEDIATE (kept for caching)
    ├─ YYYY-MM-DD.raw.md
    ├─ YYYY-MM-DD.processed.md
-   ├─ YYYY-MM-DD.extracted.json
-   └─ YYYY-MM-DD.labs.md
+   ├─ YYYY-MM-DD.labs.md
+   └─ YYYY-MM-DD.exams.md
 ```
 
 **Detailed documentation**: [`docs/pipeline.md`](docs/pipeline.md)
@@ -62,13 +53,10 @@ OUTPUT_PATH/
 | File | Purpose |
 |------|---------|
 | `main.py` | All processing logic (HealthLogProcessor, LLM wrapper) |
-| `entity_registry.py` | EntityRegistry class, active/inactive tracking, output generators |
 | `config.py` | Environment variable loading and validation |
 | `docs/pipeline.md` | Detailed pipeline documentation |
 | `prompts/process.system_prompt.md` | Entry processing prompt |
 | `prompts/validate.system_prompt.md` | Entry validation prompt |
-| `prompts/extract.system_prompt.md` | Fact extraction prompt (JSON output) |
-| `prompts/resolve_entities.system_prompt.md` | Entity name deduplication prompt |
 
 ## Do NOT
 
@@ -78,9 +66,6 @@ OUTPUT_PATH/
 - Simplify dependency tracking (causes stale cache issues)
 
 **Architecture**:
-- Remove entity linking (critical for relating treatments to conditions)
-- Move active/inactive logic to LLM prompts (causes state inconsistencies)
-- Hardcode medical rules in Python (LLM should apply clinical judgment via prompts)
 - Remove parallel processing (essential for large logs with hundreds of entries)
 
 **Over-engineering**:
@@ -98,24 +83,7 @@ OUTPUT_PATH/
 ### Debug Processing Issues
 1. Check `entries/<date>.processed.md` for the processed content
 2. Check `entries/<date>.failed.md` if processing failed (contains diagnostics)
-3. Check `entries/<date>.extracted.json` for extracted facts
-4. Review console warnings for state transition issues
-
-### Debug Entity Registry Issues
-1. Check `entity_resolution.json` for the name mapping (verify merges are correct)
-2. Check `entities.json` for the complete entity state
-3. Check `history.csv` for the event log
-4. Common issues (logged as warnings):
-   - Stop events on unknown entities (may indicate extraction issue)
-   - Missing for_condition references (condition not found)
-   - Unknown event types (treated as detail updates)
-5. Fix by editing extraction prompt, resolution prompt, or source entries
-
-### Clean Up Stale Active Entities
-1. Run `uv run python main.py --profile <name> --generate-audit`
-2. Edit the generated `audit_template.md` - delete entries that are still active
-3. Add remaining entries (things to stop/resolve) to your health log
-4. Re-run processing to apply changes
+3. Review console warnings for processing issues
 
 ### Update Documentation
 When modifying the pipeline, update `docs/pipeline.md` to reflect changes.

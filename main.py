@@ -85,11 +85,7 @@ from tqdm import tqdm
 
 from config import Config, ProfileConfig, check_api_accessibility
 from exceptions import DateExtractionError, ExtractionError, PromptError
-from entity_registry import (
-    EXTRACTION_SCHEMA_VERSION,
-    EntityRegistry,
-    validate_extracted_facts,
-)
+
 
 # --------------------------------------------------------------------------------------
 # Logging helpers
@@ -152,7 +148,6 @@ def setup_logging() -> None:
 PROMPTS_DIR: Final = Path(__file__).with_suffix("").parent / "prompts"
 LAB_SECTION_HEADER: Final = "Lab test results:"
 MEDICAL_EXAMS_SECTION_HEADER: Final = "Medical exam results:"
-RESET_STATE_MARKER: Final = "<!-- RESET_STATE -->"
 
 
 def load_prompt(name: str) -> str:
@@ -389,8 +384,6 @@ class HealthLogProcessor:
             "process.system_prompt",
             "validate.system_prompt",
             "validate.user_prompt",
-            "extract.system_prompt",
-            "resolve_entities.system_prompt",
         ]
 
         missing = [
@@ -595,49 +588,6 @@ class HealthLogProcessor:
                 encoding="utf-8",
             )
 
-        # Build entity registry from extracted facts
-        registry, warnings = self._build_entity_registry()
-
-        # Log any warnings from entity processing
-        if warnings:
-            self.logger.warning("Entity processing warnings (%d):", len(warnings))
-            for w in warnings[:10]:  # Show first 10
-                self.logger.warning("  - %s", w)
-            if len(warnings) > 10:
-                self.logger.warning("  ... and %d more", len(warnings) - 10)
-
-        # Surface extraction failures prominently
-        extraction_failed_files = list(self.entries_dir.glob("*.failed.json"))
-        if extraction_failed_files:
-            dates = sorted(
-                f.stem.replace(".failed", "") for f in extraction_failed_files
-            )
-            self.logger.error(
-                "EXTRACTION FAILED for %d entries: %s — see entries/*.failed.json for diagnostics",
-                len(dates),
-                ", ".join(dates),
-            )
-
-        # Save entity-centric outputs
-        registry.save_outputs(self.OUTPUT_PATH)
-        self.logger.info(
-            "Saved entity registry outputs: %d entities, %d history events",
-            len(registry.entities),
-            len(registry.history),
-        )
-
-        # Always generate audit template for user review
-        active_count = sum(1 for e in registry.entities.values() if e.active)
-        if active_count > 0:
-            audit_content = registry.generate_audit_template()
-            audit_path = self.OUTPUT_PATH / "audit_template.md"
-            audit_path.write_text(audit_content, encoding="utf-8")
-            self.logger.info(
-                "Generated audit template with %d active entities: %s",
-                active_count,
-                audit_path,
-            )
-
         # Track run completion
         self._update_state(
             status="completed" if not failed else "completed_with_errors",
@@ -721,371 +671,6 @@ class HealthLogProcessor:
                 return True
 
         return False
-
-    # --------------------------------------------------------------
-    # Entity Registry building (deterministic state machine)
-    # --------------------------------------------------------------
-
-    def _extract_facts_parallel(
-        self,
-        entries: list[tuple[str, str]],
-        max_workers: int,
-    ) -> tuple[list[tuple[str, dict]], list[str]]:
-        """Extract facts from all entries in parallel.
-
-        Args:
-            entries: List of (date, content) tuples
-            max_workers: Number of parallel workers
-
-        Returns:
-            Tuple of (successful_facts, failed_dates)
-        """
-        all_facts: list[tuple[str, dict]] = []
-        extraction_failures: list[str] = []
-
-        with ThreadPoolExecutor(max_workers=max_workers) as ex, tqdm(
-            total=len(entries), desc="Extracting facts"
-        ) as bar:
-            # Submit all work
-            future_to_date = {
-                ex.submit(self._extract_entry_facts, date, content): date
-                for date, content in entries
-            }
-
-            # Collect results as they complete
-            for future in as_completed(future_to_date):
-                date = future_to_date[future]
-                try:
-                    facts = future.result()
-                    if facts:
-                        all_facts.append((date, facts))
-                    else:
-                        extraction_failures.append(date)
-                except Exception as e:
-                    self.logger.error("Extraction failed for %s: %s", date, e)
-                    extraction_failures.append(date)
-                bar.update(1)
-
-        # Sort by date for chronological state machine application
-        all_facts.sort(key=lambda x: x[0])
-
-        return all_facts, extraction_failures
-
-    def _build_entity_registry(self) -> tuple[EntityRegistry, list[str]]:
-        """Build entity registry from extracted facts.
-
-        Three-phase approach:
-        1. Extract facts from each entry (LLM, cached per entry, parallel)
-        2. Resolve entity names across all facts (LLM, cached)
-        3. Apply resolved facts to registry (deterministic)
-
-        Returns:
-            Tuple of (EntityRegistry, list of warning messages)
-        """
-        self.logger.info("Building entity registry from processed entries...")
-
-        # Get all processed entries sorted chronologically (oldest first)
-        entries = self._get_chronological_entries()
-        if not entries:
-            self.logger.warning("No processed entries found for registry")
-            return EntityRegistry(), []
-
-        # Phase 1: Extract facts from each entry (parallel)
-        all_facts, extraction_failures = self._extract_facts_parallel(
-            entries, self.config.max_workers
-        )
-
-        if extraction_failures:
-            self.logger.warning(
-                "Extraction failed for %d entries: %s",
-                len(extraction_failures),
-                ", ".join(extraction_failures),
-            )
-
-        # Phase 2: Resolve entity names across all facts
-        name_mapping = self._resolve_entity_names(all_facts)
-
-        # Phase 3: Apply resolved facts to registry
-        registry = EntityRegistry()
-        all_warnings: list[str] = []
-
-        for date, facts in all_facts:
-            # Check for state reset marker in RAW content (LLM strips HTML comments)
-            raw_path = self.entries_dir / f"{date}.raw.md"
-            raw_content = (
-                raw_path.read_text(encoding="utf-8") if raw_path.exists() else ""
-            )
-            if RESET_STATE_MARKER in raw_content:
-                reset_events = registry.reset_active_entities(date)
-                self.logger.info(
-                    "State reset at %s: %d entities deactivated",
-                    date,
-                    len(reset_events),
-                )
-
-            for item in facts.get("items", []):
-                entity_type = item.get("type", "")
-                name = item.get("name", "")
-                event = item.get("event", "")
-                details = item.get("details", "")
-                for_condition = item.get("for_condition")
-
-                if not entity_type or not name or not event:
-                    all_warnings.append(f"{date}: Incomplete item: {item}")
-                    continue
-
-                # Apply name resolution
-                resolved_name = name_mapping.get(name, name)
-                resolved_condition = (
-                    name_mapping.get(for_condition, for_condition)
-                    if for_condition
-                    else for_condition
-                )
-
-                _, _, warnings = registry.apply_event(
-                    date=date,
-                    entity_type=entity_type,
-                    name=resolved_name,
-                    event=event,
-                    details=details,
-                    for_condition=resolved_condition,
-                )
-                all_warnings.extend(warnings)
-
-        self.logger.info(
-            "Entity registry built: %d entities, %d history events",
-            len(registry.entities),
-            len(registry.history),
-        )
-
-        return registry, all_warnings
-
-    def _extract_entry_facts(self, date: str, content: str) -> dict | None:
-        """Extract structured facts from a processed entry using LLM.
-
-        Uses a 3-attempt validation loop: extract, validate schema, retry
-        with feedback on failure. Caches valid results with a schema version
-        to allow automatic re-extraction when the schema changes.
-
-        Args:
-            date: Entry date (YYYY-MM-DD)
-            content: Processed entry content
-
-        Returns:
-            Extracted facts dict or None if extraction failed
-        """
-        extracted_path = self.entries_dir / f"{date}.extracted.json"
-        content_hash = short_hash(content)
-
-        # Check cache — must match both content hash and schema version
-        if extracted_path.exists():
-            try:
-                cached = json.loads(extracted_path.read_text(encoding="utf-8"))
-                if (
-                    cached.get("_content_hash") == content_hash
-                    and cached.get("_schema_version") == EXTRACTION_SCHEMA_VERSION
-                ):
-                    return cached.get("facts")
-            except (json.JSONDecodeError, IOError):
-                pass
-
-        system_prompt = self._prompt("extract.system_prompt")
-        last_response = ""
-        last_errors: list[str] = []
-
-        for attempt in range(1, 4):
-            # Build messages — include feedback on retries
-            messages: list[dict[str, str]] = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": content},
-            ]
-            if attempt > 1 and last_response:
-                messages.append({"role": "assistant", "content": last_response})
-                feedback = (
-                    "Your JSON output had validation errors:\n"
-                    + "\n".join(f"- {e}" for e in last_errors)
-                    + "\n\nPlease fix these errors and output valid JSON."
-                )
-                messages.append({"role": "user", "content": feedback})
-
-            try:
-                response = self.llm["status"](
-                    messages,
-                    max_tokens=4096,
-                    temperature=0.0,
-                )
-                last_response = response
-                facts = self._parse_json_response(response)
-            except (json.JSONDecodeError, KeyError) as e:
-                last_errors = [f"JSON parse error: {e}"]
-                self.logger.error(
-                    "Extraction JSON parse failed (%s attempt %d): %s",
-                    date,
-                    attempt,
-                    e,
-                )
-                continue
-
-            # Validate schema
-            validation_errors = validate_extracted_facts(facts)
-            if not validation_errors:
-                # Valid — cache and return
-                cache_data = {
-                    "_content_hash": content_hash,
-                    "_schema_version": EXTRACTION_SCHEMA_VERSION,
-                    "facts": facts,
-                }
-                extracted_path.write_text(
-                    json.dumps(cache_data, indent=2), encoding="utf-8"
-                )
-                return facts
-
-            last_errors = validation_errors
-            self.logger.error(
-                "Extraction validation failed (%s attempt %d): %s",
-                date,
-                attempt,
-                "; ".join(validation_errors),
-            )
-
-        # All attempts failed — write diagnostic file
-        self._write_extraction_failure(date, last_errors, last_response, content)
-        return None
-
-    def _write_extraction_failure(
-        self,
-        date: str,
-        errors: list[str],
-        last_response: str,
-        input_content: str,
-    ) -> None:
-        """Write a .failed.json diagnostic for a failed extraction.
-
-        Args:
-            date: Entry date
-            errors: Validation error list from last attempt
-            last_response: Raw LLM output from last attempt
-            input_content: The processed entry content that was sent to the LLM
-        """
-        failed_path = self.entries_dir / f"{date}.failed.json"
-        diagnostic = {
-            "date": date,
-            "error": "All 3 extraction attempts failed validation",
-            "last_errors": errors,
-            "last_response": last_response[:2000],
-            "input_content_preview": input_content[:500],
-        }
-        failed_path.write_text(json.dumps(diagnostic, indent=2), encoding="utf-8")
-        self.logger.error("Saved extraction diagnostic to %s", failed_path)
-
-    def _resolve_entity_names(
-        self,
-        all_facts: list[tuple[str, dict]],
-    ) -> dict[str, str]:
-        """Resolve entity names across all extracted facts using LLM.
-
-        Collects unique names grouped by type, calls LLM to identify duplicates,
-        and returns a mapping from each name to its canonical form.
-
-        Args:
-            all_facts: List of (date, facts_dict) tuples from extraction.
-
-        Returns:
-            Dict mapping every entity name to its canonical name.
-        """
-        # Collect unique names grouped by type (including for_condition values)
-        names_by_type: dict[str, set[str]] = {}
-        for _, facts in all_facts:
-            for item in facts.get("items", []):
-                entity_type = item.get("type", "")
-                name = item.get("name", "")
-                if entity_type and name:
-                    names_by_type.setdefault(entity_type, set()).add(name)
-                # for_condition values are condition names
-                for_condition = item.get("for_condition")
-                if for_condition:
-                    names_by_type.setdefault("condition", set()).add(for_condition)
-
-        # Convert sets to sorted lists for deterministic hashing
-        names_input = {t: sorted(names) for t, names in sorted(names_by_type.items())}
-
-        total_names = sum(len(v) for v in names_input.values())
-        if total_names == 0:
-            return {}
-
-        # Check cache
-        cache_path = self.OUTPUT_PATH / "entity_resolution.json"
-        prompt_text = self._prompt("resolve_entities.system_prompt")
-        cache_key = short_hash(json.dumps(names_input, sort_keys=True) + prompt_text)
-
-        if cache_path.exists():
-            try:
-                cached = json.loads(cache_path.read_text(encoding="utf-8"))
-                if cached.get("_cache_key") == cache_key:
-                    mapping = cached["mapping"]
-                    unique_canonical = len(set(mapping.values()))
-                    self.logger.info(
-                        "Entity resolution (cached): %d names → %d canonical names",
-                        len(mapping),
-                        unique_canonical,
-                    )
-                    return mapping
-            except (json.JSONDecodeError, IOError, KeyError):
-                pass
-
-        # Call LLM
-        self.logger.info(
-            "Resolving entity names: %d unique names across %d types",
-            total_names,
-            len(names_input),
-        )
-        response = self.llm["status"](
-            [
-                {"role": "system", "content": prompt_text},
-                {"role": "user", "content": json.dumps(names_input)},
-            ],
-            max_tokens=4096,
-            temperature=0.0,
-        )
-
-        try:
-            result = self._parse_json_response(response)
-            mapping = result.get("mapping", {})
-        except (json.JSONDecodeError, KeyError) as e:
-            self.logger.error("Entity resolution JSON parse failed: %s", e)
-            mapping = {}
-
-        # Validate: every input name must appear; add identity mappings for missing
-        all_names = {name for names in names_input.values() for name in names}
-        for name in all_names:
-            if name not in mapping:
-                mapping[name] = name
-
-        # Cache the result
-        cache_data = {"_cache_key": cache_key, "mapping": mapping}
-        cache_path.write_text(json.dumps(cache_data, indent=2), encoding="utf-8")
-
-        unique_canonical = len(set(mapping.values()))
-        self.logger.info(
-            "Entity resolution: %d names → %d canonical names",
-            len(mapping),
-            unique_canonical,
-        )
-
-        return mapping
-
-    def _get_chronological_entries(self) -> list[tuple[str, str]]:
-        """Get all processed entries sorted chronologically (oldest first).
-
-        Returns:
-            List of (date, content) tuples, sorted by date ascending.
-        """
-        entries = []
-        for path in self.entries_dir.glob("*.processed.md"):
-            date = path.stem.split(".")[0]
-            content = self._read_without_deps_comment(path)
-            entries.append((date, content))
-        return sorted(entries, key=lambda x: x[0])  # Oldest first
 
     # --------------------------------------------------------------
     # Section processing (one dated section → validated markdown)
@@ -1551,56 +1136,6 @@ class HealthLogProcessor:
 
 
 # --------------------------------------------------------------------------------------
-# Audit template generation
-# --------------------------------------------------------------------------------------
-
-
-def generate_audit_template(config: Config, logger: logging.Logger) -> Path | None:
-    """Generate an audit template from existing entity registry.
-
-    Reads the current entities.json and generates a markdown template
-    listing all active entities with their appropriate stop events.
-
-    Args:
-        config: Application configuration
-        logger: Logger instance
-
-    Returns:
-        Path to generated audit file, or None if no entities found
-    """
-    entities_path = config.output_path / "entities.json"
-
-    if not entities_path.exists():
-        logger.error("No entities.json found at %s", entities_path)
-        logger.error("Run processing first to build the entity registry")
-        return None
-
-    # Load existing registry
-    try:
-        data = json.loads(entities_path.read_text(encoding="utf-8"))
-        registry = EntityRegistry.from_dict(data)
-    except (json.JSONDecodeError, IOError) as e:
-        logger.error("Failed to load entities.json: %s", e)
-        return None
-
-    # Check if there are any active entities
-    active_count = sum(1 for e in registry.entities.values() if e.active)
-    if active_count == 0:
-        logger.info("No active entities found - nothing to audit")
-        return None
-
-    # Generate audit template
-    template_content = registry.generate_audit_template()
-
-    # Save to output directory
-    audit_path = config.output_path / "audit_template.md"
-    audit_path.write_text(template_content, encoding="utf-8")
-
-    logger.info("Generated audit template with %d active entities", active_count)
-    return audit_path
-
-
-# --------------------------------------------------------------------------------------
 # CLI entry point
 # --------------------------------------------------------------------------------------
 
@@ -1608,13 +1143,12 @@ def generate_audit_template(config: Config, logger: logging.Logger) -> Path | No
 def main() -> None:
     """Run the processor using configuration from profile."""
     parser = argparse.ArgumentParser(
-        description="Process health log entries and extract structured data.",
+        description="Process health log entries and generate structured markdown output.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   uv run python main.py --profile tiago
   uv run python main.py --profile tiago --force-reprocess
-  uv run python main.py --profile tiago --generate-audit
   uv run python main.py --list-profiles
         """,
     )
@@ -1634,11 +1168,7 @@ Examples:
         action="store_true",
         help="Clear all cached outputs and reprocess everything from scratch",
     )
-    parser.add_argument(
-        "--generate-audit",
-        action="store_true",
-        help="Generate audit template only (without running full processing)",
-    )
+
     parser.add_argument(
         "--env",
         type=str,
@@ -1716,19 +1246,6 @@ Examples:
         max_cpu = _os.cpu_count() or 8
         config.max_workers = max(1, min(args.workers, max_cpu))
 
-    # Handle --generate-audit flag: generate audit template and exit
-    if args.generate_audit:
-        audit_path = generate_audit_template(config, logger)
-        if audit_path:
-            print(f"Generated audit template: {audit_path}")
-            print()
-            print("Next steps:")
-            print("1. Edit the file - DELETE entries for items still active")
-            print("2. KEEP entries for items you want to stop/resolve")
-            print("3. Add the content to your health log")
-            print("4. Re-run processing to apply changes")
-        sys.exit(0)
-
     # Handle --force-reprocess flag: clear cached outputs
     if args.force_reprocess:
         output_path = config.output_path
@@ -1741,8 +1258,6 @@ Examples:
                 "*.labs.md",
                 "*.exams.md",
                 "*.failed.md",
-                "*.extracted.json",
-                "*.failed.json",
             ]
             deleted = 0
             for pattern in patterns:
@@ -1753,7 +1268,7 @@ Examples:
                 logger.info("Cleared %d generated files from %s", deleted, entries_dir)
 
         # Delete primary output files
-        for filename in ["health_log.md", "entity_resolution.json"]:
+        for filename in ["health_log.md"]:
             filepath = output_path / filename
             if filepath.exists():
                 filepath.unlink()
@@ -1765,7 +1280,15 @@ Examples:
             state_file.unlink()
 
         # Delete legacy files if they exist
-        for legacy_file in ["health_timeline.csv", "reports"]:
+        for legacy_file in [
+            "health_timeline.csv",
+            "reports",
+            "entity_resolution.json",
+            "current.yaml",
+            "history.csv",
+            "entities.json",
+            "audit_template.md",
+        ]:
             legacy_path = output_path / legacy_file
             if legacy_path.exists():
                 if legacy_path.is_dir():
