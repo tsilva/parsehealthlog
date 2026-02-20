@@ -15,17 +15,12 @@ health-log-parser is a data extraction and curation tool that transforms unstruc
 
 **What it produces:**
 - **`health_log.md`** — All processed entries (newest to oldest) with labs and exams integrated
-- **`current.yaml`** — Active conditions, medications, supplements, and pending TODOs
-- **`history.csv`** — Chronological event log with entity IDs linking related events
-- **`entities.json`** — Single source of truth for all tracked health entities
 
 The tool processes, validates, and enriches health log entries. Reports, summaries, and recommendations are left to downstream consumers of the structured data.
 
 ## Features
 
 - **Parallel processing** of hundreds of journal entries
-- **Entity tracking** with active/inactive state, entity reactivation, and relationship linking
-- **LLM entity resolution** to deduplicate spelling variants, plurals, and abbreviations
 - **Lab result integration** with automatic interpretation
 - **Hash-based caching** for efficient incremental rebuilds
 - **Multi-model support** via OpenRouter (GPT-4, Claude, etc.)
@@ -59,14 +54,9 @@ uv run python main.py --profile myprofile
 ```
 OUTPUT_PATH/
 ├── health_log.md            # PRIMARY: All entries (newest to oldest)
-├── current.yaml             # PRIMARY: Active state for downstream consumers
-├── history.csv              # PRIMARY: Flat event log with entity IDs
-├── entities.json            # PRIMARY: Entity registry (source of truth)
-├── entity_resolution.json   # INTERMEDIATE: Cached entity name mapping
 └── entries/                 # INTERMEDIATE (kept for caching)
     ├── YYYY-MM-DD.raw.md
     ├── YYYY-MM-DD.processed.md
-    ├── YYYY-MM-DD.extracted.json
     └── YYYY-MM-DD.labs.md
 ```
 

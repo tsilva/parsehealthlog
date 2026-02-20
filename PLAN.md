@@ -13,10 +13,10 @@ This document outlines a systematic plan to improve the health-log-parser codeba
 **Problem:** README.md and docs/pipeline.md describe outputs (`current.yaml`, `history.csv`, `entities.json`) that don't exist in the current codebase.
 
 **Tasks:**
-- [ ] Audit all documented outputs vs actual outputs
-- [ ] Update README.md to reflect actual current behavior
-- [ ] Update docs/pipeline.md to remove references to unimplemented features
-- [ ] Add "Future Features" section for planned but not yet implemented outputs
+- [x] Audit all documented outputs vs actual outputs
+- [x] Update README.md to reflect actual current behavior
+- [x] Update docs/pipeline.md to remove references to unimplemented features
+- [x] Add "Future Features" section for planned but not yet implemented outputs
 
 **Acceptance Criteria:**
 - Documentation accurately describes what the tool currently produces
