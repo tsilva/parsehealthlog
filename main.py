@@ -33,15 +33,16 @@ from dotenv import load_dotenv
 from pathlib import Path as _Path
 import sys as _sys
 
+
 def _load_dotenv_with_env() -> str | None:
     """Load .env file, or .env.{name} if --env flag is specified."""
     env_name = None
     for i, arg in enumerate(_sys.argv):
-        if arg == '--env' and i + 1 < len(_sys.argv):
+        if arg == "--env" and i + 1 < len(_sys.argv):
             env_name = _sys.argv[i + 1]
             break
-        if arg.startswith('--env='):
-            env_name = arg.split('=', 1)[1]
+        if arg.startswith("--env="):
+            env_name = arg.split("=", 1)[1]
             break
 
     if env_name:
@@ -53,6 +54,7 @@ def _load_dotenv_with_env() -> str | None:
     else:
         load_dotenv(override=True)
     return env_name
+
 
 _load_dotenv_with_env()
 
@@ -73,7 +75,12 @@ from typing import Final
 import pandas as pd
 from dateutil.parser import parse as date_parse
 from openai import OpenAI, APIError, APIConnectionError, RateLimitError, APITimeoutError
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+)
 from tqdm import tqdm
 
 from config import Config, ProfileConfig, check_api_accessibility
@@ -147,6 +154,7 @@ LAB_SECTION_HEADER: Final = "Lab test results:"
 MEDICAL_EXAMS_SECTION_HEADER: Final = "Medical exam results:"
 RESET_STATE_MARKER: Final = "<!-- RESET_STATE -->"
 
+
 def load_prompt(name: str) -> str:
     path = PROMPTS_DIR / f"{name}.md"
     if not path.exists():
@@ -154,7 +162,9 @@ def load_prompt(name: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def short_hash(text: str) -> str:  # 12-char SHA-256 hex prefix (48 bits, collision-resistant)
+def short_hash(
+    text: str,
+) -> str:  # 12-char SHA-256 hex prefix (48 bits, collision-resistant)
     return sha256(text.encode()).hexdigest()[:12]
 
 
@@ -195,14 +205,18 @@ def extract_date(section: str) -> str:
     """
     lines = section.strip().splitlines()
     if not lines:
-        raise DateExtractionError("Cannot extract date from empty section", section=section)
+        raise DateExtractionError(
+            "Cannot extract date from empty section", section=section
+        )
     header = lines[0].lstrip("#").replace("–", "-").replace("—", "-")
     for token in re.split(r"\s+", header):
         try:
             return date_parse(token, fuzzy=False).strftime("%Y-%m-%d")
         except ValueError:
             continue
-    raise DateExtractionError(f"No valid date found in header: {header}", section=section)
+    raise DateExtractionError(
+        f"No valid date found in header: {header}", section=section
+    )
 
 
 def strip_date_header(section: str) -> str:
@@ -253,8 +267,8 @@ def normalize_markdown_headers(content: str, target_base_level: int) -> str:
     if not content.strip():
         return content
 
-    lines = content.split('\n')
-    header_pattern = re.compile(r'^(#{1,6})\s+(.+)$')
+    lines = content.split("\n")
+    header_pattern = re.compile(r"^(#{1,6})\s+(.+)$")
     min_level = 7  # Higher than max possible (6)
 
     for line in lines:
@@ -274,11 +288,11 @@ def normalize_markdown_headers(content: str, target_base_level: int) -> str:
         match = header_pattern.match(line)
         if match:
             new_level = max(1, min(6, len(match.group(1)) + offset))
-            result_lines.append('#' * new_level + ' ' + match.group(2))
+            result_lines.append("#" * new_level + " " + match.group(2))
         else:
             result_lines.append(line)
 
-    return '\n'.join(result_lines)
+    return "\n".join(result_lines)
 
 
 # --------------------------------------------------------------------------------------
@@ -296,10 +310,18 @@ class LLM:
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=60),
-        retry=retry_if_exception_type((APIError, APIConnectionError, RateLimitError, APITimeoutError)),
+        retry=retry_if_exception_type(
+            (APIError, APIConnectionError, RateLimitError, APITimeoutError)
+        ),
         reraise=True,
     )
-    def __call__(self, messages: list[dict[str, str]], *, max_tokens: int = 2048, temperature: float = 0.0) -> str:
+    def __call__(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        max_tokens: int = 2048,
+        temperature: float = 0.0,
+    ) -> str:
         resp = self.client.chat.completions.create(
             model=self.model,
             messages=messages,
@@ -340,7 +362,10 @@ class HealthLogProcessor:
 
         # OpenAI client + per-role models
         self.client = OpenAI(base_url=config.base_url, api_key=config.api_key)
-        self.llm = {role: LLM(self.client, config.model_id) for role in ("process", "validate", "status")}
+        self.llm = {
+            role: LLM(self.client, config.model_id)
+            for role in ("process", "validate", "status")
+        }
 
         # Lab data per date – populated lazily
         self.labs_by_date: dict[str, pd.DataFrame] = {}
@@ -368,7 +393,9 @@ class HealthLogProcessor:
             "resolve_entities.system_prompt",
         ]
 
-        missing = [p for p in required_prompts if not (PROMPTS_DIR / f"{p}.md").exists()]
+        missing = [
+            p for p in required_prompts if not (PROMPTS_DIR / f"{p}.md").exists()
+        ]
         if missing:
             raise PromptError(f"Missing required prompt files: {', '.join(missing)}")
 
@@ -428,7 +455,9 @@ class HealthLogProcessor:
             "sections_total": state.get("sections_total", 0),
             "sections_processed": len(processed_files),
             "sections_failed": [f.stem.replace(".failed", "") for f in failed_files],
-            "extractions_failed": [f.stem.replace(".failed", "") for f in extraction_failed_files],
+            "extractions_failed": [
+                f.stem.replace(".failed", "") for f in extraction_failed_files
+            ],
             "reports_generated": state.get("reports_generated", []),
         }
 
@@ -442,22 +471,24 @@ class HealthLogProcessor:
         if not text:
             raise json.JSONDecodeError("Empty response from LLM", "", 0)
         # Match ```json ... ``` or ``` ... ``` (handles trailing whitespace/newlines)
-        match = re.match(r'^```(?:json)?\s*\n(.*)\n```\s*$', text, re.DOTALL)
+        match = re.match(r"^```(?:json)?\s*\n(.*)\n```\s*$", text, re.DOTALL)
         if match:
             text = match.group(1).strip()
         # Fallback: try to extract JSON object if it starts with { and ends with }
-        elif text.startswith('```'):
+        elif text.startswith("```"):
             # Code block without proper closing - try to extract JSON anyway
-            lines = text.split('\n')
-            if lines[0].startswith('```'):
+            lines = text.split("\n")
+            if lines[0].startswith("```"):
                 lines = lines[1:]  # Skip opening fence
             # Find where JSON ends (last closing brace)
-            json_text = '\n'.join(lines)
-            if '```' in json_text:
-                json_text = json_text.split('```')[0]
+            json_text = "\n".join(lines)
+            if "```" in json_text:
+                json_text = json_text.split("```")[0]
             text = json_text.strip()
         if not text:
-            raise json.JSONDecodeError("Empty JSON content after stripping code block", "", 0)
+            raise json.JSONDecodeError(
+                "Empty JSON content after stripping code block", "", 0
+            )
         return json.loads(text)
 
     # ------------------------------------------------------------------
@@ -493,7 +524,9 @@ class HealthLogProcessor:
             # Check if processing needed based on dependencies
             labs_content = ""
             if date in self.labs_by_date and not self.labs_by_date[date].empty:
-                labs_content = f"{LAB_SECTION_HEADER}\n{format_labs(self.labs_by_date[date])}\n"
+                labs_content = (
+                    f"{LAB_SECTION_HEADER}\n{format_labs(self.labs_by_date[date])}\n"
+                )
 
             exams_content = ""
             if date in self.medical_exams_by_date and self.medical_exams_by_date[date]:
@@ -509,7 +542,9 @@ class HealthLogProcessor:
         # Process (potentially in parallel)
         max_workers = self.config.max_workers
         failed: list[str] = []
-        with ThreadPoolExecutor(max_workers=max_workers) as ex, tqdm(total=len(to_process), desc="Processing") as bar:
+        with ThreadPoolExecutor(max_workers=max_workers) as ex, tqdm(
+            total=len(to_process), desc="Processing"
+        ) as bar:
             futures = {ex.submit(self._process_section, sec): sec for sec in to_process}
             for fut in as_completed(futures):
                 try:
@@ -523,7 +558,9 @@ class HealthLogProcessor:
                         date = extract_date(section)
                     except Exception:
                         date = "(unknown date)"
-                    self.logger.error("Exception processing section %s: %s", date, e, exc_info=True)
+                    self.logger.error(
+                        "Exception processing section %s: %s", date, e, exc_info=True
+                    )
                     failed.append(date)
                 bar.update(1)
 
@@ -572,7 +609,9 @@ class HealthLogProcessor:
         # Surface extraction failures prominently
         extraction_failed_files = list(self.entries_dir.glob("*.failed.json"))
         if extraction_failed_files:
-            dates = sorted(f.stem.replace(".failed", "") for f in extraction_failed_files)
+            dates = sorted(
+                f.stem.replace(".failed", "") for f in extraction_failed_files
+            )
             self.logger.error(
                 "EXTRACTION FAILED for %d entries: %s — see entries/*.failed.json for diagnostics",
                 len(dates),
@@ -646,7 +685,9 @@ class HealthLogProcessor:
                 contents.append(self._read_without_deps_comment(path))
         return short_hash("\n\n".join(contents)) if contents else ""
 
-    def _get_section_dependencies(self, section: str, labs_content: str, exams_content: str = "") -> dict[str, str]:
+    def _get_section_dependencies(
+        self, section: str, labs_content: str, exams_content: str = ""
+    ) -> dict[str, str]:
         """Compute all dependencies for a processed section."""
         return {
             "raw": short_hash(section),
@@ -656,7 +697,9 @@ class HealthLogProcessor:
             "validate_prompt": self._hash_prompt("validate.system_prompt"),
         }
 
-    def _check_needs_regeneration(self, path: Path, expected_deps: dict[str, str]) -> bool:
+    def _check_needs_regeneration(
+        self, path: Path, expected_deps: dict[str, str]
+    ) -> bool:
         """Check if a file needs regeneration based on its dependencies.
 
         Returns True if file doesn't exist or dependencies have changed.
@@ -683,11 +726,56 @@ class HealthLogProcessor:
     # Entity Registry building (deterministic state machine)
     # --------------------------------------------------------------
 
+    def _extract_facts_parallel(
+        self,
+        entries: list[tuple[str, str]],
+        max_workers: int,
+    ) -> tuple[list[tuple[str, dict]], list[str]]:
+        """Extract facts from all entries in parallel.
+
+        Args:
+            entries: List of (date, content) tuples
+            max_workers: Number of parallel workers
+
+        Returns:
+            Tuple of (successful_facts, failed_dates)
+        """
+        all_facts: list[tuple[str, dict]] = []
+        extraction_failures: list[str] = []
+
+        with ThreadPoolExecutor(max_workers=max_workers) as ex, tqdm(
+            total=len(entries), desc="Extracting facts"
+        ) as bar:
+            # Submit all work
+            future_to_date = {
+                ex.submit(self._extract_entry_facts, date, content): date
+                for date, content in entries
+            }
+
+            # Collect results as they complete
+            for future in as_completed(future_to_date):
+                date = future_to_date[future]
+                try:
+                    facts = future.result()
+                    if facts:
+                        all_facts.append((date, facts))
+                    else:
+                        extraction_failures.append(date)
+                except Exception as e:
+                    self.logger.error("Extraction failed for %s: %s", date, e)
+                    extraction_failures.append(date)
+                bar.update(1)
+
+        # Sort by date for chronological state machine application
+        all_facts.sort(key=lambda x: x[0])
+
+        return all_facts, extraction_failures
+
     def _build_entity_registry(self) -> tuple[EntityRegistry, list[str]]:
         """Build entity registry from extracted facts.
 
         Three-phase approach:
-        1. Extract facts from each entry (LLM, cached per entry)
+        1. Extract facts from each entry (LLM, cached per entry, parallel)
         2. Resolve entity names across all facts (LLM, cached)
         3. Apply resolved facts to registry (deterministic)
 
@@ -702,16 +790,10 @@ class HealthLogProcessor:
             self.logger.warning("No processed entries found for registry")
             return EntityRegistry(), []
 
-        # Phase 1: Extract facts from each entry
-        all_facts: list[tuple[str, dict]] = []
-        extraction_failures: list[str] = []
-
-        for date, content in tqdm(entries, desc="Extracting facts"):
-            facts = self._extract_entry_facts(date, content)
-            if not facts:
-                extraction_failures.append(date)
-                continue
-            all_facts.append((date, facts))
+        # Phase 1: Extract facts from each entry (parallel)
+        all_facts, extraction_failures = self._extract_facts_parallel(
+            entries, self.config.max_workers
+        )
 
         if extraction_failures:
             self.logger.warning(
@@ -730,12 +812,15 @@ class HealthLogProcessor:
         for date, facts in all_facts:
             # Check for state reset marker in RAW content (LLM strips HTML comments)
             raw_path = self.entries_dir / f"{date}.raw.md"
-            raw_content = raw_path.read_text(encoding="utf-8") if raw_path.exists() else ""
+            raw_content = (
+                raw_path.read_text(encoding="utf-8") if raw_path.exists() else ""
+            )
             if RESET_STATE_MARKER in raw_content:
                 reset_events = registry.reset_active_entities(date)
                 self.logger.info(
                     "State reset at %s: %d entities deactivated",
-                    date, len(reset_events)
+                    date,
+                    len(reset_events),
                 )
 
             for item in facts.get("items", []):
@@ -751,7 +836,11 @@ class HealthLogProcessor:
 
                 # Apply name resolution
                 resolved_name = name_mapping.get(name, name)
-                resolved_condition = name_mapping.get(for_condition, for_condition) if for_condition else for_condition
+                resolved_condition = (
+                    name_mapping.get(for_condition, for_condition)
+                    if for_condition
+                    else for_condition
+                )
 
                 _, _, warnings = registry.apply_event(
                     date=date,
@@ -831,7 +920,9 @@ class HealthLogProcessor:
                 last_errors = [f"JSON parse error: {e}"]
                 self.logger.error(
                     "Extraction JSON parse failed (%s attempt %d): %s",
-                    date, attempt, e,
+                    date,
+                    attempt,
+                    e,
                 )
                 continue
 
@@ -852,7 +943,9 @@ class HealthLogProcessor:
             last_errors = validation_errors
             self.logger.error(
                 "Extraction validation failed (%s attempt %d): %s",
-                date, attempt, "; ".join(validation_errors),
+                date,
+                attempt,
+                "; ".join(validation_errors),
             )
 
         # All attempts failed — write diagnostic file
@@ -933,14 +1026,19 @@ class HealthLogProcessor:
                     unique_canonical = len(set(mapping.values()))
                     self.logger.info(
                         "Entity resolution (cached): %d names → %d canonical names",
-                        len(mapping), unique_canonical,
+                        len(mapping),
+                        unique_canonical,
                     )
                     return mapping
             except (json.JSONDecodeError, IOError, KeyError):
                 pass
 
         # Call LLM
-        self.logger.info("Resolving entity names: %d unique names across %d types", total_names, len(names_input))
+        self.logger.info(
+            "Resolving entity names: %d unique names across %d types",
+            total_names,
+            len(names_input),
+        )
         response = self.llm["status"](
             [
                 {"role": "system", "content": prompt_text},
@@ -970,7 +1068,8 @@ class HealthLogProcessor:
         unique_canonical = len(set(mapping.values()))
         self.logger.info(
             "Entity resolution: %d names → %d canonical names",
-            len(mapping), unique_canonical,
+            len(mapping),
+            unique_canonical,
         )
 
         return mapping
@@ -1001,7 +1100,9 @@ class HealthLogProcessor:
         # Get labs content for this date
         labs_content = ""
         if date in self.labs_by_date and not self.labs_by_date[date].empty:
-            labs_content = f"{LAB_SECTION_HEADER}\n{format_labs(self.labs_by_date[date])}\n"
+            labs_content = (
+                f"{LAB_SECTION_HEADER}\n{format_labs(self.labs_by_date[date])}\n"
+            )
 
         # Get medical exams content for this date
         exams_content = ""
@@ -1022,21 +1123,28 @@ class HealthLogProcessor:
                 {"role": "user", "content": section_content},
             ]
             if attempt > 1 and last_validation:
-                messages.append({
-                    "role": "assistant",
-                    "content": last_processed,
-                })
-                messages.append({
-                    "role": "user",
-                    "content": f"Your output was rejected because it was missing details:\n{last_validation}\n\nPlease try again, preserving ALL details including dosages, brand names, and additional ingredients.",
-                })
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": last_processed,
+                    }
+                )
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": f"Your output was rejected because it was missing details:\n{last_validation}\n\nPlease try again, preserving ALL details including dosages, brand names, and additional ingredients.",
+                    }
+                )
             processed = self.llm["process"](messages)
             last_processed = processed
 
             # 2) VALIDATE
             validation = self.llm["validate"](
                 [
-                    {"role": "system", "content": self._prompt("validate.system_prompt")},
+                    {
+                        "role": "system",
+                        "content": self._prompt("validate.system_prompt"),
+                    },
                     {
                         "role": "user",
                         "content": self._prompt("validate.user_prompt").format(
@@ -1057,11 +1165,15 @@ class HealthLogProcessor:
 
                 # Write with dependency hash in first line
                 deps_comment = format_deps_comment(deps)
-                processed_path.write_text(f"{deps_comment}\n{final_content}", encoding="utf-8")
+                processed_path.write_text(
+                    f"{deps_comment}\n{final_content}", encoding="utf-8"
+                )
 
                 return date, True
 
-            self.logger.error("Validation failed (%s attempt %d): %s", date, attempt, validation)
+            self.logger.error(
+                "Validation failed (%s attempt %d): %s", date, attempt, validation
+            )
 
         # Save diagnostic info for failed validation
         failed_path = self.entries_dir / f"{date}.failed.md"
@@ -1108,12 +1220,12 @@ class HealthLogProcessor:
             )
 
         # Content before first dated section is ignored
-        body = text[match.start():]
+        body = text[match.start() :]
 
         # Split the remainder on dated section headers
         sections = [
             s.strip()
-            for s in re.split(fr"(?={date_regex})", body, flags=re.MULTILINE)
+            for s in re.split(rf"(?={date_regex})", body, flags=re.MULTILINE)
             if s.strip()
         ]
 
@@ -1134,9 +1246,13 @@ class HealthLogProcessor:
         if self.config.labs_parser_output_path:
             labs_path = self.config.labs_parser_output_path
             if not labs_path.exists():
-                self.logger.warning("LABS_PARSER_OUTPUT_PATH does not exist: %s", labs_path)
+                self.logger.warning(
+                    "LABS_PARSER_OUTPUT_PATH does not exist: %s", labs_path
+                )
             elif not labs_path.is_dir():
-                self.logger.warning("LABS_PARSER_OUTPUT_PATH is not a directory: %s", labs_path)
+                self.logger.warning(
+                    "LABS_PARSER_OUTPUT_PATH is not a directory: %s", labs_path
+                )
             else:
                 agg_csv = labs_path / "all.csv"
                 if agg_csv.exists():
@@ -1144,7 +1260,9 @@ class HealthLogProcessor:
                         lab_dfs.append(pd.read_csv(agg_csv))
                         self.logger.info("Loaded aggregated labs from %s", agg_csv)
                     except (pd.errors.ParserError, pd.errors.EmptyDataError) as e:
-                        self.logger.error("Failed to parse aggregated labs CSV %s: %s", agg_csv, e)
+                        self.logger.error(
+                            "Failed to parse aggregated labs CSV %s: %s", agg_csv, e
+                        )
 
         if not lab_dfs:
             self.logger.info("No lab CSV files found")
@@ -1174,7 +1292,9 @@ class HealthLogProcessor:
             "reference_max_primary": "reference_max_normalized",
         }
         # Rename columns if they exist
-        labs_df = labs_df.rename(columns={k: v for k, v in column_mappings.items() if k in labs_df.columns})
+        labs_df = labs_df.rename(
+            columns={k: v for k, v in column_mappings.items() if k in labs_df.columns}
+        )
 
         # Validate required columns exist
         required_cols = ["date", "lab_name_standardized"]
@@ -1215,7 +1335,11 @@ class HealthLogProcessor:
         final_count = len(labs_df)
 
         if initial_count != final_count:
-            self.logger.info("Lab data: %d rows loaded, %d after filtering", initial_count, final_count)
+            self.logger.info(
+                "Lab data: %d rows loaded, %d after filtering",
+                initial_count,
+                final_count,
+            )
 
         self.labs_by_date = {d: df for d, df in labs_df.groupby("date")}
 
@@ -1232,10 +1356,14 @@ class HealthLogProcessor:
 
         exams_path = self.config.medical_exams_parser_output_path
         if not exams_path.exists():
-            self.logger.warning("MEDICAL_EXAMS_PARSER_OUTPUT_PATH does not exist: %s", exams_path)
+            self.logger.warning(
+                "MEDICAL_EXAMS_PARSER_OUTPUT_PATH does not exist: %s", exams_path
+            )
             return
         if not exams_path.is_dir():
-            self.logger.warning("MEDICAL_EXAMS_PARSER_OUTPUT_PATH is not a directory: %s", exams_path)
+            self.logger.warning(
+                "MEDICAL_EXAMS_PARSER_OUTPUT_PATH is not a directory: %s", exams_path
+            )
             return
 
         # Date pattern for directory names: YYYY-MM-DD - description
@@ -1253,8 +1381,7 @@ class HealthLogProcessor:
             match = date_pattern.match(subdir.name)
             if not match:
                 self.logger.debug(
-                    "Skipping directory without date prefix: %s",
-                    subdir.name
+                    "Skipping directory without date prefix: %s", subdir.name
                 )
                 skipped_count += 1
                 continue
@@ -1283,12 +1410,13 @@ class HealthLogProcessor:
 
         if skipped_count > 0:
             self.logger.warning(
-                "Skipped %d directories without valid date prefix",
-                skipped_count
+                "Skipped %d directories without valid date prefix", skipped_count
             )
         self.logger.info(
             "Loaded %d medical exam summaries for %d dates from %s",
-            loaded_count, len(exams_by_date), exams_path
+            loaded_count,
+            len(exams_by_date),
+            exams_path,
         )
 
     def _save_collated_health_log(self) -> None:
@@ -1352,7 +1480,9 @@ class HealthLogProcessor:
         log_dates = {extract_date(sec) for sec in sections}
 
         # Find dates with labs or exams but no entries
-        data_dates = set(self.labs_by_date.keys()) | set(self.medical_exams_by_date.keys())
+        data_dates = set(self.labs_by_date.keys()) | set(
+            self.medical_exams_by_date.keys()
+        )
         missing_dates = sorted(data_dates - log_dates)
 
         if not missing_dates:
@@ -1400,7 +1530,9 @@ class HealthLogProcessor:
 
             processed_content = "\n\n".join(content_parts)
             deps_comment = format_deps_comment(deps)
-            processed_path.write_text(f"{deps_comment}\n{processed_content}", encoding="utf-8")
+            processed_path.write_text(
+                f"{deps_comment}\n{processed_content}", encoding="utf-8"
+            )
 
             # Describe what data types are present
             data_types = []
@@ -1411,7 +1543,7 @@ class HealthLogProcessor:
             self.logger.info(
                 "Created entry for %s (%s, no health log entry)",
                 date,
-                " + ".join(data_types)
+                " + ".join(data_types),
             )
 
         # Return original sections unchanged (placeholder files were created directly)
@@ -1580,6 +1712,7 @@ Examples:
     # CLI --workers overrides profile/env setting
     if args.workers is not None:
         import os as _os
+
         max_cpu = _os.cpu_count() or 8
         config.max_workers = max(1, min(args.workers, max_cpu))
 
@@ -1603,7 +1736,14 @@ Examples:
 
         # Delete all generated entry files
         if entries_dir.exists():
-            patterns = ["*.processed.md", "*.labs.md", "*.exams.md", "*.failed.md", "*.extracted.json", "*.failed.json"]
+            patterns = [
+                "*.processed.md",
+                "*.labs.md",
+                "*.exams.md",
+                "*.failed.md",
+                "*.extracted.json",
+                "*.failed.json",
+            ]
             deleted = 0
             for pattern in patterns:
                 for f in entries_dir.glob(pattern):
