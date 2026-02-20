@@ -499,6 +499,13 @@ class HealthLogProcessor:
         self._load_labs()
         self._load_medical_exams()
 
+        # Delete orphaned entries for dates no longer in source log
+        orphaned = self._get_orphaned_entries(sections)
+        if orphaned:
+            for orphan_file in orphaned:
+                orphan_file.unlink()
+                self.logger.info("Deleted orphaned entry file: %s", orphan_file.name)
+
         # Create placeholder sections for dates with labs/exams but no entries
         sections = self._create_placeholder_sections(sections)
 
@@ -1051,6 +1058,56 @@ class HealthLogProcessor:
             collated_path,
         )
 
+    def _get_orphaned_entries(self, sections: list[str]) -> list[Path]:
+        """Find entry files for dates that no longer exist in the source log.
+
+        Compares dates from source log sections against existing entry files
+        in the entries directory. Returns list of orphaned file paths that
+        should be deleted.
+
+        Args:
+            sections: List of section strings from the source health log.
+
+        Returns:
+            List of Path objects for orphaned entry files.
+        """
+        # Extract all dates currently in the source log
+        source_dates = set()
+        for sec in sections:
+            try:
+                date = extract_date(sec)
+                source_dates.add(date)
+            except DateExtractionError:
+                continue
+
+        # Also include dates from labs and exams (these are valid even without log entries)
+        data_dates = set(self.labs_by_date.keys()) | set(
+            self.medical_exams_by_date.keys()
+        )
+        valid_dates = source_dates | data_dates
+
+        # Find orphaned entry files
+        orphaned: list[Path] = []
+        entry_patterns = [
+            "*.raw.md",
+            "*.processed.md",
+            "*.labs.md",
+            "*.exams.md",
+            "*.failed.md",
+            "*.failed.json",
+        ]
+
+        for pattern in entry_patterns:
+            for entry_file in self.entries_dir.glob(pattern):
+                # Extract date from filename (e.g., "2024-01-15.processed.md" -> "2024-01-15")
+                date_match = re.match(r"(\d{4}-\d{2}-\d{2})", entry_file.name)
+                if date_match:
+                    file_date = date_match.group(1)
+                    if file_date not in valid_dates:
+                        orphaned.append(entry_file)
+
+        return orphaned
+
     def _create_placeholder_sections(self, sections: list[str]) -> list[str]:
         """Create entry files directly for dates with labs/exams but no health log entries.
 
@@ -1217,6 +1274,10 @@ class DryRunHealthLogProcessor(HealthLogProcessor):
         self._load_labs()
         self._load_medical_exams()
 
+        # Detect orphaned entries for dates no longer in source log
+        orphaned = self._get_orphaned_entries(sections)
+        self.files_to_delete.extend(orphaned)
+
         # Create placeholder sections for dates with labs/exams but no entries
         sections = self._create_placeholder_sections(sections)
 
@@ -1230,14 +1291,15 @@ class DryRunHealthLogProcessor(HealthLogProcessor):
                     "*.failed.md",
                 ]:
                     for f in self.entries_dir.glob(pattern):
-                        self.files_to_delete.append(f)
+                        if f not in self.files_to_delete:
+                            self.files_to_delete.append(f)
 
             collated_path = self.OUTPUT_PATH / "health_log.md"
-            if collated_path.exists():
+            if collated_path.exists() and collated_path not in self.files_to_delete:
                 self.files_to_delete.append(collated_path)
 
             state_file = self.OUTPUT_PATH / ".state.json"
-            if state_file.exists():
+            if state_file.exists() and state_file not in self.files_to_delete:
                 self.files_to_delete.append(state_file)
 
         # Check each section
