@@ -138,7 +138,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "openai", specifier = ">=1.0.0" },
+    { name = "openai", specifier = ">=1.60.0" },
     { name = "pandas" },
     { name = "python-dateutil" },
     { name = "python-dotenv" },
