@@ -82,7 +82,7 @@ from tenacity import (
 )
 from tqdm import tqdm
 
-from config import Config, ProfileConfig, check_api_accessibility
+from config import Config, ProfileConfig, check_api_accessibility, get_model_pricing
 from exceptions import DateExtractionError, ExtractionError, PromptError
 
 
@@ -1135,6 +1135,214 @@ class HealthLogProcessor:
 
 
 # --------------------------------------------------------------------------------------
+# Dry-run processor
+# --------------------------------------------------------------------------------------
+
+
+class DryRunHealthLogProcessor(HealthLogProcessor):
+    """Dry-run processor that simulates processing without making changes.
+
+    Tracks what would be processed, files that would be created/modified/deleted,
+    and estimates API costs without actually calling LLMs or writing files.
+    """
+
+    def __init__(self, config: Config) -> None:
+        super().__init__(config)
+        self.sections_to_process: list[str] = []
+        self.cache_hits: list[str] = []
+        self.files_to_create: list[Path] = []
+        self.files_to_modify: list[Path] = []
+        self.files_to_delete: list[Path] = []
+        self.estimated_input_tokens: int = 0
+        self.estimated_output_tokens: int = 0
+        self._force_reprocess: bool = False
+
+    def _estimate_tokens(self, text: str) -> int:
+        """Rough token estimate: ~4 characters per token."""
+        return len(text) // 4
+
+    def _process_section(self, section: str) -> tuple[str, bool]:
+        """Track what would be processed without calling LLM."""
+        date = extract_date(section)
+        section_content = strip_date_header(section)
+
+        # Get labs/exams content for token estimation
+        labs_content = ""
+        if date in self.labs_by_date and not self.labs_by_date[date].empty:
+            labs_content = (
+                f"{LAB_SECTION_HEADER}\n{format_labs(self.labs_by_date[date])}\n"
+            )
+
+        exams_content = ""
+        if date in self.medical_exams_by_date and self.medical_exams_by_date[date]:
+            joined_exams = "\n\n".join(self.medical_exams_by_date[date])
+            exams_content = f"{MEDICAL_EXAMS_SECTION_HEADER}\n{joined_exams}\n"
+
+        # Estimate tokens for this section
+        # Process call: system prompt + section content
+        process_prompt = self._prompt("process.system_prompt")
+        self.estimated_input_tokens += self._estimate_tokens(process_prompt)
+        self.estimated_input_tokens += self._estimate_tokens(section_content)
+        self.estimated_input_tokens += self._estimate_tokens(labs_content)
+        self.estimated_input_tokens += self._estimate_tokens(exams_content)
+
+        # Assume output is roughly same size as input for processed content
+        self.estimated_output_tokens += self._estimate_tokens(section_content)
+
+        # Validate call: system prompt + user prompt with both sections
+        validate_prompt = self._prompt("validate.system_prompt")
+        validate_user = self._prompt("validate.user_prompt").format(
+            raw_section=section_content, processed_section=section_content
+        )
+        self.estimated_input_tokens += self._estimate_tokens(validate_prompt)
+        self.estimated_input_tokens += self._estimate_tokens(validate_user)
+        self.estimated_output_tokens += 50  # $OK$ or short validation response
+
+        # Track file that would be created
+        processed_path = self.entries_dir / f"{date}.processed.md"
+        if processed_path.exists():
+            self.files_to_modify.append(processed_path)
+        else:
+            self.files_to_create.append(processed_path)
+
+        return date, True
+
+    def run_dry(self) -> bool:
+        """Simulate processing and return True if changes would be made.
+
+        Returns:
+            bool: True if processing would occur, False if all cache hits.
+        """
+        sections = self._split_sections()
+        self._load_labs()
+        self._load_medical_exams()
+
+        # Create placeholder sections for dates with labs/exams but no entries
+        sections = self._create_placeholder_sections(sections)
+
+        # Track files that would be deleted with --force-reprocess
+        if hasattr(self, "_force_reprocess") and self._force_reprocess:
+            if self.entries_dir.exists():
+                for pattern in [
+                    "*.processed.md",
+                    "*.labs.md",
+                    "*.exams.md",
+                    "*.failed.md",
+                ]:
+                    for f in self.entries_dir.glob(pattern):
+                        self.files_to_delete.append(f)
+
+            collated_path = self.OUTPUT_PATH / "health_log.md"
+            if collated_path.exists():
+                self.files_to_delete.append(collated_path)
+
+            state_file = self.OUTPUT_PATH / ".state.json"
+            if state_file.exists():
+                self.files_to_delete.append(state_file)
+
+        # Check each section
+        for sec in sections:
+            date = extract_date(sec)
+            raw_path = self.entries_dir / f"{date}.raw.md"
+
+            # Track raw file
+            if raw_path.exists():
+                self.files_to_modify.append(raw_path)
+            else:
+                self.files_to_create.append(raw_path)
+
+            # Get labs/exams content
+            labs_content = ""
+            if date in self.labs_by_date and not self.labs_by_date[date].empty:
+                labs_content = (
+                    f"{LAB_SECTION_HEADER}\n{format_labs(self.labs_by_date[date])}\n"
+                )
+
+            exams_content = ""
+            if date in self.medical_exams_by_date and self.medical_exams_by_date[date]:
+                joined_exams = "\n\n".join(self.medical_exams_by_date[date])
+                exams_content = f"{MEDICAL_EXAMS_SECTION_HEADER}\n{joined_exams}\n"
+
+            processed_path = self.entries_dir / f"{date}.processed.md"
+            deps = self._get_section_dependencies(sec, labs_content, exams_content)
+
+            if self._check_needs_regeneration(processed_path, deps):
+                self.sections_to_process.append(date)
+            else:
+                self.cache_hits.append(date)
+
+        # Track lab and exam files
+        for date, df in self.labs_by_date.items():
+            if df.empty:
+                continue
+            lab_path = self.entries_dir / f"{date}.labs.md"
+            if lab_path.exists():
+                self.files_to_modify.append(lab_path)
+            else:
+                self.files_to_create.append(lab_path)
+
+        for date, exams_list in self.medical_exams_by_date.items():
+            if not exams_list:
+                continue
+            exams_path = self.entries_dir / f"{date}.exams.md"
+            if exams_path.exists():
+                self.files_to_modify.append(exams_path)
+            else:
+                self.files_to_create.append(exams_path)
+
+        # Track health_log.md
+        collated_path = self.OUTPUT_PATH / "health_log.md"
+        if collated_path.exists():
+            self.files_to_modify.append(collated_path)
+        else:
+            self.files_to_create.append(collated_path)
+
+        return len(self.sections_to_process) > 0 or len(self.files_to_delete) > 0
+
+    def print_summary(self) -> None:
+        """Print dry-run summary to console."""
+        print("\n" + "=" * 60)
+        print("DRY RUN SUMMARY")
+        print("=" * 60)
+
+        total_sections = len(self.sections_to_process) + len(self.cache_hits)
+        print(
+            f"\nSections: {len(self.sections_to_process)} to process, {len(self.cache_hits)} up-to-date (cache hits)"
+        )
+
+        print(f"\nFiles to create: {len(self.files_to_create)}")
+        print(f"Files to modify: {len(self.files_to_modify)}")
+        print(f"Files to delete: {len(self.files_to_delete)}")
+
+        # Calculate API calls and costs
+        num_sections = len(self.sections_to_process)
+        api_calls = num_sections * 2  # Process + validate per section
+
+        # Account for validation retries (assume avg 1.2 calls per validation)
+        api_calls = int(num_sections * (1 + 1.2))
+
+        print(f"\nEstimated API calls: {api_calls}")
+
+        if num_sections > 0:
+            pricing = get_model_pricing(self.config.model_id)
+            input_cost = (self.estimated_input_tokens / 1_000_000) * pricing["input"]
+            output_cost = (self.estimated_output_tokens / 1_000_000) * pricing["output"]
+            total_cost = input_cost + output_cost
+
+            print(
+                f"Estimated tokens: {self.estimated_input_tokens:,} input, {self.estimated_output_tokens:,} output"
+            )
+            print(f"Estimated cost: ${total_cost:.4f} (model: {self.config.model_id})")
+
+        print("\n" + "-" * 60)
+        if num_sections == 0 and len(self.files_to_delete) == 0:
+            print("No changes needed. All entries are up-to-date.")
+        else:
+            print("Processing required. Remove --dry-run to apply changes.")
+        print("=" * 60 + "\n")
+
+
+# --------------------------------------------------------------------------------------
 # CLI entry point
 # --------------------------------------------------------------------------------------
 
@@ -1180,6 +1388,11 @@ Examples:
         type=int,
         default=None,
         help="Number of parallel processing workers (overrides profile/env setting)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview what would be processed without making any changes",
     )
     args = parser.parse_args()
 
@@ -1294,6 +1507,15 @@ Examples:
     if not check_api_accessibility(config.base_url):
         logger.warning("API base URL is not accessible: %s", config.base_url)
         logger.warning("Processing will likely fail on LLM-dependent tasks.")
+
+    # Handle dry-run mode
+    if args.dry_run:
+        processor = DryRunHealthLogProcessor(config)
+        # Pass force_reprocess flag to processor for tracking deletions
+        processor._force_reprocess = args.force_reprocess
+        changes_needed = processor.run_dry()
+        processor.print_summary()
+        sys.exit(1 if changes_needed else 0)
 
     start = datetime.now()
     HealthLogProcessor(config).run()

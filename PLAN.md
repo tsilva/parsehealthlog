@@ -83,15 +83,16 @@ This document outlines a systematic plan to improve the health-log-parser codeba
 ### 3.1 Add Dry-Run Mode
 **Priority:** High  
 **Effort:** 2-3 hours
+**Status:** ✅ Completed
 
 **Problem:** No way to preview what would change without actually processing.
 
 **Tasks:**
-- [ ] Implement `--dry-run` flag
-- [ ] Show which sections would be processed (cache miss)
-- [ ] Display estimated API calls and costs
-- [ ] List files that would be created/modified/deleted
-- [ ] Return exit code 0 if no changes needed, 1 if processing required
+- [x] Implement `--dry-run` flag
+- [x] Show which sections would be processed (cache miss)
+- [x] Display estimated API calls and costs
+- [x] List files that would be created/modified/deleted
+- [x] Return exit code 0 if no changes needed, 1 if processing required
 
 **Acceptance Criteria:**
 - `--dry-run` performs all steps except LLM calls and file writes
