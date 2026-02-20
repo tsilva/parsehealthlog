@@ -11,7 +11,6 @@ Transforms markdown health journal entries into structured, curated data:
 Output structure:
     OUTPUT_PATH/
     ├─ health_log.md          # PRIMARY: All entries (newest to oldest) with labs/exams
-    ├─ history.csv            # PRIMARY: Chronological event log with entity IDs
     └─ entries/               # INTERMEDIATE (kept for caching)
         ├─ <date>.raw.md
         ├─ <date>.processed.md
@@ -1283,11 +1282,6 @@ Examples:
         for legacy_file in [
             "health_timeline.csv",
             "reports",
-            "entity_resolution.json",
-            "current.yaml",
-            "history.csv",
-            "entities.json",
-            "audit_template.md",
         ]:
             legacy_path = output_path / legacy_file
             if legacy_path.exists():
