@@ -24,14 +24,27 @@ import yaml
 
 
 # Start events: create or reactivate an entity
-START_EVENTS: Final[set[str]] = {"diagnosed", "suspected", "noted", "started", "added", "visit"}
+START_EVENTS: Final[set[str]] = {
+    "diagnosed",
+    "suspected",
+    "noted",
+    "started",
+    "added",
+    "visit",
+}
 
 # Stop events: mark an entity as inactive
 STOP_EVENTS: Final[set[str]] = {"resolved", "stopped", "ended", "completed"}
 
 # Valid entity types (from extraction prompt)
 VALID_ENTITY_TYPES: Final[set[str]] = {
-    "condition", "symptom", "medication", "supplement", "experiment", "provider", "todo",
+    "condition",
+    "symptom",
+    "medication",
+    "supplement",
+    "experiment",
+    "provider",
+    "todo",
 }
 
 # Valid events per entity type (from extraction prompt Events table)
@@ -90,7 +103,11 @@ def validate_extracted_facts(facts: object) -> list[str]:
         event = item.get("event", "")
 
         # Validate type
-        if isinstance(entity_type, str) and entity_type and entity_type not in VALID_ENTITY_TYPES:
+        if (
+            isinstance(entity_type, str)
+            and entity_type
+            and entity_type not in VALID_ENTITY_TYPES
+        ):
             errors.append(
                 f"{prefix}: invalid type '{entity_type}', "
                 f"must be one of {sorted(VALID_ENTITY_TYPES)}"
@@ -133,7 +150,9 @@ class Entity:
     origin: str  # How it started: diagnosed, suspected, noted, started, added, visit
     first_seen: str  # YYYY-MM-DD
     last_updated: str  # YYYY-MM-DD
-    related_to: str | None = None  # Entity ID this relates to (e.g., medication for condition)
+    related_to: str | None = (
+        None  # Entity ID this relates to (e.g., medication for condition)
+    )
 
 
 @dataclass
@@ -156,7 +175,9 @@ class EntityRegistry:
     entities: dict[str, Entity] = field(default_factory=dict)
     history: list[HistoryEvent] = field(default_factory=list)
     _next_id: int = 1
-    _name_index: dict[str, list[str]] = field(default_factory=dict)  # normalized_name -> [entity_ids]
+    _name_index: dict[str, list[str]] = field(
+        default_factory=dict
+    )  # normalized_name -> [entity_ids]
 
     def _normalize_name(self, name: str) -> str:
         """Normalize entity name for matching.
@@ -182,12 +203,16 @@ class EntityRegistry:
         )
 
         # Remove dosage patterns: numbers followed by units
-        name = re.sub(r'\s*\d+\s*(mg|mcg|iu|g|ml|units?)\b', '', name, flags=re.IGNORECASE)
+        name = re.sub(
+            r"\s*\d+\s*(mg|mcg|iu|g|ml|units?)\b", "", name, flags=re.IGNORECASE
+        )
         # Remove PRN, daily, etc.
-        name = re.sub(r'\s*(prn|daily|weekly|monthly|as needed)\b', '', name, flags=re.IGNORECASE)
+        name = re.sub(
+            r"\s*(prn|daily|weekly|monthly|as needed)\b", "", name, flags=re.IGNORECASE
+        )
 
         # Collapse multiple spaces
-        name = re.sub(r'\s+', ' ', name)
+        name = re.sub(r"\s+", " ", name)
 
         return name.strip()
 
@@ -436,7 +461,9 @@ class EntityRegistry:
             result.append(entity)
         return result
 
-    def reset_active_entities(self, date: str, categories: set[str] | None = None) -> list[HistoryEvent]:
+    def reset_active_entities(
+        self, date: str, categories: set[str] | None = None
+    ) -> list[HistoryEvent]:
         """Mark all active entities as inactive (state reset).
 
         Used when an entry contains a RESET_STATE marker, indicating that the
@@ -452,7 +479,13 @@ class EntityRegistry:
             List of history events for the stopped entities
         """
         if categories is None:
-            categories = {"condition", "symptom", "medication", "supplement", "experiment"}
+            categories = {
+                "condition",
+                "symptom",
+                "medication",
+                "supplement",
+                "experiment",
+            }
 
         stop_events = {
             "condition": "resolved",
@@ -510,7 +543,8 @@ class EntityRegistry:
             if entity.entity_type == "condition":
                 # Find treatments for this condition
                 treatments = [
-                    e.id for e in self.entities.values()
+                    e.id
+                    for e in self.entities.values()
                     if e.related_to == entity.id
                     and e.entity_type in ("medication", "supplement")
                     and e.active
@@ -524,27 +558,33 @@ class EntityRegistry:
         # Remove empty sections
         data = {k: v for k, v in data.items() if v or k == "last_updated"}
 
-        return yaml.dump(data, default_flow_style=False, sort_keys=False, allow_unicode=True)
+        return yaml.dump(
+            data, default_flow_style=False, sort_keys=False, allow_unicode=True
+        )
 
     def generate_history_csv(self) -> str:
         """Generate history.csv - flat event log."""
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["Date", "EntityID", "Name", "Type", "Event", "Details", "RelatedEntity"])
+        writer.writerow(
+            ["Date", "EntityID", "Name", "Type", "Event", "Details", "RelatedEntity"]
+        )
 
         # Sort history by date
         sorted_history = sorted(self.history, key=lambda e: e.date)
 
         for event in sorted_history:
-            writer.writerow([
-                event.date,
-                event.entity_id,
-                event.name,
-                event.entity_type,
-                event.event,
-                event.details.replace('\n', ' ').replace('\r', ''),
-                event.related_entity,
-            ])
+            writer.writerow(
+                [
+                    event.date,
+                    event.entity_id,
+                    event.name,
+                    event.entity_type,
+                    event.event,
+                    (event.details or "").replace("\n", " ").replace("\r", ""),
+                    event.related_entity,
+                ]
+            )
 
         return output.getvalue()
 
@@ -608,7 +648,14 @@ class EntityRegistry:
             "todo": "completed",
         }
 
-        section_order = ["condition", "symptom", "medication", "supplement", "experiment", "todo"]
+        section_order = [
+            "condition",
+            "symptom",
+            "medication",
+            "supplement",
+            "experiment",
+            "todo",
+        ]
 
         for entity_type in section_order:
             entities = by_type.get(entity_type, [])
@@ -616,7 +663,9 @@ class EntityRegistry:
                 continue
 
             # Section header
-            section_name = entity_type.title() + ("s" if not entity_type.endswith("s") else "es")
+            section_name = entity_type.title() + (
+                "s" if not entity_type.endswith("s") else "es"
+            )
             lines.append(f"## {section_name}")
             lines.append("")
 
@@ -628,7 +677,10 @@ class EntityRegistry:
                 lines.append(f"- {entity.canonical_name}: {stop_event}")
 
                 # Add metadata as comment
-                metadata_parts = [f"Last: {entity.last_updated}", f"Origin: {entity.origin}"]
+                metadata_parts = [
+                    f"Last: {entity.last_updated}",
+                    f"Origin: {entity.origin}",
+                ]
                 if entity.related_to:
                     related = self.find_entity_by_id(entity.related_to)
                     if related:
@@ -740,6 +792,8 @@ class EntityRegistry:
             )
             registry.history.append(event)
 
-        registry._name_index = {k: list(v) for k, v in data.get("name_index", {}).items()}
+        registry._name_index = {
+            k: list(v) for k, v in data.get("name_index", {}).items()
+        }
 
         return registry
