@@ -495,6 +495,14 @@ class HealthLogProcessor:
             completed_at=None,
         )
 
+        # Statistics counters
+        stats = {
+            "converted": 0,
+            "deleted": 0,
+            "failed": 0,
+            "total": 0,
+        }
+
         sections = self._split_sections()
         self._load_labs()
         self._load_medical_exams()
@@ -505,6 +513,7 @@ class HealthLogProcessor:
             for orphan_file in orphaned:
                 orphan_file.unlink()
                 self.logger.info("Deleted orphaned entry file: %s", orphan_file.name)
+                stats["deleted"] += 1
 
         # Create placeholder sections for dates with labs/exams but no entries
         sections = self._create_placeholder_sections(sections)
@@ -550,6 +559,9 @@ class HealthLogProcessor:
                     date, ok = fut.result()
                     if not ok:
                         failed.append(date)
+                        stats["failed"] += 1
+                    else:
+                        stats["converted"] += 1
                 except Exception as e:
                     # Get the section that caused the error for context
                     section = futures[fut]
@@ -561,7 +573,9 @@ class HealthLogProcessor:
                         "Exception processing section %s: %s", date, e, exc_info=True
                     )
                     failed.append(date)
+                    stats["failed"] += 1
                 bar.update(1)
+                stats["total"] += 1
 
         if failed:
             self.logger.error("Failed to process sections for: %s", ", ".join(failed))
@@ -593,6 +607,12 @@ class HealthLogProcessor:
                 f"{MEDICAL_EXAMS_SECTION_HEADER}\n{joined_exams}\n",
                 encoding="utf-8",
             )
+
+        # Validate date consistency between source and output
+        self._validate_date_consistency(sections)
+
+        # Print processing summary
+        self._print_extraction_summary(stats)
 
         # Track run completion
         self._update_state(
@@ -1088,23 +1108,22 @@ class HealthLogProcessor:
 
         # Find orphaned entry files
         orphaned: list[Path] = []
-        entry_patterns = [
-            "*.raw.md",
-            "*.processed.md",
-            "*.labs.md",
-            "*.exams.md",
-            "*.failed.md",
-            "*.failed.json",
-        ]
 
-        for pattern in entry_patterns:
-            for entry_file in self.entries_dir.glob(pattern):
-                # Extract date from filename (e.g., "2024-01-15.processed.md" -> "2024-01-15")
-                date_match = re.match(r"(\d{4}-\d{2}-\d{2})", entry_file.name)
-                if date_match:
-                    file_date = date_match.group(1)
-                    if file_date not in valid_dates:
-                        orphaned.append(entry_file)
+        for entry_file in self.entries_dir.iterdir():
+            date_match = re.match(r"(\d{4}-\d{2}-\d{2})", entry_file.name)
+            if not date_match:
+                continue
+            file_date = date_match.group(1)
+
+            # Raw files must correspond to active source log entries - having labs/exams
+            # data does not justify keeping a raw file for a removed source entry.
+            if entry_file.name.endswith(".raw.md"):
+                if file_date not in source_dates:
+                    orphaned.append(entry_file)
+            # All other files (.processed.md, .labs.md, .exams.md, .failed.md, .failed.json)
+            # are kept as long as any current data source (source log, labs, exams) has the date.
+            elif file_date not in valid_dates:
+                orphaned.append(entry_file)
 
         return orphaned
 
@@ -1189,6 +1208,67 @@ class HealthLogProcessor:
 
         # Return original sections unchanged (placeholder files were created directly)
         return sections
+
+    def _validate_date_consistency(self, sections: list[str]) -> None:
+        """Assert that extracted dates match source file dates exactly.
+
+        Compares dates from source log sections against dates found in the
+        entries directory (from .raw.md files). Raises AssertionError if:
+        - Dates in entries don't exist in source
+        - Dates in source don't exist in entries
+        - Any mismatch is detected
+
+        Args:
+            sections: List of section strings from the source health log.
+
+        Raises:
+            AssertionError: If date sets don't match exactly.
+        """
+        # Extract dates from source sections
+        source_dates: set[str] = set()
+        for sec in sections:
+            try:
+                date = extract_date(sec)
+                source_dates.add(date)
+            except DateExtractionError:
+                continue
+
+        # Extract dates from entries directory (.raw.md files)
+        entry_dates: set[str] = set()
+        if self.entries_dir.exists():
+            for raw_file in self.entries_dir.glob("*.raw.md"):
+                date_match = re.match(r"(\d{4}-\d{2}-\d{2})", raw_file.name)
+                if date_match:
+                    entry_dates.add(date_match.group(1))
+
+        # Check for mismatches
+        missing_in_entries = source_dates - entry_dates
+        extra_in_entries = entry_dates - source_dates
+
+        if missing_in_entries or extra_in_entries:
+            error_msg = "Date validation failed:\n"
+            if missing_in_entries:
+                error_msg += f"  - Dates in source but missing from entries: {sorted(missing_in_entries)}\n"
+            if extra_in_entries:
+                error_msg += f"  - Dates in entries but not in source: {sorted(extra_in_entries)}\n"
+            raise AssertionError(error_msg)
+
+        self.logger.info(
+            "Date validation passed: %d dates in source match %d dates in entries",
+            len(source_dates),
+            len(entry_dates),
+        )
+
+    def _print_extraction_summary(self, stats: dict[str, int]) -> None:
+        """Print extraction statistics summary."""
+        print("\n" + "=" * 60)
+        print("EXTRACTION SUMMARY")
+        print("=" * 60)
+        print(f"  Converted: {stats['converted']}")
+        print(f"  Deleted:   {stats['deleted']}")
+        print(f"  Failed:    {stats['failed']}")
+        print(f"  Total:     {stats['total']}")
+        print("=" * 60 + "\n")
 
 
 # --------------------------------------------------------------------------------------
