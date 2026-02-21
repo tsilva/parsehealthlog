@@ -1553,118 +1553,130 @@ Examples:
             print("Create a profile by copying profiles/_template.yaml")
         sys.exit(0)
 
-    # Profile is required for processing
-    if not args.profile:
-        print("Error: --profile is required.")
-        print()
+    def run_profile(profile_name, args, logger):
+        """Run processing for a single profile. Returns True on success, False on failure."""
+        profile_path = None
+        for ext in (".yaml", ".yml", ".json"):
+            candidate = Path("profiles") / f"{profile_name}{ext}"
+            if candidate.exists():
+                profile_path = candidate
+                break
+
+        if not profile_path:
+            print(f"Error: Profile '{profile_name}' not found.")
+            print("Use --list-profiles to see available profiles.")
+            return False
+
+        try:
+            profile = ProfileConfig.from_file(profile_path)
+            logger.info("Using profile: %s", profile.name)
+        except Exception as e:
+            print(f"Error loading profile '{profile_name}': {e}")
+            return False
+
+        try:
+            config = Config.from_profile(profile)
+        except ValueError as e:
+            print(f"Configuration error for profile '{profile_name}': {e}")
+            return False
+
+        # CLI --workers overrides profile/env setting
+        if args.workers is not None:
+            import os as _os
+
+            max_cpu = _os.cpu_count() or 8
+            config.max_workers = max(1, min(args.workers, max_cpu))
+
+        # Handle --force-reprocess flag: clear cached outputs
+        if args.force_reprocess:
+            output_path = config.output_path
+            entries_dir = output_path / "entries"
+
+            # Delete all generated entry files
+            if entries_dir.exists():
+                patterns = [
+                    "*.processed.md",
+                    "*.labs.md",
+                    "*.exams.md",
+                    "*.failed.md",
+                ]
+                deleted = 0
+                for pattern in patterns:
+                    for f in entries_dir.glob(pattern):
+                        f.unlink()
+                        deleted += 1
+                if deleted:
+                    logger.info("Cleared %d generated files from %s", deleted, entries_dir)
+
+            # Delete primary output files
+            for filename in ["health_log.md"]:
+                filepath = output_path / filename
+                if filepath.exists():
+                    filepath.unlink()
+                    logger.info("Deleted %s", filepath)
+
+            # Delete state file
+            state_file = output_path / ".state.json"
+            if state_file.exists():
+                state_file.unlink()
+
+            # Delete legacy files if they exist
+            for legacy_file in [
+                "health_timeline.csv",
+                "reports",
+            ]:
+                legacy_path = output_path / legacy_file
+                if legacy_path.exists():
+                    if legacy_path.is_dir():
+                        shutil.rmtree(legacy_path)
+                    else:
+                        legacy_path.unlink()
+                    logger.info("Cleared legacy %s", legacy_path)
+
+        if not check_api_accessibility(config.base_url):
+            logger.warning("API base URL is not accessible: %s", config.base_url)
+            logger.warning("Processing will likely fail on LLM-dependent tasks.")
+
+        # Handle dry-run mode
+        if args.dry_run:
+            processor = DryRunHealthLogProcessor(config)
+            # Pass force_reprocess flag to processor for tracking deletions
+            processor._force_reprocess = args.force_reprocess
+            changes_needed = processor.run_dry()
+            processor.print_summary()
+            return not changes_needed
+
+        start = datetime.now()
+        HealthLogProcessor(config).run()
+        logger.info(
+            "Finished in %.1fs",
+            (datetime.now() - start).total_seconds(),
+        )
+        return True
+
+    if args.profile:
+        success = run_profile(args.profile, args, logger)
+        sys.exit(0 if success else 1)
+    else:
         profiles = ProfileConfig.list_profiles()
-        if profiles:
-            print("Available profiles:")
-            for name in profiles:
-                print(f"  - {name}")
-            print()
-            print(f"Example: uv run python main.py --profile {profiles[0]}")
-        else:
+        if not profiles:
             print("No profiles found. Create one by copying profiles/_template.yaml")
-        sys.exit(1)
+            sys.exit(1)
 
-    # Load profile
-    profile_path = None
-    for ext in (".yaml", ".yml", ".json"):
-        candidate = Path("profiles") / f"{args.profile}{ext}"
-        if candidate.exists():
-            profile_path = candidate
-            break
+        all_succeeded = True
+        for i, profile_name in enumerate(profiles):
+            if i > 0:
+                logger.info("---")
+            logger.info("Processing profile: %s", profile_name)
+            success = run_profile(profile_name, args, logger)
+            if not success:
+                all_succeeded = False
 
-    if not profile_path:
-        print(f"Error: Profile '{args.profile}' not found.")
-        print("Use --list-profiles to see available profiles.")
-        sys.exit(1)
-
-    try:
-        profile = ProfileConfig.from_file(profile_path)
-        logger.info("Using profile: %s", profile.name)
-    except Exception as e:
-        print(f"Error loading profile: {e}")
-        sys.exit(1)
-
-    try:
-        config = Config.from_profile(profile)
-    except ValueError as e:
-        raise SystemExit(f"Configuration error: {e}")
-
-    # CLI --workers overrides profile/env setting
-    if args.workers is not None:
-        import os as _os
-
-        max_cpu = _os.cpu_count() or 8
-        config.max_workers = max(1, min(args.workers, max_cpu))
-
-    # Handle --force-reprocess flag: clear cached outputs
-    if args.force_reprocess:
-        output_path = config.output_path
-        entries_dir = output_path / "entries"
-
-        # Delete all generated entry files
-        if entries_dir.exists():
-            patterns = [
-                "*.processed.md",
-                "*.labs.md",
-                "*.exams.md",
-                "*.failed.md",
-            ]
-            deleted = 0
-            for pattern in patterns:
-                for f in entries_dir.glob(pattern):
-                    f.unlink()
-                    deleted += 1
-            if deleted:
-                logger.info("Cleared %d generated files from %s", deleted, entries_dir)
-
-        # Delete primary output files
-        for filename in ["health_log.md"]:
-            filepath = output_path / filename
-            if filepath.exists():
-                filepath.unlink()
-                logger.info("Deleted %s", filepath)
-
-        # Delete state file
-        state_file = output_path / ".state.json"
-        if state_file.exists():
-            state_file.unlink()
-
-        # Delete legacy files if they exist
-        for legacy_file in [
-            "health_timeline.csv",
-            "reports",
-        ]:
-            legacy_path = output_path / legacy_file
-            if legacy_path.exists():
-                if legacy_path.is_dir():
-                    shutil.rmtree(legacy_path)
-                else:
-                    legacy_path.unlink()
-                logger.info("Cleared legacy %s", legacy_path)
-
-    if not check_api_accessibility(config.base_url):
-        logger.warning("API base URL is not accessible: %s", config.base_url)
-        logger.warning("Processing will likely fail on LLM-dependent tasks.")
-
-    # Handle dry-run mode
-    if args.dry_run:
-        processor = DryRunHealthLogProcessor(config)
-        # Pass force_reprocess flag to processor for tracking deletions
-        processor._force_reprocess = args.force_reprocess
-        changes_needed = processor.run_dry()
-        processor.print_summary()
-        sys.exit(1 if changes_needed else 0)
-
-    start = datetime.now()
-    HealthLogProcessor(config).run()
-    logger.info(
-        "Finished in %.1fs",
-        (datetime.now() - start).total_seconds(),
-    )
+        if all_succeeded:
+            logger.info("All profiles completed successfully.")
+        else:
+            logger.warning("One or more profiles failed.")
+        sys.exit(0 if all_succeeded else 1)
 
 
 if __name__ == "__main__":
