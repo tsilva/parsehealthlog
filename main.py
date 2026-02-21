@@ -681,6 +681,7 @@ class HealthLogProcessor:
         Returns True if file doesn't exist or dependencies have changed.
         """
         if not path.exists():
+            self.logger.info("Cache miss for %s: file does not exist", path.name)
             return True
 
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -689,11 +690,16 @@ class HealthLogProcessor:
 
         # If no deps comment found (old format), regenerate
         if not existing_deps:
+            self.logger.info("Cache miss for %s: no deps comment found", path.name)
             return True
 
         # Check if any dependency changed
         for key, expected_hash in expected_deps.items():
             if existing_deps.get(key) != expected_hash:
+                self.logger.info(
+                    "Cache miss for %s: %s changed (%s -> %s)",
+                    path.name, key, existing_deps.get(key), expected_hash,
+                )
                 return True
 
         return False
@@ -839,6 +845,18 @@ class HealthLogProcessor:
             for s in re.split(rf"(?={date_regex})", body, flags=re.MULTILINE)
             if s.strip()
         ]
+
+        # Detect duplicate date sections and error out
+        seen: dict[str, int] = {}
+        for sec in sections:
+            date = extract_date(sec)
+            seen[date] = seen.get(date, 0) + 1
+        duplicates = [date for date, count in seen.items() if count > 1]
+        if duplicates:
+            raise ValueError(
+                f"Duplicate date sections found in source file — fix before running:\n"
+                + "\n".join(f"  - {d}" for d in sorted(duplicates))
+            )
 
         return sections
 
