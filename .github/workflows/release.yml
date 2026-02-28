@@ -7,14 +7,15 @@ on:
       - "parsehealthlog/__init__.py"
 
 jobs:
-  check-version:
-    uses: tsilva/.github/.github/workflows/check-version.yml@main
-    with:
-      version_file: parsehealthlog/__init__.py
+  test:
+    uses: tsilva/.github/.github/workflows/test.yml@main
 
-  pypi-publish:
-    needs: check-version
-    if: needs.check-version.outputs.changed == 'true'
-    uses: tsilva/.github/.github/workflows/pypi-publish.yml@main
-    with:
-      version: ${{ needs.check-version.outputs.version }}
+  pii-scan:
+    uses: tsilva/.github/.github/workflows/pii-scan.yml@main
+
+  publish:
+    needs: [test, pii-scan]
+    uses: tsilva/.github/.github/workflows/publish-pypi.yml@main
+    permissions:
+      contents: write
+      id-token: write
