@@ -1514,9 +1514,9 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  uv run python main.py --profile tiago
-  uv run python main.py --profile tiago --force-reprocess
-  uv run python main.py --list-profiles
+  health-log-parser --profile tiago
+  health-log-parser --profile tiago --force-reprocess
+  health-log-parser --list-profiles
         """,
     )
     parser.add_argument(
