@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document outlines a systematic plan to improve the health-log-parser codebase. Each task is designed to be completed independently and includes clear acceptance criteria.
+This document outlines a systematic plan to improve the parsehealthlog codebase. Each task is designed to be completed independently and includes clear acceptance criteria.
 
 ## Phase 1: Foundation (Cleanup & Documentation)
 
@@ -142,7 +142,7 @@ This document outlines a systematic plan to improve the health-log-parser codeba
 
 **Proposed Structure:**
 ```
-health_log_parser/
+parsehealthlog/
 ├── __init__.py
 ├── cli.py                    # Argument parsing and main entry point
 ├── config.py                 # Configuration classes (already exists)

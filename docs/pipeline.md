@@ -2,7 +2,7 @@
 
 # Health Log Parser Pipeline
 
-This document describes the data processing pipeline used by health-log-parser to transform unstructured health journal entries into structured data.
+This document describes the data processing pipeline used by parsehealthlog to transform unstructured health journal entries into structured data.
 
 ## Quick Overview
 

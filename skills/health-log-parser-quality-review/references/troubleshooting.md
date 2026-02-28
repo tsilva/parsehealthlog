@@ -16,15 +16,15 @@ ImportError: Could not import validate_timeline.py
 - Python path issues
 
 **Solutions:**
-1. Ensure validate_timeline.py exists in health-log-parser root directory
-2. Run scripts from health-log-parser directory:
+1. Ensure validate_timeline.py exists in parsehealthlog root directory
+2. Run scripts from parsehealthlog directory:
    ```bash
-   cd /path/to/health-log-parser
+   cd /path/to/parsehealthlog
    python /path/to/skill/scripts/run_quality_review.py --tiago-path ... --cristina-path ...
    ```
-3. Or add health-log-parser to PYTHONPATH:
+3. Or add parsehealthlog to PYTHONPATH:
    ```bash
-   export PYTHONPATH=/path/to/health-log-parser:$PYTHONPATH
+   export PYTHONPATH=/path/to/parsehealthlog:$PYTHONPATH
    ```
 
 ---
@@ -646,7 +646,7 @@ Before asking for help:
 2. [ ] Check logs/all.log for errors
 3. [ ] Manually inspect failing entries
 4. [ ] Verify paths are correct
-5. [ ] Confirm health-log-parser is latest version
+5. [ ] Confirm parsehealthlog is latest version
 6. [ ] Try on smaller sample to isolate issue
 
 ### Useful debug commands
@@ -677,5 +677,5 @@ When reporting quality review issues, include:
 2. Error message or unexpected output
 3. Complete results JSON (complete_results.json)
 4. Sample of affected entries (3-5 examples)
-5. health-log-parser version
+5. parsehealthlog version
 6. Profile configuration (profiles/*.yaml)

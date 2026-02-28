@@ -2,7 +2,7 @@
 
 ## Project Goal
 
-health-log-parser is a **data extraction and curation tool** that transforms health journal entries into structured, validated markdown:
+parsehealthlog is a **data extraction and curation tool** that transforms health journal entries into structured, validated markdown:
 
 1. **`health_log.md`** - All processed entries (newest to oldest) with labs/exams integrated
 
@@ -23,7 +23,7 @@ health_log_path: /path/to/health.md    # Required
 output_path: /path/to/output           # Required
 model_id: model-name                   # Required
 base_url: http://127.0.0.1:8082/api/v1 # Optional (default shown)
-api_key: health-log-parser              # Optional (default shown)
+api_key: parsehealthlog              # Optional (default shown)
 ```
 
 See `docs/pipeline.md` for full configuration options.

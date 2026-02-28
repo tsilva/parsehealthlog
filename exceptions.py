@@ -1,11 +1,11 @@
-"""Custom exceptions for health-log-parser.
+"""Custom exceptions for parsehealthlog.
 
 Provides domain-specific error types for better error handling and debugging.
 """
 
 
 class HealthLogParserError(Exception):
-    """Base exception for all health-log-parser errors."""
+    """Base exception for all parsehealthlog errors."""
 
     pass
 

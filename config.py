@@ -1,4 +1,4 @@
-"""Configuration management for health-log-parser.
+"""Configuration management for parsehealthlog.
 
 Centralizes profile-based configuration loading and validation.
 """
@@ -77,7 +77,7 @@ class ProfileConfig:
 
     # API configuration
     base_url: str = "http://127.0.0.1:8082/api/v1"
-    api_key: str = "health-log-parser"
+    api_key: str = "parsehealthlog"
     model_id: str | None = None
 
     @classmethod
@@ -107,7 +107,7 @@ class ProfileConfig:
             ),
             workers=data.get("workers"),
             base_url=data.get("base_url", "http://127.0.0.1:8082/api/v1"),
-            api_key=data.get("api_key", "health-log-parser"),
+            api_key=data.get("api_key", "parsehealthlog"),
             model_id=data.get("model_id"),
         )
 

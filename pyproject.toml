@@ -1,5 +1,5 @@
 [project]
-name = "health-log-parser"
+name = "parsehealthlog"
 version = "0.1.0"
 description = "AI-powered tool for structuring and auditing personal health logs"
 readme = "README.md"
@@ -23,7 +23,7 @@ build-backend = "setuptools.build_meta"
 py-modules = ["main", "config", "exceptions"]
 
 [project.scripts]
-health-log-parser = "main:main"
+parsehealthlog = "main:main"
 
 [tool.uv]
 dev-dependencies = ["pytest>=7.0.0"]
