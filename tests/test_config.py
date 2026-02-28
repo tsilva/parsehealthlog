@@ -5,8 +5,8 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch
 
-from config import Config, ProfileConfig
-from exceptions import ConfigurationError
+from parsehealthlog.config import Config, ProfileConfig
+from parsehealthlog.exceptions import ConfigurationError
 
 
 def _profile(**overrides):

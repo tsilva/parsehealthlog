@@ -1,0 +1,20 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "parsehealthlog/__init__.py"
+
+jobs:
+  check-version:
+    uses: tsilva/.github/.github/workflows/check-version.yml@main
+    with:
+      version_file: parsehealthlog/__init__.py
+
+  pypi-publish:
+    needs: check-version
+    if: needs.check-version.outputs.changed == 'true'
+    uses: tsilva/.github/.github/workflows/pypi-publish.yml@main
+    with:
+      version: ${{ needs.check-version.outputs.version }}

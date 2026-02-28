@@ -10,7 +10,7 @@ from pathlib import Path
 
 import yaml
 
-from exceptions import ConfigurationError
+from parsehealthlog.exceptions import ConfigurationError
 
 
 # OpenRouter pricing per 1M tokens (input/output) in USD
