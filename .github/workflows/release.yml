@@ -13,9 +13,26 @@ jobs:
   pii-scan:
     uses: tsilva/.github/.github/workflows/pii-scan.yml@main
 
-  publish:
+  build-and-publish:
     needs: [test, pii-scan]
-    uses: tsilva/.github/.github/workflows/publish-pypi.yml@main
+    runs-on: ubuntu-latest
     permissions:
-      contents: write
       id-token: write
+    environment:
+      name: pypi
+      url: https://pypi.org/p/parsehealthlog
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: pip install build
+
+      - name: Build package
+        run: python -m build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
