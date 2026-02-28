@@ -88,7 +88,7 @@ def print_progress(phase_num, phase_name, status="Running"):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run comprehensive quality review for health-log-parser",
+        description="Run comprehensive quality review for parsehealthlog",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

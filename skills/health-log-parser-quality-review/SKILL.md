@@ -1,13 +1,13 @@
 ---
-name: health-log-parser-quality-review
-description: Comprehensive 7-phase quality review for health-log-parser extraction quality. Assesses data integrity, preservation accuracy, episode linking, categorization quality, cross-profile consistency, and timeline continuity. Use when (1) After significant changes to prompts or processing logic, (2) Before production deployment, (3) Periodic quality audits, (4) Investigating suspected data quality issues, (5) Comparing quality across profiles.
+name: parsehealthlog-quality-review
+description: Comprehensive 7-phase quality review for parsehealthlog extraction quality. Assesses data integrity, preservation accuracy, episode linking, categorization quality, cross-profile consistency, and timeline continuity. Use when (1) After significant changes to prompts or processing logic, (2) Before production deployment, (3) Periodic quality audits, (4) Investigating suspected data quality issues, (5) Comparing quality across profiles.
 ---
 
 # Health Log Parser Quality Review
 
 ## Overview
 
-This skill provides a comprehensive, automated quality review process for health-log-parser outputs. It executes 7 analytical phases covering validation, data preservation, episode linking, categorization, labs integration, cross-profile consistency, and timeline continuity.
+This skill provides a comprehensive, automated quality review process for parsehealthlog outputs. It executes 7 analytical phases covering validation, data preservation, episode linking, categorization, labs integration, cross-profile consistency, and timeline continuity.
 
 **Key Outputs:**
 - Overall quality scores (0-100) per profile
@@ -45,18 +45,18 @@ Before running the quality review:
 3. **Dependencies:**
    - Python 3.8+
    - pandas (for CSV processing)
-   - Access to validate_timeline.py from health-log-parser
+   - Access to validate_timeline.py from parsehealthlog
 
 ## Quick Start
 
 ### Running the Complete Review
 
 ```bash
-# Navigate to health-log-parser directory
-cd /Users/tsilva/repos/tsilva/health-log-parser
+# Navigate to parsehealthlog directory
+cd /Users/tsilva/repos/tsilva/parsehealthlog
 
 # Run complete quality review
-python /Users/tsilva/.claude/skills/health-log-parser-quality-review/scripts/run_quality_review.py \
+python /Users/tsilva/.claude/skills/parsehealthlog-quality-review/scripts/run_quality_review.py \
   --tiago-path "/Users/tsilva/Library/CloudStorage/GoogleDrive-eng.tiago.silva.sync@gmail.com/My Drive/healthlogparser-tiago" \
   --cristina-path "/Users/tsilva/Library/CloudStorage/GoogleDrive-eng.tiago.silva.sync@gmail.com/My Drive/healthlogparser-cristina" \
   --output-dir ./quality_review_reports \
@@ -339,8 +339,8 @@ python /path/to/skill/scripts/run_quality_review.py ...
 
 **Solution:**
 ```bash
-# Run from health-log-parser directory
-cd /Users/tsilva/repos/tsilva/health-log-parser
+# Run from parsehealthlog directory
+cd /Users/tsilva/repos/tsilva/parsehealthlog
 python /path/to/skill/scripts/run_quality_review.py ...
 ```
 

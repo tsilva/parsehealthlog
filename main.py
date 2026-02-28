@@ -20,7 +20,7 @@ Output structure:
 Configuration via profile YAML (see config.py):
     model_id                     – mandatory (model identifier)
     base_url                     – API base URL (default: http://127.0.0.1:8082/api/v1)
-    api_key                      – API key (default: health-log-parser)
+    api_key                      – API key (default: parsehealthlog)
     health_log_path              – mandatory (path to the markdown health log)
     output_path                  – mandatory (base directory for generated output)
     labs_parser_output_path      – (optional) path to aggregated lab CSVs
@@ -1514,9 +1514,9 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  health-log-parser --profile tiago
-  health-log-parser --profile tiago --force-reprocess
-  health-log-parser --list-profiles
+  parsehealthlog --profile tiago
+  parsehealthlog --profile tiago --force-reprocess
+  parsehealthlog --list-profiles
         """,
     )
     parser.add_argument(

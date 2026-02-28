@@ -30,7 +30,7 @@ def run_validate_timeline(csv_path, entries_path):
         sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
         from validate_timeline import run_all_validations
     except ImportError:
-        raise ImportError("Could not import validate_timeline.py - ensure it exists in health-log-parser root")
+        raise ImportError("Could not import validate_timeline.py - ensure it exists in parsehealthlog root")
 
     # Run all validations
     results = run_all_validations(str(csv_path), str(entries_path))

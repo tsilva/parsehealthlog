@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="logo.png" alt="health-log-parser" width="512"/>
+  <img src="logo.png" alt="parsehealthlog" width="512"/>
 
   [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
   [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
@@ -11,7 +11,7 @@
 
 ## Overview
 
-health-log-parser is a data extraction and curation tool that transforms unstructured health journal entries into structured, validated data ready for downstream analysis.
+parsehealthlog is a data extraction and curation tool that transforms unstructured health journal entries into structured, validated data ready for downstream analysis.
 
 **What it produces:**
 - **`health_log.md`** — All processed entries (newest to oldest) with labs and exams integrated
@@ -33,8 +33,8 @@ The tool processes, validates, and enriches health log entries. Reports, summari
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Clone and install
-git clone https://github.com/tsilva/health-log-parser.git
-cd health-log-parser
+git clone https://github.com/tsilva/parsehealthlog.git
+cd parsehealthlog
 uv sync
 
 # Configure
