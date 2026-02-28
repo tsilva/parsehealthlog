@@ -82,8 +82,8 @@ from tenacity import (
 )
 from tqdm import tqdm
 
-from config import Config, ProfileConfig, check_api_accessibility, get_model_pricing
-from exceptions import DateExtractionError, ExtractionError, PromptError
+from parsehealthlog.config import Config, ProfileConfig, check_api_accessibility, get_model_pricing
+from parsehealthlog.exceptions import DateExtractionError, ExtractionError, PromptError
 
 
 # --------------------------------------------------------------------------------------

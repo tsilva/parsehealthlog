@@ -2,7 +2,7 @@
 
 import pytest
 
-from exceptions import (
+from parsehealthlog.exceptions import (
     HealthLogParserError,
     ConfigurationError,
     DateExtractionError,

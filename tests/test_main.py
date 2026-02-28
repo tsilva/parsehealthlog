@@ -3,14 +3,14 @@
 import pytest
 import pandas as pd
 
-from main import (
+from parsehealthlog.main import (
     extract_date,
     parse_deps_comment,
     format_deps_comment,
     short_hash,
     format_labs,
 )
-from exceptions import DateExtractionError
+from parsehealthlog.exceptions import DateExtractionError
 
 
 class TestExtractDate:
