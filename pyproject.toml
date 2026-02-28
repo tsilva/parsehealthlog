@@ -15,6 +15,16 @@ dependencies = [
     "pyyaml>=6.0.3",
 ]
 
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["main", "config", "exceptions"]
+
+[project.scripts]
+health-log-parser = "main:main"
+
 [tool.uv]
 dev-dependencies = ["pytest>=7.0.0"]
 
