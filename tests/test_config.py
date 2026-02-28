@@ -56,7 +56,8 @@ class TestConfigFromProfile:
         assert config.api_key == "my-key"
 
     def test_default_max_workers(self):
-        config = Config.from_profile(_profile())
+        with patch("os.cpu_count", return_value=8):
+            config = Config.from_profile(_profile())
         assert config.max_workers == 4
 
     def test_profile_workers(self):
