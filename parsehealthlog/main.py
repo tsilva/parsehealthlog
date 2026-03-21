@@ -29,12 +29,13 @@ Configuration via profile YAML (see config.py):
 """
 
 from dotenv import load_dotenv
-from pathlib import Path as _Path
 import sys as _sys
+
+from parsehealthlog.config import get_config_dir, get_env_file
 
 
 def _load_dotenv_with_env() -> str | None:
-    """Load .env file, or .env.{name} if --env flag is specified."""
+    """Load dotenv files from the user config directory."""
     env_name = None
     for i, arg in enumerate(_sys.argv):
         if arg == "--env" and i + 1 < len(_sys.argv):
@@ -45,13 +46,13 @@ def _load_dotenv_with_env() -> str | None:
             break
 
     if env_name:
-        env_file = _Path(f".env.{env_name}")
+        env_file = get_env_file(env_name)
         if env_file.exists():
             load_dotenv(env_file, override=True)
         else:
-            print(f"Warning: .env.{env_name} not found")
+            print(f"Warning: {env_file} not found")
     else:
-        load_dotenv(override=True)
+        load_dotenv(get_env_file(), override=True)
     return env_name
 
 
@@ -82,7 +83,12 @@ from tenacity import (
 )
 from tqdm import tqdm
 
-from parsehealthlog.config import Config, ProfileConfig, check_api_accessibility, get_model_pricing
+from parsehealthlog.config import (
+    Config,
+    ProfileConfig,
+    check_api_accessibility,
+    get_model_pricing,
+)
 from parsehealthlog.exceptions import DateExtractionError, ExtractionError, PromptError
 
 
@@ -1539,8 +1545,11 @@ Examples:
     parser.add_argument(
         "--env",
         type=str,
-        default="claude",
-        help="Environment name to load (loads .env.{name} instead of .env, default: claude)",
+        default=None,
+        help=(
+            "Environment name to load from "
+            f"{get_config_dir()}/.env.{{name}} instead of {get_config_dir()}/.env"
+        ),
     )
     parser.add_argument(
         "--workers",
@@ -1567,18 +1576,16 @@ Examples:
             for name in profiles:
                 print(f"  - {name}")
         else:
-            print("No profiles found in profiles/ directory.")
-            print("Create a profile by copying profiles/_template.yaml")
+            print(f"No profiles found in {get_config_dir() / 'profiles'}/")
+            print(
+                "Create a profile by copying "
+                "profiles/template.yaml.example to that directory"
+            )
         sys.exit(0)
 
     def run_profile(profile_name, args, logger):
         """Run processing for a single profile. Returns True on success, False on failure."""
-        profile_path = None
-        for ext in (".yaml", ".yml", ".json"):
-            candidate = Path("profiles") / f"{profile_name}{ext}"
-            if candidate.exists():
-                profile_path = candidate
-                break
+        profile_path = ProfileConfig.find_profile_path(profile_name)
 
         if not profile_path:
             print(f"Error: Profile '{profile_name}' not found.")
@@ -1678,7 +1685,11 @@ Examples:
     else:
         profiles = ProfileConfig.list_profiles()
         if not profiles:
-            print("No profiles found. Create one by copying profiles/_template.yaml")
+            print(
+                "No profiles found. Create one by copying "
+                "profiles/template.yaml.example into "
+                f"{get_config_dir() / 'profiles'}"
+            )
             sys.exit(1)
 
         all_succeeded = True

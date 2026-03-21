@@ -189,6 +189,10 @@ This document describes the data processing pipeline used by parsehealthlog to t
 
 ## Configuration
 
+Runtime configuration is loaded from `~/.config/parsehealthlog`:
+- Environment variables: `~/.config/parsehealthlog/.env` or `~/.config/parsehealthlog/.env.<name>`
+- Profiles: `~/.config/parsehealthlog/profiles/<name>.yaml`
+
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `OPENROUTER_API_KEY` | Yes | - | OpenRouter API key |
