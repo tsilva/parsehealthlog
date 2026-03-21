@@ -15,10 +15,13 @@ The tool processes, validates, and enriches health log entries but does **not** 
 curl -LsSf https://astral.sh/uv/install.sh | sh  # Install uv if needed
 uv sync                                           # Install dependencies
 
-# Run
-uv run python main.py --profile <profile_name>
+# Config
+mkdir -p ~/.config/parsehealthlog/profiles
 
-# Profile configuration (profiles/<name>.yaml)
+# Run
+uv run parsehealthlog --profile <profile_name>
+
+# Profile configuration (~/.config/parsehealthlog/profiles/<name>.yaml)
 health_log_path: /path/to/health.md    # Required
 output_path: /path/to/output           # Required
 model_id: model-name                   # Required
@@ -78,7 +81,7 @@ OUTPUT_PATH/
 ### Modify a Prompt
 1. Edit `prompts/<name>.system_prompt.md`
 2. Delete output files to force regeneration (or use `--force-reprocess`)
-3. Run `uv run python main.py --profile <name>`
+3. Run `uv run parsehealthlog --profile <name>`
 
 ### Debug Processing Issues
 1. Check `entries/<date>.processed.md` for the processed content

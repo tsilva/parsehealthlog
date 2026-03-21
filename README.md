@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="logo.png" alt="parsehealthlog" width="512"/>
+  <img src="https://raw.githubusercontent.com/tsilva/parsehealthlog/main/logo.png" alt="parsehealthlog" width="512"/>
 
   [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
   [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
@@ -10,6 +10,8 @@
 </div>
 
 ## Overview
+
+[![CI](https://github.com/tsilva/parsehealthlog/actions/workflows/release.yml/badge.svg)](https://github.com/tsilva/parsehealthlog/actions/workflows/release.yml)
 
 parsehealthlog is a data extraction and curation tool that transforms unstructured health journal entries into structured, validated data ready for downstream analysis.
 
@@ -38,15 +40,19 @@ cd parsehealthlog
 uv sync
 
 # Configure
-cp .env.example .env
-# Edit .env with your OPENROUTER_API_KEY
+mkdir -p ~/.config/parsehealthlog/profiles
+cp profiles/template.yaml.example ~/.config/parsehealthlog/profiles/myprofile.yaml
 
-# Create a profile (profiles/myprofile.yaml)
+# Create ~/.config/parsehealthlog/.env
+# OPENROUTER_API_KEY=your-key
+
+# Edit ~/.config/parsehealthlog/profiles/myprofile.yaml
 # health_log_path: /path/to/health.md
 # output_path: /path/to/output
+# model_id: your-model
 
 # Run
-uv run python main.py --profile myprofile
+uv run parsehealthlog --profile myprofile
 ```
 
 ## Output Structure
@@ -62,13 +68,13 @@ OUTPUT_PATH/
 
 ## Configuration
 
-### Environment Variables (.env)
+### Environment Variables (`~/.config/parsehealthlog/.env`)
 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `OPENROUTER_API_KEY` | Yes | Your OpenRouter API key |
 
-### Profile Configuration (profiles/\<name\>.yaml)
+### Profile Configuration (`~/.config/parsehealthlog/profiles/<name>.yaml`)
 
 | Variable | Required | Description |
 |----------|----------|-------------|

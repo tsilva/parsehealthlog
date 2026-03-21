@@ -5,7 +5,13 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch
 
-from parsehealthlog.config import Config, ProfileConfig
+from parsehealthlog.config import (
+    Config,
+    ProfileConfig,
+    get_config_dir,
+    get_env_file,
+    get_profiles_dir,
+)
 from parsehealthlog.exceptions import ConfigurationError
 
 
@@ -89,3 +95,50 @@ class TestConfigFromProfile:
         ))
         assert config.labs_parser_output_path == Path("/path/to/labs")
         assert config.medical_exams_parser_output_path == Path("/path/to/exams")
+
+
+class TestConfigPaths:
+    """Tests for config directory path helpers."""
+
+    def test_get_config_dir_uses_home_config_path(self):
+        with patch("parsehealthlog.config.Path.home", return_value=Path("/tmp/test-home")):
+            assert get_config_dir() == Path("/tmp/test-home/.config/parsehealthlog")
+
+    def test_get_profiles_dir_uses_config_dir(self):
+        with patch("parsehealthlog.config.Path.home", return_value=Path("/tmp/test-home")):
+            assert get_profiles_dir() == Path("/tmp/test-home/.config/parsehealthlog/profiles")
+
+    def test_get_env_file_default(self):
+        with patch("parsehealthlog.config.Path.home", return_value=Path("/tmp/test-home")):
+            assert get_env_file() == Path("/tmp/test-home/.config/parsehealthlog/.env")
+
+    def test_get_env_file_named(self):
+        with patch("parsehealthlog.config.Path.home", return_value=Path("/tmp/test-home")):
+            assert get_env_file("claude") == Path(
+                "/tmp/test-home/.config/parsehealthlog/.env.claude"
+            )
+
+
+class TestProfileDiscovery:
+    """Tests for profile discovery helpers."""
+
+    def test_find_profile_path_uses_config_profiles_dir(self, tmp_path):
+        home = tmp_path / "home"
+        profiles_dir = home / ".config" / "parsehealthlog" / "profiles"
+        profiles_dir.mkdir(parents=True)
+        profile_path = profiles_dir / "test.yaml"
+        profile_path.write_text("name: test\n", encoding="utf-8")
+
+        with patch("parsehealthlog.config.Path.home", return_value=home):
+            assert ProfileConfig.find_profile_path("test") == profile_path
+
+    def test_list_profiles_uses_config_profiles_dir(self, tmp_path):
+        home = tmp_path / "home"
+        profiles_dir = home / ".config" / "parsehealthlog" / "profiles"
+        profiles_dir.mkdir(parents=True)
+        (profiles_dir / "alpha.yaml").write_text("name: alpha\n", encoding="utf-8")
+        (profiles_dir / "beta.json").write_text('{"name": "beta"}\n', encoding="utf-8")
+        (profiles_dir / "_template.yaml").write_text("name: template\n", encoding="utf-8")
+
+        with patch("parsehealthlog.config.Path.home", return_value=home):
+            assert ProfileConfig.list_profiles() == ["alpha", "beta"]

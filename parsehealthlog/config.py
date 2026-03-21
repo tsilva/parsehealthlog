@@ -39,6 +39,22 @@ MODEL_PRICING = {
 }
 
 
+def get_config_dir() -> Path:
+    """Return the base configuration directory."""
+    return Path.home() / ".config" / "parsehealthlog"
+
+
+def get_profiles_dir() -> Path:
+    """Return the directory containing profile files."""
+    return get_config_dir() / "profiles"
+
+
+def get_env_file(env_name: str | None = None) -> Path:
+    """Return the dotenv file path for the requested environment."""
+    filename = f".env.{env_name}" if env_name else ".env"
+    return get_config_dir() / filename
+
+
 def get_model_pricing(model_id: str) -> dict[str, float]:
     """Get pricing for a model, falling back to default if not found."""
     return MODEL_PRICING.get(model_id, MODEL_PRICING["default"])
@@ -112,8 +128,21 @@ class ProfileConfig:
         )
 
     @classmethod
-    def list_profiles(cls, profiles_dir: Path = Path("profiles")) -> list[str]:
+    def find_profile_path(
+        cls, profile_name: str, profiles_dir: Path | None = None
+    ) -> Path | None:
+        """Find a profile file by name in the configured profiles directory."""
+        profiles_dir = profiles_dir or get_profiles_dir()
+        for ext in (".yaml", ".yml", ".json"):
+            candidate = profiles_dir / f"{profile_name}{ext}"
+            if candidate.exists():
+                return candidate
+        return None
+
+    @classmethod
+    def list_profiles(cls, profiles_dir: Path | None = None) -> list[str]:
         """List available profile names (excludes templates starting with _)."""
+        profiles_dir = profiles_dir or get_profiles_dir()
         if not profiles_dir.exists():
             return []
         profiles = []
