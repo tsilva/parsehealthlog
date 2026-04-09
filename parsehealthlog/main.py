@@ -69,6 +69,7 @@ import logging
 import re
 import shutil
 import sys
+import threading
 from pathlib import Path
 from typing import Final
 
@@ -375,6 +376,8 @@ class HealthLogProcessor:
 
         # State file for progress tracking
         self.state_file = self.OUTPUT_PATH / ".state.json"
+        self.generated_files: set[Path] = set()
+        self._generated_files_lock = threading.Lock()
 
         # Validate all required prompts exist at startup
         self._validate_prompts()
@@ -425,6 +428,11 @@ class HealthLogProcessor:
         state = self._load_state()
         state.update(updates)
         self._save_state(state)
+
+    def _track_generated_file(self, path: Path) -> None:
+        """Record a file written during the current run."""
+        with self._generated_files_lock:
+            self.generated_files.add(path)
 
     def get_progress(self) -> dict:
         """Get current processing progress.
@@ -534,6 +542,7 @@ class HealthLogProcessor:
             raw_path = self.entries_dir / f"{date}.raw.md"
             # Strip date header - it's already in the filename
             raw_path.write_text(strip_date_header(sec), encoding="utf-8")
+            self._track_generated_file(raw_path)
 
             # Check if processing needed based on dependencies
             labs_content = ""
@@ -601,6 +610,7 @@ class HealthLogProcessor:
                 f"{LAB_SECTION_HEADER}\n{format_labs(df)}\n",
                 encoding="utf-8",
             )
+            self._track_generated_file(lab_path)
 
         # Always regenerate exam markdown files
         # This includes both regular entries and exam-only entries
@@ -613,6 +623,7 @@ class HealthLogProcessor:
                 f"{MEDICAL_EXAMS_SECTION_HEADER}\n{joined_exams}\n",
                 encoding="utf-8",
             )
+            self._track_generated_file(exams_path)
 
         # Validate date consistency between source and output
         self._validate_date_consistency(sections)
@@ -791,6 +802,7 @@ class HealthLogProcessor:
                 processed_path.write_text(
                     f"{deps_comment}\n{final_content}", encoding="utf-8"
                 )
+                self._track_generated_file(processed_path)
 
                 return date, True
 
@@ -1096,6 +1108,7 @@ class HealthLogProcessor:
                 return
 
         collated_path.write_text(f"{deps_comment}\n{content}", encoding="utf-8")
+        self._track_generated_file(collated_path)
         self.logger.info(
             "Saved health log (%d entries, newest to oldest) to %s",
             len(sorted_entries),
@@ -1217,6 +1230,7 @@ class HealthLogProcessor:
             processed_path.write_text(
                 f"{deps_comment}\n{processed_content}", encoding="utf-8"
             )
+            self._track_generated_file(processed_path)
 
             # Describe what data types are present
             data_types = []
@@ -1292,6 +1306,14 @@ class HealthLogProcessor:
         print(f"  Deleted:   {stats['deleted']}")
         print(f"  Failed:    {stats['failed']}")
         print(f"  Total:     {stats['total']}")
+        if self.generated_files:
+            print("\nGenerated files:")
+            for path in sorted(self.generated_files):
+                try:
+                    display_path = path.relative_to(self.OUTPUT_PATH)
+                except ValueError:
+                    display_path = path
+                print(f"  - {display_path}")
         print("=" * 60 + "\n")
 
 

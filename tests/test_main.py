@@ -1,9 +1,12 @@
 """Tests for main.py utility functions."""
 
+from pathlib import Path
+
 import pytest
 import pandas as pd
 
 from parsehealthlog.main import (
+    HealthLogProcessor,
     extract_date,
     parse_deps_comment,
     format_deps_comment,
@@ -229,3 +232,27 @@ class TestFormatLabs:
         assert len(lines) == 2
         assert "Glucose" in lines[0]
         assert "HbA1c" in lines[1]
+
+
+class TestExtractionSummary:
+    """Tests for extraction summary output."""
+
+    def test_print_extraction_summary_includes_generated_files(self, capsys):
+        """Summary prints generated file paths relative to the output directory."""
+        processor = HealthLogProcessor.__new__(HealthLogProcessor)
+        processor.OUTPUT_PATH = Path("/tmp/output")
+        processor.generated_files = {
+            processor.OUTPUT_PATH / "health_log.md",
+            processor.OUTPUT_PATH / "entries/2024-01-15.raw.md",
+            processor.OUTPUT_PATH / "entries/2024-01-15.processed.md",
+        }
+
+        processor._print_extraction_summary(
+            {"converted": 1, "deleted": 0, "failed": 0, "total": 1}
+        )
+
+        captured = capsys.readouterr().out
+        assert "Generated files:" in captured
+        assert "entries/2024-01-15.processed.md" in captured
+        assert "entries/2024-01-15.raw.md" in captured
+        assert "health_log.md" in captured
