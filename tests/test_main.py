@@ -1,6 +1,8 @@
 """Tests for main.py utility functions."""
 
+import logging
 from pathlib import Path
+import threading
 
 import pytest
 import pandas as pd
@@ -11,6 +13,7 @@ from parsehealthlog.main import (
     parse_deps_comment,
     format_deps_comment,
     short_hash,
+    format_exam_summary,
     format_labs,
 )
 from parsehealthlog.exceptions import DateExtractionError
@@ -151,6 +154,7 @@ class TestFormatLabs:
             "reference_max_normalized": [100],
         })
         result = format_labs(df)
+        assert "### Other" in result
         assert "**Glucose:**" in result
         assert "95" in result
         assert "mg/dL" in result
@@ -219,19 +223,115 @@ class TestFormatLabs:
         assert "ref:" not in result
 
     def test_format_labs_multiple(self):
-        """Format multiple lab results."""
+        """Format grouped lab results with subgroup headings."""
         df = pd.DataFrame({
-            "lab_name_standardized": ["Glucose", "HbA1c"],
-            "value_normalized": [95, 5.5],
-            "unit_normalized": ["mg/dL", "%"],
-            "reference_min_normalized": [70, 4.0],
-            "reference_max_normalized": [100, 5.6],
+            "lab_name_standardized": [
+                "Blood - Glucose",
+                "Blood - HbA1c",
+                "Urine Type II - Sediment - Leukocytes",
+            ],
+            "value_normalized": [95, 5.5, 3.0],
+            "unit_normalized": ["mg/dL", "%", "/ul"],
+            "reference_min_normalized": [70, 4.0, None],
+            "reference_max_normalized": [100, 5.6, None],
         })
         result = format_labs(df)
-        lines = result.strip().split("\n")
-        assert len(lines) == 2
-        assert "Glucose" in lines[0]
-        assert "HbA1c" in lines[1]
+        assert "### Blood" in result
+        assert "#### Sediment" in result
+        assert "**Glucose:** 95 mg/dL (ref: 70 - 100)" in result
+        assert "**HbA1c:** 5.5 % (ref: 4 - 5.6)" in result
+        assert "**Leukocytes:** 3 /ul" in result
+
+
+class TestFormatExamSummary:
+    """Tests for exam formatting helpers."""
+
+    def test_format_exam_summary_strips_front_matter_and_formats_metadata(self):
+        """Exam summaries should render title, metadata, and body bullets."""
+        content = """---
+exam_date: '2025-09-04'
+title: Lumbar Spine MRI
+doctor: Valentina Ribeiro
+facility: Unilabs Clínica Dragão
+department: Neurorradiologia
+category: imaging
+---
+
+Lumbar spine MRI dated 2025-09-04 was performed for persistent low back pain.
+
+Conclusion: No discopathy identified.
+"""
+        result = format_exam_summary(content)
+        assert result.startswith("### Lumbar Spine MRI")
+        assert "---" not in result
+        assert (
+            "- Date: 2025-09-04; Doctor: Valentina Ribeiro; Facility: Unilabs Clínica Dragão; "
+            "Department: Neurorradiologia; Category: imaging"
+        ) in result
+        assert "- Lumbar spine MRI dated 2025-09-04 was performed for persistent low back pain." in result
+        assert "- Conclusion: No discopathy identified." in result
+
+    def test_format_exam_summary_preserves_existing_lists(self):
+        """Existing markdown lists should be preserved under the exam block."""
+        content = """---
+title: Sleep Study
+---
+
+Findings:
+- AHI 1.1/h
+- Mean SpO2 95%
+"""
+        result = format_exam_summary(content)
+        assert "### Sleep Study" in result
+        assert "- Findings:" in result
+        assert "- AHI 1.1/h" in result
+        assert "- Mean SpO2 95%" in result
+
+
+class TestCollatedHealthLog:
+    """Tests for collated output structure."""
+
+    def test_save_collated_health_log_uses_sectioned_date_blocks(self, tmp_path):
+        """Collated log should keep dates top-level and source sections underneath."""
+        entries_dir = tmp_path / "entries"
+        entries_dir.mkdir()
+
+        (entries_dir / "2025-09-22.processed.md").write_text(
+            "<!-- DEPS: raw:a -->\n"
+            "## Journal\n\n"
+            "- Slept poorly\n\n"
+            "## Medical Exams\n\n"
+            "### Sleep Study\n\n"
+            "- Date: 2025-09-22; Category: other\n\n"
+            "- AHI 1.1/h\n",
+            encoding="utf-8",
+        )
+        (entries_dir / "2025-09-08.processed.md").write_text(
+            "<!-- DEPS: raw:b -->\n"
+            "## Lab Results\n\n"
+            "### Blood\n"
+            "- **Glucose:** 82 mg/dL\n",
+            encoding="utf-8",
+        )
+
+        processor = HealthLogProcessor.__new__(HealthLogProcessor)
+        processor.OUTPUT_PATH = tmp_path
+        processor.entries_dir = entries_dir
+        processor.generated_files = set()
+        processor._generated_files_lock = threading.Lock()
+        processor.logger = logging.getLogger("test.collated")
+
+        processor._save_collated_health_log()
+
+        content = (tmp_path / "health_log.md").read_text(encoding="utf-8")
+        assert "# 2025-09-22" in content
+        assert "# 2025-09-08" in content
+        assert content.index("# 2025-09-22") < content.index("# 2025-09-08")
+        assert "## Journal" in content
+        assert "## Medical Exams" in content
+        assert "## Lab Results" in content
+        assert "### Sleep Study" in content
+        assert "### Blood" in content
 
 
 class TestExtractionSummary:

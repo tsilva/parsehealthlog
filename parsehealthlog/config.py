@@ -79,7 +79,7 @@ def check_api_accessibility(base_url: str, timeout: int = 10) -> bool:
 class ProfileConfig:
     """Profile configuration loaded from YAML file.
 
-    Contains user-specific paths, API configuration, and optional setting overrides.
+    Contains user-specific paths and optional setting overrides.
     """
 
     name: str
@@ -93,8 +93,6 @@ class ProfileConfig:
 
     # API configuration
     base_url: str = "http://127.0.0.1:8082/api/v1"
-    api_key: str = "parsehealthlog"
-    model_id: str | None = None
 
     @classmethod
     def from_file(cls, profile_path: Path) -> "ProfileConfig":
@@ -123,8 +121,6 @@ class ProfileConfig:
             ),
             workers=data.get("workers"),
             base_url=data.get("base_url", "http://127.0.0.1:8082/api/v1"),
-            api_key=data.get("api_key", "parsehealthlog"),
-            model_id=data.get("model_id"),
         )
 
     @classmethod
@@ -157,7 +153,7 @@ class ProfileConfig:
 class Config:
     """Configuration for the health log parser.
 
-    All configuration values are loaded from profile YAML files.
+    Runtime configuration combines profile paths with environment-based API settings.
     Required fields will raise an error if not set.
     """
 
@@ -199,10 +195,12 @@ class Config:
             raise ConfigurationError(
                 f"Profile '{profile.name}' missing required field: output_path"
             )
-        if not profile.model_id:
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
             raise ConfigurationError(
-                f"Profile '{profile.name}' missing required field: model_id"
+                "Missing required environment variable: OPENROUTER_API_KEY"
             )
+        model_id = os.getenv("MODEL_ID", "gpt-4o-mini")
 
         # Workers with priority: profile > env > default (clamped to CPU count)
         if profile.workers is not None:
@@ -217,8 +215,8 @@ class Config:
 
         return cls(
             base_url=profile.base_url,
-            api_key=profile.api_key,
-            model_id=profile.model_id,
+            api_key=api_key,
+            model_id=model_id,
             health_log_path=profile.health_log_path,
             output_path=profile.output_path,
             labs_parser_output_path=profile.labs_parser_output_path,

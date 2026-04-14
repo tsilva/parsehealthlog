@@ -17,10 +17,10 @@ Output structure:
         ├─ <date>.labs.md
         └─ <date>.exams.md
 
-Configuration via profile YAML (see config.py):
-    model_id                     – mandatory (model identifier)
+Configuration via profile YAML + ~/.config/parsehealthlog/.env (see config.py):
+    model_id                     – env-driven via MODEL_ID (default: gpt-4o-mini)
     base_url                     – API base URL (default: http://127.0.0.1:8082/api/v1)
-    api_key                      – API key (default: parsehealthlog)
+    api_key                      – env-driven via OPENROUTER_API_KEY
     health_log_path              – mandatory (path to the markdown health log)
     output_path                  – mandatory (base directory for generated output)
     labs_parser_output_path      – (optional) path to aggregated lab CSVs
@@ -83,6 +83,7 @@ from tenacity import (
     retry_if_exception_type,
 )
 from tqdm import tqdm
+from yaml import YAMLError, safe_load
 
 from parsehealthlog.config import (
     Config,
@@ -152,8 +153,9 @@ def setup_logging() -> None:
 
 
 PROMPTS_DIR: Final = Path(__file__).with_suffix("").parent / "prompts"
-LAB_SECTION_HEADER: Final = "Lab test results:"
-MEDICAL_EXAMS_SECTION_HEADER: Final = "Medical exam results:"
+JOURNAL_SECTION_HEADER: Final = "## Journal"
+LAB_SECTION_HEADER: Final = "## Lab Results"
+MEDICAL_EXAMS_SECTION_HEADER: Final = "## Medical Exams"
 
 
 def load_prompt(name: str) -> str:
@@ -229,26 +231,231 @@ def strip_date_header(section: str) -> str:
     return "\n".join(lines[1:]).strip()
 
 
+def format_journal_section(content: str) -> str:
+    """Wrap processed journal content in a normalized Journal section."""
+    normalized = normalize_markdown_headers(content.strip(), target_base_level=3)
+    if not normalized.strip():
+        return ""
+    return f"{JOURNAL_SECTION_HEADER}\n\n{normalized}"
+
+
+def split_lab_name(name: str) -> tuple[str, str | None, str]:
+    """Split a standardized lab name into group, subgroup, and test label."""
+    cleaned = str(name).strip()
+    parts = [part.strip() for part in cleaned.split(" - ") if part.strip()]
+
+    if len(parts) >= 3:
+        return parts[0], parts[1], " - ".join(parts[2:])
+    if len(parts) == 2:
+        return parts[0], None, parts[1]
+    return "Other", None, cleaned
+
+
+def format_lab_line(
+    name: str,
+    value: object,
+    unit: str,
+    reference_min: object,
+    reference_max: object,
+) -> str:
+    """Format a single lab result line."""
+    formatted_value = format_scalar(value)
+    line = f"- **{name}:** {formatted_value}{f' {unit}' if unit else ''}"
+    if pd.notna(reference_min) and pd.notna(reference_max):
+        line += f" (ref: {format_scalar(reference_min)} - {format_scalar(reference_max)})"
+    return line
+
+
+def format_scalar(value: object) -> str:
+    """Render scalars without unnecessary trailing .0 for integers."""
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        if numeric.is_integer():
+            return str(int(numeric))
+    return str(value)
+
+
 def format_labs(df: pd.DataFrame) -> str:
     """Format lab results for clinical review.
 
     Outputs raw values with reference ranges - clinical interpretation is
     delegated to downstream LLMs which can apply medical judgment.
     """
-    out: list[str] = []
+    grouped: dict[str, dict[str, object]] = {}
     for row in df.itertuples():
-        name = str(row.lab_name_standardized).strip()
-        value = row.value_normalized
+        group, subgroup, test_name = split_lab_name(row.lab_name_standardized)
+        bucket = grouped.setdefault(group, {"tests": [], "subgroups": {}})
         unit = str(getattr(row, "unit_normalized", "")).strip()
         rmin, rmax = row.reference_min_normalized, row.reference_max_normalized
+        line = format_lab_line(test_name, row.value_normalized, unit, rmin, rmax)
 
-        # Format value with unit and reference range
-        line = f"- **{name}:** {value}{f' {unit}' if unit else ''}"
-        if pd.notna(rmin) and pd.notna(rmax):
-            line += f" (ref: {rmin} - {rmax})"
+        if subgroup:
+            subgroups = bucket["subgroups"]
+            assert isinstance(subgroups, dict)
+            subgroups.setdefault(subgroup, []).append(line)
+        else:
+            tests = bucket["tests"]
+            assert isinstance(tests, list)
+            tests.append(line)
 
-        out.append(line)
-    return "\n".join(out)
+    out: list[str] = []
+    for group, payload in grouped.items():
+        out.append(f"### {group}")
+
+        tests = payload["tests"]
+        assert isinstance(tests, list)
+        if tests:
+            out.extend(tests)
+
+        subgroups = payload["subgroups"]
+        assert isinstance(subgroups, dict)
+        for subgroup_name, subgroup_lines in subgroups.items():
+            out.append(f"#### {subgroup_name}")
+            out.extend(subgroup_lines)
+
+        out.append("")
+
+    return "\n".join(out).strip()
+
+
+def format_labs_section(df: pd.DataFrame) -> str:
+    """Wrap formatted labs in a Lab Results section."""
+    formatted = format_labs(df).strip()
+    if not formatted:
+        return ""
+    return f"{LAB_SECTION_HEADER}\n\n{formatted}"
+
+
+def parse_front_matter(content: str) -> tuple[dict[str, object], str]:
+    """Parse optional YAML front matter from markdown content."""
+    stripped = content.strip()
+    if not stripped.startswith("---"):
+        return {}, stripped
+
+    match = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", stripped, re.DOTALL)
+    if not match:
+        return {}, stripped
+
+    metadata: dict[str, object] = {}
+    try:
+        loaded = safe_load(match.group(1)) or {}
+        if isinstance(loaded, dict):
+            metadata = {str(key): value for key, value in loaded.items()}
+    except YAMLError:
+        metadata = {}
+
+    return metadata, match.group(2).strip()
+
+
+def is_markdown_list_block(block: str) -> bool:
+    """Return True if a markdown block is entirely a list."""
+    lines = [line for line in block.splitlines() if line.strip()]
+    if not lines:
+        return False
+    return all(re.match(r"^\s*(?:[-*]|\d+\.)\s+", line) for line in lines)
+
+
+def is_markdown_list_line(line: str) -> bool:
+    """Return True if a line is a markdown list item."""
+    return bool(re.match(r"^\s*(?:[-*]|\d+\.)\s+", line))
+
+
+def flatten_markdown_block(block: str) -> str:
+    """Flatten a markdown block into a single line."""
+    parts = [re.sub(r"^#+\s*", "", line.strip()) for line in block.splitlines()]
+    return " ".join(part for part in parts if part).strip()
+
+
+def indent_markdown_block(block: str, spaces: int = 4) -> str:
+    """Indent a markdown block for nesting under a bullet."""
+    prefix = " " * spaces
+    return "\n".join(f"{prefix}{line}" if line.strip() else "" for line in block.splitlines())
+
+
+def format_exam_metadata(metadata: dict[str, object]) -> str:
+    """Render selected exam metadata fields as one bullet."""
+    fields = [
+        ("exam_date", "Date"),
+        ("doctor", "Doctor"),
+        ("facility", "Facility"),
+        ("department", "Department"),
+        ("category", "Category"),
+    ]
+    parts = []
+    for key, label in fields:
+        value = metadata.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            parts.append(f"{label}: {text}")
+    return f"- {'; '.join(parts)}" if parts else ""
+
+
+def format_exam_summary(content: str) -> str:
+    """Normalize a medical exam summary into structured markdown."""
+    metadata, body = parse_front_matter(content)
+    title = str(
+        metadata.get("title") or metadata.get("exam_name_raw") or "Medical Exam"
+    ).strip()
+
+    parts = [f"### {title}"]
+    metadata_line = format_exam_metadata(metadata)
+    if metadata_line:
+        parts.append(metadata_line)
+
+    for block in re.split(r"\n\s*\n+", body):
+        block = block.strip()
+        if not block:
+            continue
+        if is_markdown_list_block(block):
+            parts.append(block)
+            continue
+
+        lines = [line.rstrip() for line in block.splitlines() if line.strip()]
+        list_start = next(
+            (index for index, line in enumerate(lines) if is_markdown_list_line(line)),
+            None,
+        )
+        if list_start is not None:
+            intro = flatten_markdown_block("\n".join(lines[:list_start]))
+            if intro:
+                parts.append(f"- {intro}")
+
+            list_block = "\n".join(lines[list_start:])
+            if is_markdown_list_block(list_block):
+                parts.append(indent_markdown_block(list_block) if intro else list_block)
+                continue
+
+        flattened = flatten_markdown_block(block)
+        if flattened:
+            parts.append(f"- {flattened}")
+
+    return "\n\n".join(parts).strip()
+
+
+def format_medical_exams_section(exams_list: list[str]) -> str:
+    """Wrap normalized exam summaries in a Medical Exams section."""
+    formatted_exams = [format_exam_summary(exam) for exam in exams_list if exam.strip()]
+    if not formatted_exams:
+        return ""
+    return f"{MEDICAL_EXAMS_SECTION_HEADER}\n\n" + "\n\n".join(formatted_exams)
+
+
+def assemble_entry_content(
+    journal_content: str = "",
+    labs_content: str = "",
+    exams_content: str = "",
+) -> str:
+    """Assemble journal, lab, and exam sections for one date."""
+    sections = [
+        section.strip()
+        for section in (journal_content, labs_content, exams_content)
+        if section.strip()
+    ]
+    return "\n\n".join(sections)
 
 
 def normalize_markdown_headers(content: str, target_base_level: int) -> str:
@@ -547,14 +754,13 @@ class HealthLogProcessor:
             # Check if processing needed based on dependencies
             labs_content = ""
             if date in self.labs_by_date and not self.labs_by_date[date].empty:
-                labs_content = (
-                    f"{LAB_SECTION_HEADER}\n{format_labs(self.labs_by_date[date])}\n"
-                )
+                labs_content = format_labs_section(self.labs_by_date[date])
 
             exams_content = ""
             if date in self.medical_exams_by_date and self.medical_exams_by_date[date]:
-                joined_exams = "\n\n".join(self.medical_exams_by_date[date])
-                exams_content = f"{MEDICAL_EXAMS_SECTION_HEADER}\n{joined_exams}\n"
+                exams_content = format_medical_exams_section(
+                    self.medical_exams_by_date[date]
+                )
 
             processed_path = self.entries_dir / f"{date}.processed.md"
             deps = self._get_section_dependencies(sec, labs_content, exams_content)
@@ -607,7 +813,7 @@ class HealthLogProcessor:
                 continue
             lab_path = self.entries_dir / f"{date}.labs.md"
             lab_path.write_text(
-                f"{LAB_SECTION_HEADER}\n{format_labs(df)}\n",
+                f"{format_labs_section(df)}\n",
                 encoding="utf-8",
             )
             self._track_generated_file(lab_path)
@@ -618,9 +824,8 @@ class HealthLogProcessor:
             if not exams_list:
                 continue
             exams_path = self.entries_dir / f"{date}.exams.md"
-            joined_exams = "\n\n".join(exams_list)
             exams_path.write_text(
-                f"{MEDICAL_EXAMS_SECTION_HEADER}\n{joined_exams}\n",
+                f"{format_medical_exams_section(exams_list)}\n",
                 encoding="utf-8",
             )
             self._track_generated_file(exams_path)
@@ -734,15 +939,14 @@ class HealthLogProcessor:
         # Get labs content for this date
         labs_content = ""
         if date in self.labs_by_date and not self.labs_by_date[date].empty:
-            labs_content = (
-                f"{LAB_SECTION_HEADER}\n{format_labs(self.labs_by_date[date])}\n"
-            )
+            labs_content = format_labs_section(self.labs_by_date[date])
 
         # Get medical exams content for this date
         exams_content = ""
         if date in self.medical_exams_by_date and self.medical_exams_by_date[date]:
-            joined_exams = "\n\n".join(self.medical_exams_by_date[date])
-            exams_content = f"{MEDICAL_EXAMS_SECTION_HEADER}\n{joined_exams}\n"
+            exams_content = format_medical_exams_section(
+                self.medical_exams_by_date[date]
+            )
 
         # Compute dependencies for this section
         deps = self._get_section_dependencies(section, labs_content, exams_content)
@@ -790,12 +994,11 @@ class HealthLogProcessor:
             last_validation = validation
 
             if "$OK$" in validation:
-                # Include labs and exams in processed file if they exist
-                final_content = processed
-                if labs_content:
-                    final_content = f"{final_content}\n\n{labs_content}"
-                if exams_content:
-                    final_content = f"{final_content}\n\n{exams_content}"
+                final_content = assemble_entry_content(
+                    format_journal_section(processed),
+                    labs_content,
+                    exams_content,
+                )
 
                 # Write with dependency hash in first line
                 deps_comment = format_deps_comment(deps)
@@ -1080,8 +1283,8 @@ class HealthLogProcessor:
         for path in self.entries_dir.glob("*.processed.md"):
             date = path.stem.split(".")[0]
             content = self._read_without_deps_comment(path)
-            # Normalize entry headers to level 4 (#### YYYY-MM-DD)
-            normalized = normalize_markdown_headers(content, target_base_level=4)
+            # Normalize entry headers to level 2 (## section under # date)
+            normalized = normalize_markdown_headers(content, target_base_level=2)
             processed_entries.append((date, normalized))
 
         sorted_entries = sorted(processed_entries, key=lambda x: x[0], reverse=True)
@@ -1191,14 +1394,13 @@ class HealthLogProcessor:
             labs_content = ""
             df = self.labs_by_date.get(date)
             if df is not None and not df.empty:
-                labs_content = f"{LAB_SECTION_HEADER}\n{format_labs(df)}\n"
+                labs_content = format_labs_section(df)
 
             # Get exams content if available
             exams_content = ""
             exams_list = self.medical_exams_by_date.get(date)
             if exams_list:
-                joined_exams = "\n\n".join(exams_list)
-                exams_content = f"{MEDICAL_EXAMS_SECTION_HEADER}\n{joined_exams}\n"
+                exams_content = format_medical_exams_section(exams_list)
 
             # Skip if neither labs nor exams exist
             if not labs_content and not exams_content:
@@ -1219,13 +1421,10 @@ class HealthLogProcessor:
                 continue  # up-to-date
 
             # Assemble processed content (no date header - it's in the filename)
-            content_parts = []
-            if labs_content:
-                content_parts.append(labs_content)
-            if exams_content:
-                content_parts.append(exams_content)
-
-            processed_content = "\n\n".join(content_parts)
+            processed_content = assemble_entry_content(
+                labs_content=labs_content,
+                exams_content=exams_content,
+            )
             deps_comment = format_deps_comment(deps)
             processed_path.write_text(
                 f"{deps_comment}\n{processed_content}", encoding="utf-8"
@@ -1352,14 +1551,13 @@ class DryRunHealthLogProcessor(HealthLogProcessor):
         # Get labs/exams content for token estimation
         labs_content = ""
         if date in self.labs_by_date and not self.labs_by_date[date].empty:
-            labs_content = (
-                f"{LAB_SECTION_HEADER}\n{format_labs(self.labs_by_date[date])}\n"
-            )
+            labs_content = format_labs_section(self.labs_by_date[date])
 
         exams_content = ""
         if date in self.medical_exams_by_date and self.medical_exams_by_date[date]:
-            joined_exams = "\n\n".join(self.medical_exams_by_date[date])
-            exams_content = f"{MEDICAL_EXAMS_SECTION_HEADER}\n{joined_exams}\n"
+            exams_content = format_medical_exams_section(
+                self.medical_exams_by_date[date]
+            )
 
         # Estimate tokens for this section
         # Process call: system prompt + section content
@@ -1442,14 +1640,13 @@ class DryRunHealthLogProcessor(HealthLogProcessor):
             # Get labs/exams content
             labs_content = ""
             if date in self.labs_by_date and not self.labs_by_date[date].empty:
-                labs_content = (
-                    f"{LAB_SECTION_HEADER}\n{format_labs(self.labs_by_date[date])}\n"
-                )
+                labs_content = format_labs_section(self.labs_by_date[date])
 
             exams_content = ""
             if date in self.medical_exams_by_date and self.medical_exams_by_date[date]:
-                joined_exams = "\n\n".join(self.medical_exams_by_date[date])
-                exams_content = f"{MEDICAL_EXAMS_SECTION_HEADER}\n{joined_exams}\n"
+                exams_content = format_medical_exams_section(
+                    self.medical_exams_by_date[date]
+                )
 
             processed_path = self.entries_dir / f"{date}.processed.md"
             deps = self._get_section_dependencies(sec, labs_content, exams_content)
