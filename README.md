@@ -16,14 +16,14 @@
 parsehealthlog is a data extraction and curation tool that transforms unstructured health journal entries into structured, validated data ready for downstream analysis.
 
 **What it produces:**
-- **`health_log.md`** — All processed entries (newest to oldest) with labs and exams integrated
+- **`health_log.md`** — All processed entries (newest to oldest) with per-date `Journal`, `Lab Results`, and `Medical Exams` sections when present
 
 The tool processes, validates, and enriches health log entries. Reports, summaries, and recommendations are left to downstream consumers of the structured data.
 
 ## Features
 
 - **Parallel processing** of hundreds of journal entries
-- **Lab result integration** with automatic interpretation
+- **Structured lab and exam integration** without adding medical interpretation
 - **Hash-based caching** for efficient incremental rebuilds
 - **Multi-model support** via OpenRouter (GPT-4, Claude, etc.)
 - **Profile-based configuration** for managing multiple health logs
@@ -45,11 +45,11 @@ cp profiles/template.yaml.example ~/.config/parsehealthlog/profiles/myprofile.ya
 
 # Create ~/.config/parsehealthlog/.env
 # OPENROUTER_API_KEY=your-key
+# MODEL_ID=your-model
 
 # Edit ~/.config/parsehealthlog/profiles/myprofile.yaml
 # health_log_path: /path/to/health.md
 # output_path: /path/to/output
-# model_id: your-model
 
 # Run
 uv run parsehealthlog --profile myprofile
@@ -59,11 +59,12 @@ uv run parsehealthlog --profile myprofile
 
 ```
 OUTPUT_PATH/
-├── health_log.md            # PRIMARY: All entries (newest to oldest)
+├── health_log.md            # PRIMARY: All entries (newest to oldest), sectioned by source
 └── entries/                 # INTERMEDIATE (kept for caching)
     ├── YYYY-MM-DD.raw.md
     ├── YYYY-MM-DD.processed.md
-    └── YYYY-MM-DD.labs.md
+    ├── YYYY-MM-DD.labs.md
+    └── YYYY-MM-DD.exams.md
 ```
 
 ## Configuration
@@ -73,6 +74,7 @@ OUTPUT_PATH/
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `OPENROUTER_API_KEY` | Yes | Your OpenRouter API key |
+| `MODEL_ID` | No | LLM model to use (default: `gpt-4o-mini`) |
 
 ### Profile Configuration (`~/.config/parsehealthlog/profiles/<name>.yaml`)
 
@@ -80,7 +82,6 @@ OUTPUT_PATH/
 |----------|----------|-------------|
 | `health_log_path` | Yes | Path to your markdown health log |
 | `output_path` | Yes | Directory for generated output |
-| `model_id` | No | Default LLM model (default: `gpt-4o-mini`) |
 | `max_workers` | No | Parallel processing threads (default: `4`) |
 
 See [docs/pipeline.md](docs/pipeline.md) for all configuration options.

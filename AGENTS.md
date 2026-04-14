@@ -21,12 +21,14 @@ mkdir -p ~/.config/parsehealthlog/profiles
 # Run
 uv run parsehealthlog --profile <profile_name>
 
+# Environment configuration (~/.config/parsehealthlog/.env)
+OPENROUTER_API_KEY=your-key         # Required
+MODEL_ID=your-model                 # Optional, defaults to gpt-4o-mini
+
 # Profile configuration (~/.config/parsehealthlog/profiles/<name>.yaml)
 health_log_path: /path/to/health.md    # Required
 output_path: /path/to/output           # Required
-model_id: model-name                   # Required
 base_url: http://127.0.0.1:8082/api/v1 # Optional (default shown)
-api_key: parsehealthlog              # Optional (default shown)
 ```
 
 See `docs/pipeline.md` for full configuration options.

@@ -72,7 +72,7 @@ This document describes the data processing pipeline used by parsehealthlog to t
 
 ### Step 3: Lab Data Loading
 
-**What it does:** Loads laboratory test results from CSV files and groups them by date for merging with health log entries.
+**What it does:** Loads laboratory test results from CSV files, groups them by date, and later renders them into readable markdown sections inside each date block.
 
 **Key files/APIs:**
 - `main.py:_load_labs()` - CSV loading and normalization
@@ -87,8 +87,8 @@ This document describes the data processing pipeline used by parsehealthlog to t
 **Behavior notes:**
 - Handles multiple CSV column naming conventions via mapping
 - Required columns: `date`, `lab_name_standardized`
-- Boolean lab values formatted as Positive/Negative
-- Numeric values include units, reference ranges, and status (OK/BELOW RANGE/ABOVE RANGE)
+- Lab results are grouped by standardized name prefixes (for example `Blood`, `Urine Type II`)
+- Boolean and numeric values are preserved as raw extracted values with units and reference ranges when present
 - Creates placeholder entries for dates with labs but no journal entry
 
 ---
@@ -103,15 +103,18 @@ This document describes the data processing pipeline used by parsehealthlog to t
 - `prompts/process.system_prompt.md` - Processing prompt
 - `prompts/validate.system_prompt.md` - Validation prompt
 
-**Input:** Raw section text + associated labs
+**Input:** Raw section text + associated labs/exams
 **Output:**
 - `entries/<date>.raw.md` - Original section text
-- `entries/<date>.processed.md` - Validated LLM output (with DEPS comment)
-- `entries/<date>.labs.md` - Formatted lab results
+- `entries/<date>.processed.md` - Validated, sectioned markdown (with DEPS comment)
+- `entries/<date>.labs.md` - `## Lab Results` section for that date
+- `entries/<date>.exams.md` - `## Medical Exams` section for that date
 
 **Behavior notes:**
 - Uses `ThreadPoolExecutor` with `MAX_WORKERS` threads (default: 4)
 - Validation retries up to 3 times if `$OK$` marker not found
+- Processed date blocks are assembled in source order: `## Journal`, `## Lab Results`, `## Medical Exams`
+- Imported exam summaries have YAML front matter stripped and are normalized into titled bullet-based blocks
 - Failed sections create `.failed.md` diagnostic files
 - Caching uses content hashes, not timestamps (sections re-extracted each run)
 
@@ -119,7 +122,7 @@ This document describes the data processing pipeline used by parsehealthlog to t
 
 ### Step 5: Collated Log Output
 
-**What it does:** Assembles all processed entries into a single markdown file, ordered newest to oldest.
+**What it does:** Assembles all processed entries into a single markdown file, ordered newest to oldest, while preserving the per-date source subsections.
 
 **Key files/APIs:**
 - `main.py:_save_collated_health_log()` - Assembly logic
@@ -128,8 +131,8 @@ This document describes the data processing pipeline used by parsehealthlog to t
 **Output:** `health_log.md` - Complete health log with all entries
 
 **Behavior notes:**
-- Headers normalized to consistent levels
-- Includes labs and exams integrated with each entry
+- Top-level date headers use `# YYYY-MM-DD`
+- Nested content is normalized so each date block reads as one record with `## Journal`, `## Lab Results`, and `## Medical Exams` sections when present
 - Uses content hash for caching
 
 ---
