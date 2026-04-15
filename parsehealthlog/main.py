@@ -1,86 +1,34 @@
-from __future__ import annotations
+"""Process health journal entries into structured markdown.
 
-"""Health log data extraction and curation tool.
-
-Transforms markdown health journal entries into structured, curated data:
-• Reads a markdown health log that uses `### YYYY-MM-DD` section headers.
-• Processes and validates entries using LLM prompts stored in `prompts/`.
-• Enriches entries with lab results and medical exam summaries.
-• Builds a chronological timeline with episode IDs linking related events.
-
-Output structure:
-    OUTPUT_PATH/
-    ├─ health_log.md          # PRIMARY: All entries (newest to oldest) with labs/exams
-    └─ entries/               # INTERMEDIATE (kept for caching)
-        ├─ <date>.raw.md
-        ├─ <date>.processed.md
-        ├─ <date>.labs.md
-        └─ <date>.exams.md
-
-Configuration via profile YAML + ~/.config/parsehealthlog/.env (see config.py):
-    model_id                     – env-driven via MODEL_ID (default: gpt-4o-mini)
-    base_url                     – API base URL (default: https://openrouter.ai/api/v1)
-    api_key                      – env-driven via OPENROUTER_API_KEY
-    health_log_path              – mandatory (path to the markdown health log)
-    output_path                  – mandatory (base directory for generated output)
-    labs_parser_output_path      – (optional) path to aggregated lab CSVs
-    medical_exams_parser_output_path – (optional) path to medical exam summaries
-    workers                      – (optional) ThreadPoolExecutor size (default 4)
+The processor reads `### YYYY-MM-DD` sections, validates prompt availability,
+runs LLM-backed processing for journal content, merges lab and medical exam
+sidecars, and writes both per-date cached outputs and a collated `health_log.md`.
 """
 
-from dotenv import load_dotenv
-import sys as _sys
-
-from parsehealthlog.config import get_config_dir, get_env_file
-
-
-def _load_dotenv_with_env() -> str | None:
-    """Load dotenv files from the user config directory."""
-    env_name = None
-    for i, arg in enumerate(_sys.argv):
-        if arg == "--env" and i + 1 < len(_sys.argv):
-            env_name = _sys.argv[i + 1]
-            break
-        if arg.startswith("--env="):
-            env_name = arg.split("=", 1)[1]
-            break
-
-    if env_name:
-        env_file = get_env_file(env_name)
-        if env_file.exists():
-            load_dotenv(env_file, override=True)
-        else:
-            print(f"Warning: {env_file} not found")
-    else:
-        load_dotenv(get_env_file(), override=True)
-    return env_name
-
-
-_load_dotenv_with_env()
+from __future__ import annotations
 
 import argparse
-from collections.abc import Iterable
+import json
+import logging
+import re
+import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
-import json
-import logging
-import re
-import shutil
-import sys
-import threading
 from pathlib import Path
 from typing import Final
 
 import pandas as pd
 from dateutil.parser import parse as date_parse
-from openai import OpenAI, APIError, APIConnectionError, RateLimitError, APITimeoutError
+from dotenv import load_dotenv
+from openai import APIConnectionError, APIError, APITimeoutError, OpenAI, RateLimitError
 from tenacity import (
     retry,
+    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
 )
 from tqdm import tqdm
 from yaml import YAMLError, safe_load
@@ -89,9 +37,33 @@ from parsehealthlog.config import (
     Config,
     ProfileConfig,
     check_api_accessibility,
+    get_config_dir,
+    get_env_file,
     get_model_pricing,
 )
-from parsehealthlog.exceptions import DateExtractionError, ExtractionError, PromptError
+from parsehealthlog.exceptions import ConfigurationError, DateExtractionError, PromptError
+from parsehealthlog.types import (
+    ChatMessage,
+    DependencyMap,
+    ExamFrontMatter,
+    ExtractionStats,
+    LabGroupPayload,
+    PersistedState,
+    ProgressSnapshot,
+    ScalarLike,
+)
+
+
+def load_dotenv_for_env(env_name: str | None) -> None:
+    """Load dotenv files from the user config directory."""
+    if env_name:
+        env_file = get_env_file(env_name)
+        if env_file.exists():
+            load_dotenv(env_file, override=True)
+        else:
+            print(f"Warning: {env_file} not found")
+        return
+    load_dotenv(get_env_file(), override=True)
 
 
 # --------------------------------------------------------------------------------------
@@ -253,10 +225,10 @@ def split_lab_name(name: str) -> tuple[str, str | None, str]:
 
 def format_lab_line(
     name: str,
-    value: object,
+    value: ScalarLike,
     unit: str,
-    reference_min: object,
-    reference_max: object,
+    reference_min: ScalarLike,
+    reference_max: ScalarLike,
 ) -> str:
     """Format a single lab result line."""
     formatted_value = format_scalar(value)
@@ -266,7 +238,7 @@ def format_lab_line(
     return line
 
 
-def format_scalar(value: object) -> str:
+def format_scalar(value: ScalarLike) -> str:
     """Render scalars without unnecessary trailing .0 for integers."""
     if isinstance(value, bool):
         return str(value)
@@ -283,7 +255,7 @@ def format_labs(df: pd.DataFrame) -> str:
     Outputs raw values with reference ranges - clinical interpretation is
     delegated to downstream LLMs which can apply medical judgment.
     """
-    grouped: dict[str, dict[str, object]] = {}
+    grouped: dict[str, LabGroupPayload] = {}
     for row in df.itertuples():
         group, subgroup, test_name = split_lab_name(row.lab_name_standardized)
         bucket = grouped.setdefault(group, {"tests": [], "subgroups": {}})
@@ -292,26 +264,18 @@ def format_labs(df: pd.DataFrame) -> str:
         line = format_lab_line(test_name, row.value_normalized, unit, rmin, rmax)
 
         if subgroup:
-            subgroups = bucket["subgroups"]
-            assert isinstance(subgroups, dict)
-            subgroups.setdefault(subgroup, []).append(line)
+            bucket["subgroups"].setdefault(subgroup, []).append(line)
         else:
-            tests = bucket["tests"]
-            assert isinstance(tests, list)
-            tests.append(line)
+            bucket["tests"].append(line)
 
     out: list[str] = []
     for group, payload in grouped.items():
         out.append(f"### {group}")
 
-        tests = payload["tests"]
-        assert isinstance(tests, list)
-        if tests:
-            out.extend(tests)
+        if payload["tests"]:
+            out.extend(payload["tests"])
 
-        subgroups = payload["subgroups"]
-        assert isinstance(subgroups, dict)
-        for subgroup_name, subgroup_lines in subgroups.items():
+        for subgroup_name, subgroup_lines in payload["subgroups"].items():
             out.append(f"#### {subgroup_name}")
             out.extend(subgroup_lines)
 
@@ -328,7 +292,7 @@ def format_labs_section(df: pd.DataFrame) -> str:
     return f"{LAB_SECTION_HEADER}\n\n{formatted}"
 
 
-def parse_front_matter(content: str) -> tuple[dict[str, object], str]:
+def parse_front_matter(content: str) -> tuple[ExamFrontMatter, str]:
     """Parse optional YAML front matter from markdown content."""
     stripped = content.strip()
     if not stripped.startswith("---"):
@@ -338,11 +302,22 @@ def parse_front_matter(content: str) -> tuple[dict[str, object], str]:
     if not match:
         return {}, stripped
 
-    metadata: dict[str, object] = {}
+    metadata: ExamFrontMatter = {}
     try:
         loaded = safe_load(match.group(1)) or {}
         if isinstance(loaded, dict):
-            metadata = {str(key): value for key, value in loaded.items()}
+            for key in (
+                "title",
+                "exam_name_raw",
+                "exam_date",
+                "doctor",
+                "facility",
+                "department",
+                "category",
+            ):
+                value = loaded.get(key)
+                if value is not None:
+                    metadata[key] = str(value)
     except YAMLError:
         metadata = {}
 
@@ -374,7 +349,7 @@ def indent_markdown_block(block: str, spaces: int = 4) -> str:
     return "\n".join(f"{prefix}{line}" if line.strip() else "" for line in block.splitlines())
 
 
-def format_exam_metadata(metadata: dict[str, object]) -> str:
+def format_exam_metadata(metadata: ExamFrontMatter) -> str:
     """Render selected exam metadata fields as one bullet."""
     fields = [
         ("exam_date", "Date"),
@@ -525,7 +500,7 @@ class LLM:
     )
     def __call__(
         self,
-        messages: list[dict[str, str]],
+        messages: list[ChatMessage],
         *,
         max_tokens: int = 2048,
         temperature: float = 0.0,
@@ -613,17 +588,21 @@ class HealthLogProcessor:
     # State management for resumable runs
     # ------------------------------------------------------------------
 
-    def _load_state(self) -> dict:
+    def _load_state(self) -> PersistedState:
         """Load state from state file, or return empty state if not exists."""
         if not self.state_file.exists():
             return {}
         try:
-            return json.loads(self.state_file.read_text(encoding="utf-8"))
+            state = json.loads(self.state_file.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, IOError) as e:
             self.logger.warning("Could not load state file: %s", e)
             return {}
+        if not isinstance(state, dict):
+            self.logger.warning("Could not load state file: expected an object")
+            return {}
+        return state
 
-    def _save_state(self, state: dict) -> None:
+    def _save_state(self, state: PersistedState) -> None:
         """Save state to state file."""
         try:
             self.state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
@@ -632,7 +611,7 @@ class HealthLogProcessor:
 
     def _update_state(self, **updates) -> None:
         """Update specific fields in state file."""
-        state = self._load_state()
+        state: PersistedState = self._load_state()
         state.update(updates)
         self._save_state(state)
 
@@ -655,7 +634,7 @@ class HealthLogProcessor:
         self._track_generated_file(path)
         return True
 
-    def get_progress(self) -> dict:
+    def get_progress(self) -> ProgressSnapshot:
         """Get current processing progress.
 
         Returns a dict with:
@@ -668,7 +647,7 @@ class HealthLogProcessor:
         - extractions_failed: List of failed extraction dates
         - reports_generated: List of generated report names
         """
-        state = self._load_state()
+        state: PersistedState = self._load_state()
 
         # Count processed sections from filesystem
         processed_files = list(self.entries_dir.glob("*.processed.md"))
@@ -689,49 +668,17 @@ class HealthLogProcessor:
         }
 
     # ------------------------------------------------------------------
-    # LLM response parsing
-    # ------------------------------------------------------------------
-
-    def _parse_json_response(self, text: str) -> dict:
-        """Parse JSON from LLM response, stripping markdown code blocks if present."""
-        text = text.strip()
-        if not text:
-            raise json.JSONDecodeError("Empty response from LLM", "", 0)
-        # Match ```json ... ``` or ``` ... ``` (handles trailing whitespace/newlines)
-        match = re.match(r"^```(?:json)?\s*\n(.*)\n```\s*$", text, re.DOTALL)
-        if match:
-            text = match.group(1).strip()
-        # Fallback: try to extract JSON object if it starts with { and ends with }
-        elif text.startswith("```"):
-            # Code block without proper closing - try to extract JSON anyway
-            lines = text.split("\n")
-            if lines[0].startswith("```"):
-                lines = lines[1:]  # Skip opening fence
-            # Find where JSON ends (last closing brace)
-            json_text = "\n".join(lines)
-            if "```" in json_text:
-                json_text = json_text.split("```")[0]
-            text = json_text.strip()
-        if not text:
-            raise json.JSONDecodeError(
-                "Empty JSON content after stripping code block", "", 0
-            )
-        return json.loads(text)
-
-    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     def run(self) -> None:  # noqa: C901 – single orchestrator method is clearer here
-        # Track run start
         self._update_state(
             status="in_progress",
             started_at=datetime.now().isoformat(),
             completed_at=None,
         )
 
-        # Statistics counters
-        stats = {
+        stats: ExtractionStats = {
             "converted": 0,
             "deleted": 0,
             "failed": 0,
@@ -742,7 +689,6 @@ class HealthLogProcessor:
         self._load_labs()
         self._load_medical_exams()
 
-        # Delete orphaned entries for dates no longer in source log
         orphaned = self._get_orphaned_entries(sections)
         if orphaned:
             for orphan_file in orphaned:
@@ -750,35 +696,14 @@ class HealthLogProcessor:
                 self.logger.info("Deleted orphaned entry file: %s", orphan_file.name)
                 stats["deleted"] += 1
 
-        # Create placeholder sections for dates with labs/exams but no entries
         sections = self._create_placeholder_sections(sections)
-
-        # Update state with total sections count
         self._update_state(sections_total=len(sections))
 
-        # Write raw sections & compute which ones need processing
         to_process: list[str] = []
         for sec in sections:
-            date = extract_date(sec)
-            raw_path = self.entries_dir / f"{date}.raw.md"
-            # Strip date header - it's already in the filename
-            self._write_text_if_changed(raw_path, strip_date_header(sec))
-
-            # Check if processing needed based on dependencies
-            labs_content = ""
-            if date in self.labs_by_date and not self.labs_by_date[date].empty:
-                labs_content = format_labs_section(self.labs_by_date[date])
-
-            exams_content = ""
-            if date in self.medical_exams_by_date and self.medical_exams_by_date[date]:
-                exams_content = format_medical_exams_section(
-                    self.medical_exams_by_date[date]
-                )
-
-            processed_path = self.entries_dir / f"{date}.processed.md"
-            deps = self._get_section_dependencies(sec, labs_content, exams_content)
-
-            if self._check_needs_regeneration(processed_path, deps):
+            plan = self._build_entry_plan(section=sec)
+            self._write_text_if_changed(plan.raw_path, plan.raw_content)
+            if self._check_needs_regeneration(plan.processed_path, plan.deps):
                 to_process.append(sec)
 
         # Process (potentially in parallel)
@@ -797,11 +722,10 @@ class HealthLogProcessor:
                     else:
                         stats["converted"] += 1
                 except Exception as e:
-                    # Get the section that caused the error for context
                     section = futures[fut]
                     try:
                         date = extract_date(section)
-                    except Exception:
+                    except DateExtractionError:
                         date = "(unknown date)"
                     self.logger.error(
                         "Exception processing section %s: %s", date, e, exc_info=True
@@ -816,11 +740,8 @@ class HealthLogProcessor:
         else:
             self.logger.info("All sections processed successfully")
 
-        # Save collated health log (all processed entries newest to oldest)
         self._save_collated_health_log()
 
-        # Always regenerate lab markdown files
-        # This includes both regular entries and lab-only entries
         for date, df in self.labs_by_date.items():
             if df.empty:
                 continue
@@ -830,8 +751,6 @@ class HealthLogProcessor:
                 f"{format_labs_section(df)}\n",
             )
 
-        # Always regenerate exam markdown files
-        # This includes both regular entries and exam-only entries
         for date, exams_list in self.medical_exams_by_date.items():
             if not exams_list:
                 continue
@@ -841,13 +760,8 @@ class HealthLogProcessor:
                 f"{format_medical_exams_section(exams_list)}\n",
             )
 
-        # Validate date consistency between source and output
         self._validate_date_consistency(sections)
-
-        # Print processing summary
         self._print_extraction_summary(stats)
-
-        # Track run completion
         self._update_state(
             status="completed" if not failed else "completed_with_errors",
             completed_at=datetime.now().isoformat(),
@@ -886,28 +800,89 @@ class HealthLogProcessor:
         """
         return short_hash(self._prompt(name))
 
-    def _hash_files_without_deps(self, paths: Iterable[Path]) -> str:
-        """Compute combined hash of multiple files, excluding deps comments."""
-        contents = []
-        for path in sorted(paths):
-            if path.exists():
-                contents.append(self._read_without_deps_comment(path))
-        return short_hash("\n\n".join(contents)) if contents else ""
+    @dataclass(slots=True)
+    class EntryPlan:
+        date: str
+        raw_content: str
+        raw_path: Path
+        processed_path: Path
+        labs_content: str
+        exams_content: str
+        deps: DependencyMap
+
+    def _get_date_sidecar_content(self, date: str) -> tuple[str, str]:
+        """Return rendered lab and exam sidecars for a date."""
+        labs_content = ""
+        df = self.labs_by_date.get(date)
+        if df is not None and not df.empty:
+            labs_content = format_labs_section(df)
+
+        exams_content = ""
+        exams_list = self.medical_exams_by_date.get(date)
+        if exams_list:
+            exams_content = format_medical_exams_section(exams_list)
+
+        return labs_content, exams_content
+
+    def _build_entry_plan(
+        self, *, section: str | None = None, date: str | None = None
+    ) -> EntryPlan:
+        """Build the file paths, rendered sidecars, and deps for one date."""
+        if section is None and date is None:
+            raise ValueError("section or date is required")
+
+        if section is not None:
+            resolved_date = extract_date(section)
+            raw_content = strip_date_header(section)
+            raw_hash = short_hash(section)
+            process_prompt_hash = self._hash_prompt("process.system_prompt")
+            validate_prompt_hash = self._hash_prompt("validate.system_prompt")
+        else:
+            resolved_date = date
+            raw_content = ""
+            raw_hash = "none"
+            process_prompt_hash = "none"
+            validate_prompt_hash = "none"
+
+        assert resolved_date is not None
+        labs_content, exams_content = self._get_date_sidecar_content(resolved_date)
+        deps = self._get_section_dependencies(
+            raw_hash=raw_hash,
+            labs_content=labs_content,
+            exams_content=exams_content,
+            process_prompt_hash=process_prompt_hash,
+            validate_prompt_hash=validate_prompt_hash,
+        )
+        return self.EntryPlan(
+            date=resolved_date,
+            raw_content=raw_content,
+            raw_path=self.entries_dir / f"{resolved_date}.raw.md",
+            processed_path=self.entries_dir / f"{resolved_date}.processed.md",
+            labs_content=labs_content,
+            exams_content=exams_content,
+            deps=deps,
+        )
 
     def _get_section_dependencies(
-        self, section: str, labs_content: str, exams_content: str = ""
-    ) -> dict[str, str]:
+        self,
+        *,
+        raw_hash: str,
+        labs_content: str,
+        exams_content: str = "",
+        process_prompt_hash: str,
+        validate_prompt_hash: str,
+    ) -> DependencyMap:
         """Compute all dependencies for a processed section."""
         return {
-            "raw": short_hash(section),
+            "raw": raw_hash,
             "labs": short_hash(labs_content) if labs_content else "none",
             "exams": short_hash(exams_content) if exams_content else "none",
-            "process_prompt": self._hash_prompt("process.system_prompt"),
-            "validate_prompt": self._hash_prompt("validate.system_prompt"),
+            "process_prompt": process_prompt_hash,
+            "validate_prompt": validate_prompt_hash,
         }
 
     def _check_needs_regeneration(
-        self, path: Path, expected_deps: dict[str, str]
+        self, path: Path, expected_deps: DependencyMap
     ) -> bool:
         """Check if a file needs regeneration based on its dependencies.
 
@@ -937,39 +912,25 @@ class HealthLogProcessor:
 
         return False
 
+    def _write_processed_entry(self, plan: EntryPlan, content: str) -> bool:
+        """Write one processed entry with its dependency comment."""
+        rendered = f"{format_deps_comment(plan.deps)}\n{content}"
+        return self._write_text_if_changed(plan.processed_path, rendered)
+
     # --------------------------------------------------------------
     # Section processing (one dated section → validated markdown)
     # --------------------------------------------------------------
 
     def _process_section(self, section: str) -> tuple[str, bool]:
-        date = extract_date(section)
-        processed_path = self.entries_dir / f"{date}.processed.md"
-        # Strip date header - it's in the filename
-        section_content = strip_date_header(section)
-
-        # Get labs content for this date
-        labs_content = ""
-        if date in self.labs_by_date and not self.labs_by_date[date].empty:
-            labs_content = format_labs_section(self.labs_by_date[date])
-
-        # Get medical exams content for this date
-        exams_content = ""
-        if date in self.medical_exams_by_date and self.medical_exams_by_date[date]:
-            exams_content = format_medical_exams_section(
-                self.medical_exams_by_date[date]
-            )
-
-        # Compute dependencies for this section
-        deps = self._get_section_dependencies(section, labs_content, exams_content)
+        plan = self._build_entry_plan(section=section)
 
         last_processed = ""
         last_validation = ""
 
         for attempt in range(1, 4):
-            # 1) PROCESS - include validation feedback on retries
             messages = [
                 {"role": "system", "content": self._prompt("process.system_prompt")},
-                {"role": "user", "content": section_content},
+                {"role": "user", "content": plan.raw_content},
             ]
             if attempt > 1 and last_validation:
                 messages.append(
@@ -981,13 +942,17 @@ class HealthLogProcessor:
                 messages.append(
                     {
                         "role": "user",
-                        "content": f"Your output was rejected because it was missing details:\n{last_validation}\n\nPlease try again, preserving ALL details including dosages, brand names, and additional ingredients.",
+                        "content": (
+                            "Your output was rejected because it was missing details:\n"
+                            f"{last_validation}\n\nPlease try again, preserving ALL "
+                            "details including dosages, brand names, and additional "
+                            "ingredients."
+                        ),
                     }
                 )
             processed = self.llm["process"](messages)
             last_processed = processed
 
-            # 2) VALIDATE
             validation = self.llm["validate"](
                 [
                     {
@@ -997,7 +962,7 @@ class HealthLogProcessor:
                     {
                         "role": "user",
                         "content": self._prompt("validate.user_prompt").format(
-                            raw_section=section_content, processed_section=processed
+                            raw_section=plan.raw_content, processed_section=processed
                         ),
                     },
                 ]
@@ -1007,30 +972,22 @@ class HealthLogProcessor:
             if "$OK$" in validation:
                 final_content = assemble_entry_content(
                     format_journal_section(processed),
-                    labs_content,
-                    exams_content,
+                    plan.labs_content,
+                    plan.exams_content,
                 )
-
-                # Write with dependency hash in first line
-                deps_comment = format_deps_comment(deps)
-                processed_path.write_text(
-                    f"{deps_comment}\n{final_content}", encoding="utf-8"
-                )
-                self._track_generated_file(processed_path)
-
-                return date, True
+                self._write_processed_entry(plan, final_content)
+                return plan.date, True
 
             self.logger.error(
-                "Validation failed (%s attempt %d): %s", date, attempt, validation
+                "Validation failed (%s attempt %d): %s", plan.date, attempt, validation
             )
 
-        # Save diagnostic info for failed validation
-        failed_path = self.entries_dir / f"{date}.failed.md"
-        diagnostic = f"""# Validation Failed: {date}
+        failed_path = self.entries_dir / f"{plan.date}.failed.md"
+        diagnostic = f"""# Validation Failed: {plan.date}
 
 ## Raw Section (Input)
 ```
-{section_content}
+{plan.raw_content}
 ```
 
 ## Last Processed Output
@@ -1051,7 +1008,7 @@ class HealthLogProcessor:
         failed_path.write_text(diagnostic, encoding="utf-8")
         self.logger.error("Saved diagnostic info to %s", failed_path)
 
-        return date, False
+        return plan.date, False
 
     # --------------------------------------------------------------
     # Input pre-processing helpers
@@ -1060,7 +1017,6 @@ class HealthLogProcessor:
     def _split_sections(self) -> list[str]:
         text = self.path.read_text(encoding="utf-8")
 
-        # Locate the first dated section header (supports YYYY-MM-DD or YYYY/MM/DD)
         date_regex = r"^###\s*\d{4}[-/]\d{2}[-/]\d{2}"
         match = re.search(date_regex, text, flags=re.MULTILINE)
         if not match:
@@ -1068,17 +1024,13 @@ class HealthLogProcessor:
                 "No dated sections found (expected '### YYYY-MM-DD' or '### YYYY/MM/DD')."
             )
 
-        # Content before first dated section is ignored
         body = text[match.start() :]
-
-        # Split the remainder on dated section headers
         sections = [
             s.strip()
             for s in re.split(rf"(?={date_regex})", body, flags=re.MULTILINE)
             if s.strip()
         ]
 
-        # Detect duplicate date sections and error out
         seen: dict[str, int] = {}
         for sec in sections:
             date = extract_date(sec)
@@ -1086,7 +1038,7 @@ class HealthLogProcessor:
         duplicates = [date for date, count in seen.items() if count > 1]
         if duplicates:
             raise ValueError(
-                f"Duplicate date sections found in source file — fix before running:\n"
+                "Duplicate date sections found in source file — fix before running:\n"
                 + "\n".join(f"  - {d}" for d in sorted(duplicates))
             )
 
@@ -1289,30 +1241,23 @@ class HealthLogProcessor:
         """
         collated_path = self.OUTPUT_PATH / "health_log.md"
 
-        # Get all processed entries sorted newest-first, with normalized headers
         processed_entries = []
         for path in self.entries_dir.glob("*.processed.md"):
             date = path.stem.split(".")[0]
             content = self._read_without_deps_comment(path)
-            # Normalize entry headers to level 2 (## section under # date)
             normalized = normalize_markdown_headers(content, target_base_level=2)
             processed_entries.append((date, normalized))
 
         sorted_entries = sorted(processed_entries, key=lambda x: x[0], reverse=True)
 
-        # Assemble collated content
         parts = []
         for date, entry_content in sorted_entries:
             parts.append(f"# {date}")
             parts.append(entry_content)
 
         content = "\n\n".join(parts)
-
-        # Compute hash for dependency tracking
         content_hash = short_hash(content)
         deps_comment = format_deps_comment({"content": content_hash})
-
-        # Check if file needs update
         if collated_path.exists():
             existing_deps = parse_deps_comment(
                 collated_path.read_text(encoding="utf-8").split("\n")[0]
@@ -1342,22 +1287,12 @@ class HealthLogProcessor:
         Returns:
             List of Path objects for orphaned entry files.
         """
-        # Extract all dates currently in the source log
-        source_dates = set()
-        for sec in sections:
-            try:
-                date = extract_date(sec)
-                source_dates.add(date)
-            except DateExtractionError:
-                continue
-
-        # Also include dates from labs and exams (these are valid even without log entries)
+        source_dates = {extract_date(sec) for sec in sections}
         data_dates = set(self.labs_by_date.keys()) | set(
             self.medical_exams_by_date.keys()
         )
         valid_dates = source_dates | data_dates
 
-        # Find orphaned entry files
         orphaned: list[Path] = []
 
         for entry_file in self.entries_dir.iterdir():
@@ -1366,13 +1301,9 @@ class HealthLogProcessor:
                 continue
             file_date = date_match.group(1)
 
-            # Raw files must correspond to active source log entries - having labs/exams
-            # data does not justify keeping a raw file for a removed source entry.
             if entry_file.name.endswith(".raw.md"):
                 if file_date not in source_dates:
                     orphaned.append(entry_file)
-            # All other files (.processed.md, .labs.md, .exams.md, .failed.md, .failed.json)
-            # are kept as long as any current data source (source log, labs, exams) has the date.
             elif file_date not in valid_dates:
                 orphaned.append(entry_file)
 
@@ -1387,10 +1318,7 @@ class HealthLogProcessor:
 
         Returns the original sections list unchanged.
         """
-        # Extract dates from existing sections
         log_dates = {extract_date(sec) for sec in sections}
-
-        # Find dates with labs or exams but no entries
         data_dates = set(self.labs_by_date.keys()) | set(
             self.medical_exams_by_date.keys()
         )
@@ -1399,54 +1327,24 @@ class HealthLogProcessor:
         if not missing_dates:
             return sections
 
-        # Create entry files directly for dates with only labs/exams
         for date in missing_dates:
-            # Get labs content if available
-            labs_content = ""
-            df = self.labs_by_date.get(date)
-            if df is not None and not df.empty:
-                labs_content = format_labs_section(df)
-
-            # Get exams content if available
-            exams_content = ""
-            exams_list = self.medical_exams_by_date.get(date)
-            if exams_list:
-                exams_content = format_medical_exams_section(exams_list)
-
-            # Skip if neither labs nor exams exist
-            if not labs_content and not exams_content:
+            plan = self._build_entry_plan(date=date)
+            if not plan.labs_content and not plan.exams_content:
                 continue
 
-            # Dependencies for data-only entries (no raw content, no LLM processing)
-            deps = {
-                "raw": "none",  # No raw health log content
-                "labs": short_hash(labs_content) if labs_content else "none",
-                "exams": short_hash(exams_content) if exams_content else "none",
-                "process_prompt": "none",  # Not processed by LLM
-                "validate_prompt": "none",  # Not validated
-            }
+            if not self._check_needs_regeneration(plan.processed_path, plan.deps):
+                continue
 
-            # Check if processed file exists and is up-to-date
-            processed_path = self.entries_dir / f"{date}.processed.md"
-            if not self._check_needs_regeneration(processed_path, deps):
-                continue  # up-to-date
-
-            # Assemble processed content (no date header - it's in the filename)
             processed_content = assemble_entry_content(
-                labs_content=labs_content,
-                exams_content=exams_content,
+                labs_content=plan.labs_content,
+                exams_content=plan.exams_content,
             )
-            deps_comment = format_deps_comment(deps)
-            processed_path.write_text(
-                f"{deps_comment}\n{processed_content}", encoding="utf-8"
-            )
-            self._track_generated_file(processed_path)
+            self._write_processed_entry(plan, processed_content)
 
-            # Describe what data types are present
             data_types = []
-            if labs_content:
+            if plan.labs_content:
                 data_types.append("labs")
-            if exams_content:
+            if plan.exams_content:
                 data_types.append("exams")
             self.logger.info(
                 "Created entry for %s (%s, no health log entry)",
@@ -1454,7 +1352,6 @@ class HealthLogProcessor:
                 " + ".join(data_types),
             )
 
-        # Return original sections unchanged (placeholder files were created directly)
         return sections
 
     def _validate_date_consistency(self, sections: list[str]) -> None:
@@ -1472,16 +1369,7 @@ class HealthLogProcessor:
         Raises:
             AssertionError: If date sets don't match exactly.
         """
-        # Extract dates from source sections
-        source_dates: set[str] = set()
-        for sec in sections:
-            try:
-                date = extract_date(sec)
-                source_dates.add(date)
-            except DateExtractionError:
-                continue
-
-        # Extract dates from entries directory (.raw.md files)
+        source_dates = {extract_date(sec) for sec in sections}
         entry_dates: set[str] = set()
         if self.entries_dir.exists():
             for raw_file in self.entries_dir.glob("*.raw.md"):
@@ -1489,16 +1377,21 @@ class HealthLogProcessor:
                 if date_match:
                     entry_dates.add(date_match.group(1))
 
-        # Check for mismatches
         missing_in_entries = source_dates - entry_dates
         extra_in_entries = entry_dates - source_dates
 
         if missing_in_entries or extra_in_entries:
             error_msg = "Date validation failed:\n"
             if missing_in_entries:
-                error_msg += f"  - Dates in source but missing from entries: {sorted(missing_in_entries)}\n"
+                error_msg += (
+                    "  - Dates in source but missing from entries: "
+                    f"{sorted(missing_in_entries)}\n"
+                )
             if extra_in_entries:
-                error_msg += f"  - Dates in entries but not in source: {sorted(extra_in_entries)}\n"
+                error_msg += (
+                    "  - Dates in entries but not in source: "
+                    f"{sorted(extra_in_entries)}\n"
+                )
             raise AssertionError(error_msg)
 
         self.logger.info(
@@ -1507,7 +1400,7 @@ class HealthLogProcessor:
             len(entry_dates),
         )
 
-    def _print_extraction_summary(self, stats: dict[str, int]) -> None:
+    def _print_extraction_summary(self, stats: ExtractionStats) -> None:
         """Print extraction statistics summary."""
         print("\n" + "=" * 60)
         print("EXTRACTION SUMMARY")
@@ -1554,50 +1447,40 @@ class DryRunHealthLogProcessor(HealthLogProcessor):
         """Rough token estimate: ~4 characters per token."""
         return len(text) // 4
 
+    def _write_text_if_changed(self, path: Path, content: str) -> bool:
+        """Track file changes without writing them during a dry run."""
+        if not self._content_differs(path, content):
+            return False
+        targets = self.files_to_modify if path.exists() else self.files_to_create
+        if path not in targets:
+            targets.append(path)
+        return True
+
     def _process_section(self, section: str) -> tuple[str, bool]:
         """Track what would be processed without calling LLM."""
-        date = extract_date(section)
-        section_content = strip_date_header(section)
-
-        # Get labs/exams content for token estimation
-        labs_content = ""
-        if date in self.labs_by_date and not self.labs_by_date[date].empty:
-            labs_content = format_labs_section(self.labs_by_date[date])
-
-        exams_content = ""
-        if date in self.medical_exams_by_date and self.medical_exams_by_date[date]:
-            exams_content = format_medical_exams_section(
-                self.medical_exams_by_date[date]
-            )
-
-        # Estimate tokens for this section
-        # Process call: system prompt + section content
+        plan = self._build_entry_plan(section=section)
         process_prompt = self._prompt("process.system_prompt")
         self.estimated_input_tokens += self._estimate_tokens(process_prompt)
-        self.estimated_input_tokens += self._estimate_tokens(section_content)
-        self.estimated_input_tokens += self._estimate_tokens(labs_content)
-        self.estimated_input_tokens += self._estimate_tokens(exams_content)
+        self.estimated_input_tokens += self._estimate_tokens(plan.raw_content)
+        self.estimated_input_tokens += self._estimate_tokens(plan.labs_content)
+        self.estimated_input_tokens += self._estimate_tokens(plan.exams_content)
+        self.estimated_output_tokens += self._estimate_tokens(plan.raw_content)
 
-        # Assume output is roughly same size as input for processed content
-        self.estimated_output_tokens += self._estimate_tokens(section_content)
-
-        # Validate call: system prompt + user prompt with both sections
         validate_prompt = self._prompt("validate.system_prompt")
         validate_user = self._prompt("validate.user_prompt").format(
-            raw_section=section_content, processed_section=section_content
+            raw_section=plan.raw_content, processed_section=plan.raw_content
         )
         self.estimated_input_tokens += self._estimate_tokens(validate_prompt)
         self.estimated_input_tokens += self._estimate_tokens(validate_user)
-        self.estimated_output_tokens += 50  # $OK$ or short validation response
+        self.estimated_output_tokens += 50
 
-        # Track file that would be created
-        processed_path = self.entries_dir / f"{date}.processed.md"
-        if processed_path.exists():
-            self.files_to_modify.append(processed_path)
-        else:
-            self.files_to_create.append(processed_path)
-
-        return date, True
+        final_content = assemble_entry_content(
+            format_journal_section(plan.raw_content),
+            plan.labs_content,
+            plan.exams_content,
+        )
+        self._write_processed_entry(plan, final_content)
+        return plan.date, True
 
     def run_dry(self) -> bool:
         """Simulate processing and return True if changes would be made.
@@ -1609,14 +1492,9 @@ class DryRunHealthLogProcessor(HealthLogProcessor):
         self._load_labs()
         self._load_medical_exams()
 
-        # Detect orphaned entries for dates no longer in source log
         orphaned = self._get_orphaned_entries(sections)
         self.files_to_delete.extend(orphaned)
-
-        # Create placeholder sections for dates with labs/exams but no entries
         sections = self._create_placeholder_sections(sections)
-
-        # Track files that would be deleted with --force-reprocess
         if hasattr(self, "_force_reprocess") and self._force_reprocess:
             if self.entries_dir.exists():
                 for pattern in [
@@ -1639,63 +1517,27 @@ class DryRunHealthLogProcessor(HealthLogProcessor):
 
         # Check each section
         for sec in sections:
-            date = extract_date(sec)
-            raw_path = self.entries_dir / f"{date}.raw.md"
-            raw_content = strip_date_header(sec)
-
-            # Track raw file
-            if not self._content_differs(raw_path, raw_content):
-                pass
-            elif raw_path.exists():
-                self.files_to_modify.append(raw_path)
+            plan = self._build_entry_plan(section=sec)
+            self._write_text_if_changed(plan.raw_path, plan.raw_content)
+            if self._check_needs_regeneration(plan.processed_path, plan.deps):
+                self.sections_to_process.append(plan.date)
             else:
-                self.files_to_create.append(raw_path)
+                self.cache_hits.append(plan.date)
 
-            # Get labs/exams content
-            labs_content = ""
-            if date in self.labs_by_date and not self.labs_by_date[date].empty:
-                labs_content = format_labs_section(self.labs_by_date[date])
-
-            exams_content = ""
-            if date in self.medical_exams_by_date and self.medical_exams_by_date[date]:
-                exams_content = format_medical_exams_section(
-                    self.medical_exams_by_date[date]
-                )
-
-            processed_path = self.entries_dir / f"{date}.processed.md"
-            deps = self._get_section_dependencies(sec, labs_content, exams_content)
-
-            if self._check_needs_regeneration(processed_path, deps):
-                self.sections_to_process.append(date)
-            else:
-                self.cache_hits.append(date)
-
-        # Track lab and exam files
         for date, df in self.labs_by_date.items():
             if df.empty:
                 continue
             lab_path = self.entries_dir / f"{date}.labs.md"
             lab_content = f"{format_labs_section(df)}\n"
-            if not self._content_differs(lab_path, lab_content):
-                continue
-            if lab_path.exists():
-                self.files_to_modify.append(lab_path)
-            else:
-                self.files_to_create.append(lab_path)
+            self._write_text_if_changed(lab_path, lab_content)
 
         for date, exams_list in self.medical_exams_by_date.items():
             if not exams_list:
                 continue
             exams_path = self.entries_dir / f"{date}.exams.md"
             exams_content = f"{format_medical_exams_section(exams_list)}\n"
-            if not self._content_differs(exams_path, exams_content):
-                continue
-            if exams_path.exists():
-                self.files_to_modify.append(exams_path)
-            else:
-                self.files_to_create.append(exams_path)
+            self._write_text_if_changed(exams_path, exams_content)
 
-        # Track health_log.md
         collated_path = self.OUTPUT_PATH / "health_log.md"
         if collated_path.exists():
             self.files_to_modify.append(collated_path)
@@ -1709,21 +1551,17 @@ class DryRunHealthLogProcessor(HealthLogProcessor):
         print("\n" + "=" * 60)
         print("DRY RUN SUMMARY")
         print("=" * 60)
-
-        total_sections = len(self.sections_to_process) + len(self.cache_hits)
         print(
-            f"\nSections: {len(self.sections_to_process)} to process, {len(self.cache_hits)} up-to-date (cache hits)"
+            "\nSections: "
+            f"{len(self.sections_to_process)} to process, "
+            f"{len(self.cache_hits)} up-to-date (cache hits)"
         )
 
         print(f"\nFiles to create: {len(self.files_to_create)}")
         print(f"Files to modify: {len(self.files_to_modify)}")
         print(f"Files to delete: {len(self.files_to_delete)}")
 
-        # Calculate API calls and costs
         num_sections = len(self.sections_to_process)
-        api_calls = num_sections * 2  # Process + validate per section
-
-        # Account for validation retries (assume avg 1.2 calls per validation)
         api_calls = int(num_sections * (1 + 1.2))
 
         print(f"\nEstimated API calls: {api_calls}")
@@ -1735,7 +1573,9 @@ class DryRunHealthLogProcessor(HealthLogProcessor):
             total_cost = input_cost + output_cost
 
             print(
-                f"Estimated tokens: {self.estimated_input_tokens:,} input, {self.estimated_output_tokens:,} output"
+                "Estimated tokens: "
+                f"{self.estimated_input_tokens:,} input, "
+                f"{self.estimated_output_tokens:,} output"
             )
             print(f"Estimated cost: ${total_cost:.4f} (model: {self.config.model_id})")
 
@@ -1804,10 +1644,11 @@ Examples:
     )
     args = parser.parse_args()
 
+    load_dotenv_for_env(args.env)
+
     setup_logging()
     logger = logging.getLogger(__name__)
 
-    # Handle --list-profiles
     if args.list_profiles:
         profiles = ProfileConfig.list_profiles()
         if profiles:
@@ -1816,10 +1657,7 @@ Examples:
                 print(f"  - {name}")
         else:
             print(f"No profiles found in {get_config_dir() / 'profiles'}/")
-            print(
-                "Create a profile by copying "
-                "profiles/template.yaml.example to that directory"
-            )
+            print("Create a YAML or JSON profile in that directory.")
         sys.exit(0)
 
     def run_profile(profile_name, args, logger):
@@ -1834,29 +1672,26 @@ Examples:
         try:
             profile = ProfileConfig.from_file(profile_path)
             logger.info("Using profile: %s", profile.name)
-        except Exception as e:
+        except (ConfigurationError, OSError) as e:
             print(f"Error loading profile '{profile_name}': {e}")
             return False
 
         try:
             config = Config.from_profile(profile)
-        except ValueError as e:
+        except ConfigurationError as e:
             print(f"Configuration error for profile '{profile_name}': {e}")
             return False
 
-        # CLI --workers overrides profile/env setting
         if args.workers is not None:
             import os as _os
 
             max_cpu = _os.cpu_count() or 8
             config.max_workers = max(1, min(args.workers, max_cpu))
 
-        # Handle --force-reprocess flag: clear cached outputs
         if args.force_reprocess:
             output_path = config.output_path
             entries_dir = output_path / "entries"
 
-            # Delete all generated entry files
             if entries_dir.exists():
                 patterns = [
                     "*.processed.md",
@@ -1872,39 +1707,22 @@ Examples:
                 if deleted:
                     logger.info("Cleared %d generated files from %s", deleted, entries_dir)
 
-            # Delete primary output files
             for filename in ["health_log.md"]:
                 filepath = output_path / filename
                 if filepath.exists():
                     filepath.unlink()
                     logger.info("Deleted %s", filepath)
 
-            # Delete state file
             state_file = output_path / ".state.json"
             if state_file.exists():
                 state_file.unlink()
-
-            # Delete legacy files if they exist
-            for legacy_file in [
-                "health_timeline.csv",
-                "reports",
-            ]:
-                legacy_path = output_path / legacy_file
-                if legacy_path.exists():
-                    if legacy_path.is_dir():
-                        shutil.rmtree(legacy_path)
-                    else:
-                        legacy_path.unlink()
-                    logger.info("Cleared legacy %s", legacy_path)
 
         if not check_api_accessibility(config.base_url):
             logger.warning("API base URL is not accessible: %s", config.base_url)
             logger.warning("Processing will likely fail on LLM-dependent tasks.")
 
-        # Handle dry-run mode
         if args.dry_run:
             processor = DryRunHealthLogProcessor(config)
-            # Pass force_reprocess flag to processor for tracking deletions
             processor._force_reprocess = args.force_reprocess
             changes_needed = processor.run_dry()
             processor.print_summary()
@@ -1925,8 +1743,7 @@ Examples:
         profiles = ProfileConfig.list_profiles()
         if not profiles:
             print(
-                "No profiles found. Create one by copying "
-                "profiles/template.yaml.example into "
+                "No profiles found. Create a YAML or JSON profile in "
                 f"{get_config_dir() / 'profiles'}"
             )
             sys.exit(1)

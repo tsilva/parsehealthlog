@@ -1,22 +1,28 @@
 """Tests for main.py utility functions."""
 
 import logging
-from pathlib import Path
 import threading
+from pathlib import Path
+from unittest.mock import patch
 
-import pytest
 import pandas as pd
+import pytest
 
+from parsehealthlog.config import ProfileConfig
+from parsehealthlog.exceptions import ConfigurationError, DateExtractionError
 from parsehealthlog.main import (
+    DryRunHealthLogProcessor,
     HealthLogProcessor,
     extract_date,
-    parse_deps_comment,
     format_deps_comment,
-    short_hash,
     format_exam_summary,
     format_labs,
+    parse_deps_comment,
+    short_hash,
 )
-from parsehealthlog.exceptions import DateExtractionError
+from parsehealthlog.main import (
+    main as cli_main,
+)
 
 
 class TestExtractDate:
@@ -268,7 +274,10 @@ Conclusion: No discopathy identified.
             "- Date: 2025-09-04; Doctor: Valentina Ribeiro; Facility: Unilabs Clínica Dragão; "
             "Department: Neurorradiologia; Category: imaging"
         ) in result
-        assert "- Lumbar spine MRI dated 2025-09-04 was performed for persistent low back pain." in result
+        assert (
+            "- Lumbar spine MRI dated 2025-09-04 was performed for persistent low back pain."
+            in result
+        )
         assert "- Conclusion: No discopathy identified." in result
 
     def test_format_exam_summary_preserves_existing_lists(self):
@@ -391,3 +400,77 @@ class TestContentAwareWrites:
         assert changed is True
         assert processor.generated_files == {path}
         assert path.read_text(encoding="utf-8") == "new content\n"
+
+
+class TestInternalValidation:
+    def test_validate_date_consistency_surfaces_invalid_sections(self, tmp_path):
+        processor = HealthLogProcessor.__new__(HealthLogProcessor)
+        processor.entries_dir = tmp_path / "entries"
+        processor.entries_dir.mkdir()
+
+        with pytest.raises(DateExtractionError):
+            processor._validate_date_consistency(["### invalid header\n\nContent"])
+
+
+class TestDryRunProcessor:
+    def test_placeholder_sections_do_not_write_files_in_dry_run(self, tmp_path):
+        processor = DryRunHealthLogProcessor.__new__(DryRunHealthLogProcessor)
+        processor.entries_dir = tmp_path / "entries"
+        processor.entries_dir.mkdir()
+        processor.files_to_create = []
+        processor.files_to_modify = []
+        processor.labs_by_date = {
+            "2024-01-15": pd.DataFrame(
+                {
+                    "lab_name_standardized": ["Glucose"],
+                    "value_normalized": [95],
+                    "unit_normalized": ["mg/dL"],
+                    "reference_min_normalized": [70],
+                    "reference_max_normalized": [100],
+                }
+            )
+        }
+        processor.medical_exams_by_date = {}
+        processor.logger = logging.getLogger("test.dry-run")
+        processor.prompts = {}
+
+        result = processor._create_placeholder_sections([])
+
+        assert result == []
+        assert processor.files_to_create == [
+            processor.entries_dir / "2024-01-15.processed.md"
+        ]
+        assert not (processor.entries_dir / "2024-01-15.processed.md").exists()
+
+
+class TestCliErrors:
+    def test_main_reports_configuration_errors(self, capsys):
+        profile = ProfileConfig(
+            name="test",
+            health_log_path=Path("/path/to/log.md"),
+            output_path=Path("/path/to/output"),
+        )
+
+        with patch(
+            "parsehealthlog.main.sys.argv",
+            ["parsehealthlog", "--profile", "test"],
+        ), patch(
+            "parsehealthlog.main.setup_logging"
+        ), patch(
+            "parsehealthlog.main.ProfileConfig.find_profile_path",
+            return_value=Path("/tmp/test.yaml"),
+        ), patch(
+            "parsehealthlog.main.ProfileConfig.from_file",
+            return_value=profile,
+        ), patch(
+            "parsehealthlog.main.Config.from_profile",
+            side_effect=ConfigurationError("Missing API key"),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                cli_main()
+
+        assert exc_info.value.code == 1
+        assert (
+            "Configuration error for profile 'test': Missing API key"
+            in capsys.readouterr().out
+        )

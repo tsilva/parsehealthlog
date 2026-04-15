@@ -41,15 +41,14 @@ uv sync
 
 # Configure
 mkdir -p ~/.config/parsehealthlog/profiles
-cp profiles/template.yaml.example ~/.config/parsehealthlog/profiles/myprofile.yaml
+
+# Create ~/.config/parsehealthlog/profiles/myprofile.yaml
+# health_log_path: /path/to/health.md
+# output_path: /path/to/output
 
 # Create ~/.config/parsehealthlog/.env
 # OPENROUTER_API_KEY=your-key
 # MODEL_ID=your-model
-
-# Edit ~/.config/parsehealthlog/profiles/myprofile.yaml
-# health_log_path: /path/to/health.md
-# output_path: /path/to/output
 
 # Run
 uv run parsehealthlog --profile myprofile
@@ -82,7 +81,7 @@ OUTPUT_PATH/
 |----------|----------|-------------|
 | `health_log_path` | Yes | Path to your markdown health log |
 | `output_path` | Yes | Directory for generated output |
-| `max_workers` | No | Parallel processing threads (default: `4`) |
+| `workers` | No | Parallel processing threads (default: `4`) |
 | `base_url` | No | OpenAI-compatible API base URL (default: `https://openrouter.ai/api/v1`) |
 
 See [docs/pipeline.md](docs/pipeline.md) for all configuration options.
