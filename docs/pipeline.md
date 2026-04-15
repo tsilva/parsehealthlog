@@ -1,5 +1,3 @@
-> **Keep this doc updated when modifying the pipeline.**
-
 # Health Log Parser Pipeline
 
 This document describes the data processing pipeline used by parsehealthlog to transform unstructured health journal entries into structured data.
@@ -59,7 +57,7 @@ This document describes the data processing pipeline used by parsehealthlog to t
 - `main.py:_split_sections()` - Parsing logic
 - `main.py:extract_date()` - Date extraction from headers
 
-**Input:** Raw markdown file (`HEALTH_LOG_PATH`)
+**Input:** Raw markdown file (`health_log_path`)
 **Output:** List of section strings, each starting with `### YYYY-MM-DD`
 
 **Behavior notes:**
@@ -79,8 +77,8 @@ This document describes the data processing pipeline used by parsehealthlog to t
 - `main.py:format_labs()` - DataFrame to markdown conversion
 
 **Input:**
-- Per-log `labs.csv` (next to health log file)
-- Aggregated `LABS_PARSER_OUTPUT_PATH/all.csv` (optional)
+- Per-log `labs.csv` (next to the health log file)
+- Aggregated `labs_parser_output_path/all.csv` (optional)
 
 **Output:** `self.labs_by_date` dict mapping dates to DataFrames
 
@@ -196,19 +194,24 @@ Runtime configuration is loaded from `~/.config/parsehealthlog`:
 - Environment variables: `~/.config/parsehealthlog/.env` or `~/.config/parsehealthlog/.env.<name>`
 - Profiles: `~/.config/parsehealthlog/profiles/<name>.yaml`
 
+Environment variables:
+
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `OPENROUTER_API_KEY` | Yes | - | OpenRouter API key |
-| `HEALTH_LOG_PATH` | Yes | - | Path to markdown health log |
-| `OUTPUT_PATH` | Yes | - | Base directory for generated output |
-| `base_url` | No | `https://openrouter.ai/api/v1` | OpenAI-compatible API base URL from the profile |
-| `MODEL_ID` | No | `gpt-4o-mini` | Default model (fallback for all roles) |
-| `PROCESS_MODEL_ID` | No | `MODEL_ID` | Model for processing sections |
-| `VALIDATE_MODEL_ID` | No | `MODEL_ID` | Model for validating output |
+| `MODEL_ID` | No | `gpt-4o-mini` | Model used for processing and validation |
+| `MAX_WORKERS` | No | `4` | Parallel processing threads when the profile omits `workers` |
 
-| `LABS_PARSER_OUTPUT_PATH` | No | - | Path to aggregated lab CSVs |
-| `MEDICAL_EXAMS_PARSER_OUTPUT_PATH` | No | - | Path to medical exam summaries |
-| `MAX_WORKERS` | No | `4` | Parallel processing threads |
+Profile fields:
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `health_log_path` | Yes | - | Path to the markdown health log |
+| `output_path` | Yes | - | Base directory for generated output |
+| `base_url` | No | `https://openrouter.ai/api/v1` | OpenAI-compatible API base URL |
+| `workers` | No | `4` | Parallel processing threads |
+| `labs_parser_output_path` | No | - | Path to aggregated lab CSVs |
+| `medical_exams_parser_output_path` | No | - | Path to medical exam summaries |
 
 ## Behavioral Notes
 

@@ -5,13 +5,15 @@ Centralizes profile-based configuration loading and validation.
 
 import json
 import os
+import urllib.error
+import urllib.request
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 
 from parsehealthlog.exceptions import ConfigurationError
-
 
 # OpenRouter pricing per 1M tokens (input/output) in USD
 # Prices as of 2024 - update as needed
@@ -65,9 +67,6 @@ def get_model_pricing(model_id: str) -> dict[str, float]:
 
 def check_api_accessibility(base_url: str, timeout: int = 10) -> bool:
     """Check if the API base URL is accessible."""
-    import urllib.request
-    import urllib.error
-
     try:
         req = urllib.request.Request(base_url, method="HEAD")
         urllib.request.urlopen(req, timeout=timeout)
@@ -105,10 +104,24 @@ class ProfileConfig:
 
         content = profile_path.read_text(encoding="utf-8")
 
-        if profile_path.suffix in (".yaml", ".yml"):
-            data = yaml.safe_load(content)
-        else:
-            data = json.load(open(profile_path, encoding="utf-8"))
+        try:
+            if profile_path.suffix in (".yaml", ".yml"):
+                data = yaml.safe_load(content)
+            else:
+                with profile_path.open(encoding="utf-8") as handle:
+                    data = json.load(handle)
+        except (json.JSONDecodeError, yaml.YAMLError) as exc:
+            config_type = profile_path.suffix.lstrip(".") or "config"
+            raise ConfigurationError(
+                f"Profile '{profile_path.stem}' is not valid {config_type}: {exc}"
+            ) from exc
+
+        if data is None:
+            data = {}
+        if not isinstance(data, Mapping):
+            raise ConfigurationError(
+                f"Profile '{profile_path.stem}' must contain a mapping of configuration values"
+            )
 
         def get_path(key: str) -> Path | None:
             val = data.get(key)

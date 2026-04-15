@@ -28,7 +28,7 @@ MODEL_ID=your-model                 # Optional, defaults to gpt-4o-mini
 # Profile configuration (~/.config/parsehealthlog/profiles/<name>.yaml)
 health_log_path: /path/to/health.md    # Required
 output_path: /path/to/output           # Required
-base_url: http://127.0.0.1:8082/api/v1 # Optional (default shown)
+base_url: https://openrouter.ai/api/v1 # Optional (default shown)
 ```
 
 See `docs/pipeline.md` for full configuration options.

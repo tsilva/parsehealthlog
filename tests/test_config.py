@@ -1,9 +1,10 @@
 """Tests for config.py configuration management."""
 
 import os
-import pytest
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from parsehealthlog.config import (
     Config,
@@ -58,7 +59,7 @@ class TestConfigFromProfile:
     def test_default_base_url(self):
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
             config = Config.from_profile(_profile())
-        assert config.base_url == "http://127.0.0.1:8082/api/v1"
+        assert config.base_url == "https://openrouter.ai/api/v1"
 
     def test_custom_base_url(self):
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
@@ -164,3 +165,12 @@ class TestProfileDiscovery:
 
         with patch("parsehealthlog.config.Path.home", return_value=home):
             assert ProfileConfig.list_profiles() == ["alpha", "beta"]
+
+
+class TestProfileLoading:
+    def test_non_mapping_profile_raises_configuration_error(self, tmp_path):
+        profile_path = tmp_path / "invalid.yaml"
+        profile_path.write_text("- not-a-mapping\n", encoding="utf-8")
+
+        with pytest.raises(ConfigurationError, match="must contain a mapping"):
+            ProfileConfig.from_file(profile_path)

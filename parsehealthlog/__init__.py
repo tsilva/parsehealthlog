@@ -1,3 +1,3 @@
-"""parsehealthlog - AI-powered tool for structuring and auditing personal health logs."""
+"""Utilities for parsing and curating health logs."""
 
 __version__ = "0.1.6"
