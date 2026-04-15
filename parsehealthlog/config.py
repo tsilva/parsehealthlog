@@ -15,6 +15,9 @@ from parsehealthlog.exceptions import ConfigurationError
 
 # OpenRouter pricing per 1M tokens (input/output) in USD
 # Prices as of 2024 - update as needed
+DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
+
+
 MODEL_PRICING = {
     # OpenAI models
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},
@@ -92,7 +95,7 @@ class ProfileConfig:
     workers: int | None = None
 
     # API configuration
-    base_url: str = "http://127.0.0.1:8082/api/v1"
+    base_url: str = DEFAULT_BASE_URL
 
     @classmethod
     def from_file(cls, profile_path: Path) -> "ProfileConfig":
@@ -120,7 +123,7 @@ class ProfileConfig:
                 "medical_exams_parser_output_path"
             ),
             workers=data.get("workers"),
-            base_url=data.get("base_url", "http://127.0.0.1:8082/api/v1"),
+            base_url=data.get("base_url", DEFAULT_BASE_URL),
         )
 
     @classmethod

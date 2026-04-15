@@ -356,3 +356,38 @@ class TestExtractionSummary:
         assert "entries/2024-01-15.processed.md" in captured
         assert "entries/2024-01-15.raw.md" in captured
         assert "health_log.md" in captured
+
+
+class TestContentAwareWrites:
+    """Tests for content-aware file writes and generated file tracking."""
+
+    def test_write_text_if_changed_skips_unchanged_content(self, tmp_path):
+        """Existing files with identical content should not be rewritten or tracked."""
+        path = tmp_path / "entries" / "2024-01-15.labs.md"
+        path.parent.mkdir()
+        path.write_text("same content\n", encoding="utf-8")
+
+        processor = HealthLogProcessor.__new__(HealthLogProcessor)
+        processor.generated_files = set()
+        processor._generated_files_lock = threading.Lock()
+
+        changed = processor._write_text_if_changed(path, "same content\n")
+
+        assert changed is False
+        assert processor.generated_files == set()
+        assert path.read_text(encoding="utf-8") == "same content\n"
+
+    def test_write_text_if_changed_tracks_actual_writes(self, tmp_path):
+        """New or changed content should be written and included in generated files."""
+        path = tmp_path / "entries" / "2024-01-15.labs.md"
+        path.parent.mkdir()
+
+        processor = HealthLogProcessor.__new__(HealthLogProcessor)
+        processor.generated_files = set()
+        processor._generated_files_lock = threading.Lock()
+
+        changed = processor._write_text_if_changed(path, "new content\n")
+
+        assert changed is True
+        assert processor.generated_files == {path}
+        assert path.read_text(encoding="utf-8") == "new content\n"
