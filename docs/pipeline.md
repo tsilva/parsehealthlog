@@ -201,6 +201,7 @@ Runtime configuration is loaded from `~/.config/parsehealthlog`:
 | `OPENROUTER_API_KEY` | Yes | - | OpenRouter API key |
 | `HEALTH_LOG_PATH` | Yes | - | Path to markdown health log |
 | `OUTPUT_PATH` | Yes | - | Base directory for generated output |
+| `base_url` | No | `https://openrouter.ai/api/v1` | OpenAI-compatible API base URL from the profile |
 | `MODEL_ID` | No | `gpt-4o-mini` | Default model (fallback for all roles) |
 | `PROCESS_MODEL_ID` | No | `MODEL_ID` | Model for processing sections |
 | `VALIDATE_MODEL_ID` | No | `MODEL_ID` | Model for validating output |

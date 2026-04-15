@@ -19,7 +19,7 @@ Output structure:
 
 Configuration via profile YAML + ~/.config/parsehealthlog/.env (see config.py):
     model_id                     – env-driven via MODEL_ID (default: gpt-4o-mini)
-    base_url                     – API base URL (default: http://127.0.0.1:8082/api/v1)
+    base_url                     – API base URL (default: https://openrouter.ai/api/v1)
     api_key                      – env-driven via OPENROUTER_API_KEY
     health_log_path              – mandatory (path to the markdown health log)
     output_path                  – mandatory (base directory for generated output)
@@ -641,6 +641,20 @@ class HealthLogProcessor:
         with self._generated_files_lock:
             self.generated_files.add(path)
 
+    def _content_differs(self, path: Path, content: str) -> bool:
+        """Return True when a file is missing or its content differs."""
+        if not path.exists():
+            return True
+        return path.read_text(encoding="utf-8") != content
+
+    def _write_text_if_changed(self, path: Path, content: str) -> bool:
+        """Write text only when content changed, and track actual writes."""
+        if not self._content_differs(path, content):
+            return False
+        path.write_text(content, encoding="utf-8")
+        self._track_generated_file(path)
+        return True
+
     def get_progress(self) -> dict:
         """Get current processing progress.
 
@@ -748,8 +762,7 @@ class HealthLogProcessor:
             date = extract_date(sec)
             raw_path = self.entries_dir / f"{date}.raw.md"
             # Strip date header - it's already in the filename
-            raw_path.write_text(strip_date_header(sec), encoding="utf-8")
-            self._track_generated_file(raw_path)
+            self._write_text_if_changed(raw_path, strip_date_header(sec))
 
             # Check if processing needed based on dependencies
             labs_content = ""
@@ -812,11 +825,10 @@ class HealthLogProcessor:
             if df.empty:
                 continue
             lab_path = self.entries_dir / f"{date}.labs.md"
-            lab_path.write_text(
+            self._write_text_if_changed(
+                lab_path,
                 f"{format_labs_section(df)}\n",
-                encoding="utf-8",
             )
-            self._track_generated_file(lab_path)
 
         # Always regenerate exam markdown files
         # This includes both regular entries and exam-only entries
@@ -824,11 +836,10 @@ class HealthLogProcessor:
             if not exams_list:
                 continue
             exams_path = self.entries_dir / f"{date}.exams.md"
-            exams_path.write_text(
+            self._write_text_if_changed(
+                exams_path,
                 f"{format_medical_exams_section(exams_list)}\n",
-                encoding="utf-8",
             )
-            self._track_generated_file(exams_path)
 
         # Validate date consistency between source and output
         self._validate_date_consistency(sections)
@@ -1630,9 +1641,12 @@ class DryRunHealthLogProcessor(HealthLogProcessor):
         for sec in sections:
             date = extract_date(sec)
             raw_path = self.entries_dir / f"{date}.raw.md"
+            raw_content = strip_date_header(sec)
 
             # Track raw file
-            if raw_path.exists():
+            if not self._content_differs(raw_path, raw_content):
+                pass
+            elif raw_path.exists():
                 self.files_to_modify.append(raw_path)
             else:
                 self.files_to_create.append(raw_path)
@@ -1661,6 +1675,9 @@ class DryRunHealthLogProcessor(HealthLogProcessor):
             if df.empty:
                 continue
             lab_path = self.entries_dir / f"{date}.labs.md"
+            lab_content = f"{format_labs_section(df)}\n"
+            if not self._content_differs(lab_path, lab_content):
+                continue
             if lab_path.exists():
                 self.files_to_modify.append(lab_path)
             else:
@@ -1670,6 +1687,9 @@ class DryRunHealthLogProcessor(HealthLogProcessor):
             if not exams_list:
                 continue
             exams_path = self.entries_dir / f"{date}.exams.md"
+            exams_content = f"{format_medical_exams_section(exams_list)}\n"
+            if not self._content_differs(exams_path, exams_content):
+                continue
             if exams_path.exists():
                 self.files_to_modify.append(exams_path)
             else:

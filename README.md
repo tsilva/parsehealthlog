@@ -83,6 +83,7 @@ OUTPUT_PATH/
 | `health_log_path` | Yes | Path to your markdown health log |
 | `output_path` | Yes | Directory for generated output |
 | `max_workers` | No | Parallel processing threads (default: `4`) |
+| `base_url` | No | OpenAI-compatible API base URL (default: `https://openrouter.ai/api/v1`) |
 
 See [docs/pipeline.md](docs/pipeline.md) for all configuration options.
 
