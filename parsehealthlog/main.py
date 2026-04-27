@@ -41,7 +41,12 @@ from parsehealthlog.config import (
     get_env_file,
     get_model_pricing,
 )
-from parsehealthlog.exceptions import ConfigurationError, DateExtractionError, PromptError
+from parsehealthlog.exceptions import (
+    ConfigurationError,
+    DateExtractionError,
+    DateValidationError,
+    PromptError,
+)
 from parsehealthlog.types import (
     ChatMessage,
     DependencyMap,
@@ -128,6 +133,10 @@ PROMPTS_DIR: Final = Path(__file__).with_suffix("").parent / "prompts"
 JOURNAL_SECTION_HEADER: Final = "## Journal"
 LAB_SECTION_HEADER: Final = "## Lab Results"
 MEDICAL_EXAMS_SECTION_HEADER: Final = "## Medical Exams"
+NORMALIZED_DATE_HEADER_RE: Final = re.compile(r"^###\s*(\d{4}-\d{2}-\d{2})(?:\s|$)")
+DATE_LIKE_HEADER_RE: Final = re.compile(
+    r"^###\s*(\d{4}[-/–—]\d{1,2}[-/–—]\d{1,2})(?:\s|$)"
+)
 
 
 def load_prompt(name: str) -> str:
@@ -192,6 +201,87 @@ def extract_date(section: str) -> str:
     raise DateExtractionError(
         f"No valid date found in header: {header}", section=section
     )
+
+
+@dataclass(frozen=True)
+class DateHeader:
+    """A normalized date section header found in the source health log."""
+
+    line_number: int
+    value: str
+
+
+def validate_health_log_dates(path: Path) -> list[DateHeader]:
+    """Validate date section headers before any extraction work begins.
+
+    Source logs must use exact `### YYYY-MM-DD` headers with real calendar dates.
+    Dates must be unique and monotonic, in either oldest-to-newest or
+    newest-to-oldest order.
+    """
+    text = path.read_text(encoding="utf-8")
+    headers: list[DateHeader] = []
+    errors: list[str] = []
+
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        date_like = DATE_LIKE_HEADER_RE.match(line)
+        if not date_like:
+            continue
+
+        token = date_like.group(1)
+        normalized = NORMALIZED_DATE_HEADER_RE.match(line)
+        if not normalized:
+            errors.append(
+                f"line {line_number}: use normalized date header `### YYYY-MM-DD` "
+                f"instead of `{token}`"
+            )
+            continue
+
+        value = normalized.group(1)
+        try:
+            parsed = datetime.strptime(value, "%Y-%m-%d")
+        except ValueError:
+            errors.append(f"line {line_number}: `{value}` is not a valid calendar date")
+            continue
+        if parsed.strftime("%Y-%m-%d") != value:
+            errors.append(f"line {line_number}: `{value}` is not normalized")
+            continue
+        headers.append(DateHeader(line_number=line_number, value=value))
+
+    if not headers and not errors:
+        errors.append(
+            "no dated sections found; expected section headers like `### YYYY-MM-DD`"
+        )
+
+    seen: dict[str, list[int]] = {}
+    for header in headers:
+        seen.setdefault(header.value, []).append(header.line_number)
+    for value, line_numbers in seen.items():
+        if len(line_numbers) > 1:
+            lines = ", ".join(str(line) for line in line_numbers)
+            errors.append(f"date `{value}` appears more than once on lines {lines}")
+
+    if len(headers) >= 3:
+        dates = [datetime.strptime(header.value, "%Y-%m-%d") for header in headers]
+        ascending = all(left < right for left, right in zip(dates, dates[1:]))
+        descending = all(left > right for left, right in zip(dates, dates[1:]))
+        if not ascending and not descending:
+            ordered = "\n".join(
+                f"  line {header.line_number}: {header.value}" for header in headers
+            )
+            errors.append(
+                "date sections must be sequential in one direction "
+                "(oldest-to-newest or newest-to-oldest):\n"
+                f"{ordered}"
+            )
+
+    if errors:
+        raise DateValidationError(
+            "Health log date validation failed. Fix the source log before running "
+            "extraction:\n"
+            + "\n".join(f"- {error}" for error in errors)
+        )
+
+    return headers
 
 
 def strip_date_header(section: str) -> str:
@@ -531,6 +621,7 @@ class HealthLogProcessor:
         self.path = config.health_log_path
         if not self.path.exists():
             raise FileNotFoundError(self.path)
+        validate_health_log_dates(self.path)
 
         output_base = config.output_path
         self.OUTPUT_PATH = output_base
@@ -672,6 +763,8 @@ class HealthLogProcessor:
     # ------------------------------------------------------------------
 
     def run(self) -> None:  # noqa: C901 – single orchestrator method is clearer here
+        sections = self._split_sections()
+
         self._update_state(
             status="in_progress",
             started_at=datetime.now().isoformat(),
@@ -685,7 +778,6 @@ class HealthLogProcessor:
             "total": 0,
         }
 
-        sections = self._split_sections()
         self._load_labs()
         self._load_medical_exams()
 
@@ -1015,13 +1107,14 @@ class HealthLogProcessor:
     # --------------------------------------------------------------
 
     def _split_sections(self) -> list[str]:
+        validate_health_log_dates(self.path)
         text = self.path.read_text(encoding="utf-8")
 
-        date_regex = r"^###\s*\d{4}[-/]\d{2}[-/]\d{2}"
+        date_regex = r"^###\s*\d{4}-\d{2}-\d{2}"
         match = re.search(date_regex, text, flags=re.MULTILINE)
         if not match:
             raise ValueError(
-                "No dated sections found (expected '### YYYY-MM-DD' or '### YYYY/MM/DD')."
+                "No dated sections found (expected '### YYYY-MM-DD')."
             )
 
         body = text[match.start() :]
@@ -1682,6 +1775,12 @@ Examples:
             print(f"Configuration error for profile '{profile_name}': {e}")
             return False
 
+        try:
+            validate_health_log_dates(config.health_log_path)
+        except (DateValidationError, OSError) as e:
+            print(f"Date validation error for profile '{profile_name}': {e}")
+            return False
+
         if args.workers is not None:
             import os as _os
 
@@ -1722,14 +1821,22 @@ Examples:
             logger.warning("Processing will likely fail on LLM-dependent tasks.")
 
         if args.dry_run:
-            processor = DryRunHealthLogProcessor(config)
-            processor._force_reprocess = args.force_reprocess
-            changes_needed = processor.run_dry()
-            processor.print_summary()
-            return not changes_needed
+            try:
+                processor = DryRunHealthLogProcessor(config)
+                processor._force_reprocess = args.force_reprocess
+                changes_needed = processor.run_dry()
+                processor.print_summary()
+                return not changes_needed
+            except DateValidationError as e:
+                print(f"Date validation error for profile '{profile_name}': {e}")
+                return False
 
         start = datetime.now()
-        HealthLogProcessor(config).run()
+        try:
+            HealthLogProcessor(config).run()
+        except DateValidationError as e:
+            print(f"Date validation error for profile '{profile_name}': {e}")
+            return False
         logger.info(
             "Finished in %.1fs",
             (datetime.now() - start).total_seconds(),

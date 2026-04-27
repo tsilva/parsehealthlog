@@ -101,6 +101,10 @@ Started vitamin D 2000 IU daily.
 Feeling better after starting vitamin D. Energy levels improved.
 ```
 
+Date headers must use exact `### YYYY-MM-DD`, contain real calendar dates, be unique,
+and stay in one sequential order, either oldest-to-newest or newest-to-oldest. The
+process exits with an error before extraction if the source log needs date fixes.
+
 ## License
 
 [MIT](LICENSE)
