@@ -13,20 +13,23 @@ This document describes the data processing pipeline used by parsehealthlog to t
 
   health.md          +--------------------------------------------+
        |             |                                            |
-       v             |   1. VALIDATE PROMPTS                      |
-  [Markdown Log]---->|      Check all required prompts exist      |
+       v             |   1. VALIDATE SOURCE DATES                |
+  [Markdown Log]---->|      Check headers are valid and ordered   |
        |             |                                            |
-       |             |   2. SPLIT SECTIONS                        |
+       |             |   2. VALIDATE PROMPTS                      |
+       |             |      Check all required prompts exist      |
+       |             |                                            |
+       |             |   3. SPLIT SECTIONS                        |
        +------------>|      Parse ### YYYY-MM-DD headers          |
        |             |                                            |
-       |             |   3. LOAD LABS                             |
+       |             |   4. LOAD LABS                             |
   labs.csv---------->|      CSV -> DataFrame by date              |
        |             |                                            |
-       |             |   4. PROCESS SECTIONS (parallel)           |
+       |             |   5. PROCESS SECTIONS (parallel)           |
        |             |      Raw -> LLM Process -> LLM Validate    |-----> entries/*.processed.md
        |             |      (retry up to 3x if validation fails)  |-----> entries/*.raw.md
        |             |                                            |-----> entries/*.labs.md
-       |             |   5. SAVE COLLATED LOG                     |
+       |             |   6. SAVE COLLATED LOG                     |
        |             |      All entries newest to oldest          |-----> health_log.md
        |             |                                            |
        +-------------+--------------------------------------------+
@@ -36,7 +39,25 @@ This document describes the data processing pipeline used by parsehealthlog to t
 
 ## Pipeline Steps
 
-### Step 1: Prompt Validation
+### Step 1: Source Date Validation
+
+**What it does:** Validates the source health log date headers before cache deletion, lab/exam loading, or LLM extraction begins. If validation fails, the process exits nonzero so scripts can stop immediately.
+
+**Key files/APIs:**
+- `main.py:validate_health_log_dates()` - Preflight validation logic
+
+**Input:** Raw markdown file (`health_log_path`)
+**Output:** None (raises `DateValidationError` if validation fails)
+
+**Behavior notes:**
+- Date section headers must use exact `### YYYY-MM-DD`
+- Slash dates, en/em dash dates, malformed dates, and impossible calendar dates fail
+- Duplicate dates fail
+- Dates must be monotonic in one direction, either oldest-to-newest or newest-to-oldest
+
+---
+
+### Step 2: Prompt Validation
 
 **What it does:** Validates that all required LLM prompt files exist before any processing begins. Fails fast if prompts are missing.
 
@@ -49,7 +70,7 @@ This document describes the data processing pipeline used by parsehealthlog to t
 
 ---
 
-### Step 2: Section Splitting
+### Step 3: Section Splitting
 
 **What it does:** Parses the markdown health log to extract dated sections. Content before the first dated section is ignored.
 
@@ -61,14 +82,13 @@ This document describes the data processing pipeline used by parsehealthlog to t
 **Output:** List of section strings, each starting with `### YYYY-MM-DD`
 
 **Behavior notes:**
-- Supports both `YYYY-MM-DD` and `YYYY/MM/DD` date formats
-- Uses regex: `^###\s*\d{4}[-/]\d{2}[-/]\d{2}`
-- Em-dash/en-dash characters are normalized to hyphens
+- Only normalized `YYYY-MM-DD` section headers are accepted
+- Uses regex: `^###\s*\d{4}-\d{2}-\d{2}`
 - Content before the first dated section is discarded
 
 ---
 
-### Step 3: Lab Data Loading
+### Step 4: Lab Data Loading
 
 **What it does:** Loads laboratory test results from CSV files, groups them by date, and later renders them into readable markdown sections inside each date block.
 
@@ -91,7 +111,7 @@ This document describes the data processing pipeline used by parsehealthlog to t
 
 ---
 
-### Step 4: Parallel Section Processing
+### Step 5: Parallel Section Processing
 
 **What it does:** Transforms raw health log sections into structured markdown using LLMs. Each section is processed and validated independently.
 
@@ -118,7 +138,7 @@ This document describes the data processing pipeline used by parsehealthlog to t
 
 ---
 
-### Step 5: Collated Log Output
+### Step 6: Collated Log Output
 
 **What it does:** Assembles all processed entries into a single markdown file, ordered newest to oldest, while preserving the per-date source subsections.
 

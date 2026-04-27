@@ -8,8 +8,12 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
-from parsehealthlog.config import ProfileConfig
-from parsehealthlog.exceptions import ConfigurationError, DateExtractionError
+from parsehealthlog.config import Config, ProfileConfig
+from parsehealthlog.exceptions import (
+    ConfigurationError,
+    DateExtractionError,
+    DateValidationError,
+)
 from parsehealthlog.main import (
     DryRunHealthLogProcessor,
     HealthLogProcessor,
@@ -19,6 +23,7 @@ from parsehealthlog.main import (
     format_labs,
     parse_deps_comment,
     short_hash,
+    validate_health_log_dates,
 )
 from parsehealthlog.main import (
     main as cli_main,
@@ -145,6 +150,58 @@ class TestHashFunctions:
         """short_hash returns only hex characters."""
         result = short_hash("test")
         assert all(c in "0123456789abcdef" for c in result)
+
+
+class TestHealthLogDateValidation:
+    """Tests for source health log date preflight validation."""
+
+    def test_accepts_normalized_ascending_dates(self, tmp_path):
+        source = tmp_path / "health.md"
+        source.write_text(
+            "Intro\n\n### 2024-01-15\n\nA\n\n### 2024-01-20\n\nB\n",
+            encoding="utf-8",
+        )
+
+        headers = validate_health_log_dates(source)
+
+        assert [header.value for header in headers] == ["2024-01-15", "2024-01-20"]
+
+    def test_accepts_normalized_descending_dates(self, tmp_path):
+        source = tmp_path / "health.md"
+        source.write_text(
+            "### 2024-01-20\n\nB\n\n### 2024-01-15\n\nA\n",
+            encoding="utf-8",
+        )
+
+        headers = validate_health_log_dates(source)
+
+        assert [header.value for header in headers] == ["2024-01-20", "2024-01-15"]
+
+    def test_rejects_non_normalized_date_headers(self, tmp_path):
+        source = tmp_path / "health.md"
+        source.write_text("### 2024/01/15\n\nA\n", encoding="utf-8")
+
+        with pytest.raises(DateValidationError, match="normalized date header"):
+            validate_health_log_dates(source)
+
+    def test_rejects_impossible_calendar_dates(self, tmp_path):
+        source = tmp_path / "health.md"
+        source.write_text("### 2024-02-30\n\nA\n", encoding="utf-8")
+
+        with pytest.raises(DateValidationError, match="valid calendar date"):
+            validate_health_log_dates(source)
+
+    def test_rejects_mixed_date_order(self, tmp_path):
+        source = tmp_path / "health.md"
+        source.write_text(
+            "### 2024-01-20\n\nB\n\n"
+            "### 2024-01-10\n\nA\n\n"
+            "### 2024-01-15\n\nC\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(DateValidationError, match="must be sequential"):
+            validate_health_log_dates(source)
 
 
 class TestFormatLabs:
@@ -444,6 +501,54 @@ class TestDryRunProcessor:
 
 
 class TestCliErrors:
+    def test_main_exits_nonzero_on_date_validation_error_before_force_delete(
+        self, tmp_path, capsys
+    ):
+        source = tmp_path / "health.md"
+        source.write_text("### 2024/01/15\n\nA\n", encoding="utf-8")
+        output = tmp_path / "output"
+        entries = output / "entries"
+        entries.mkdir(parents=True)
+        cached = entries / "2024-01-15.processed.md"
+        cached.write_text("cached\n", encoding="utf-8")
+        profile = ProfileConfig(
+            name="test",
+            health_log_path=source,
+            output_path=output,
+        )
+        config = Config(
+            base_url="https://example.invalid",
+            api_key="test-key",
+            model_id="test-model",
+            health_log_path=source,
+            output_path=output,
+            labs_parser_output_path=None,
+            medical_exams_parser_output_path=None,
+            max_workers=1,
+        )
+
+        with patch(
+            "parsehealthlog.main.sys.argv",
+            ["parsehealthlog", "--profile", "test", "--force-reprocess"],
+        ), patch(
+            "parsehealthlog.main.setup_logging"
+        ), patch(
+            "parsehealthlog.main.ProfileConfig.find_profile_path",
+            return_value=Path("/tmp/test.yaml"),
+        ), patch(
+            "parsehealthlog.main.ProfileConfig.from_file",
+            return_value=profile,
+        ), patch(
+            "parsehealthlog.main.Config.from_profile",
+            return_value=config,
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                cli_main()
+
+        assert exc_info.value.code == 1
+        assert cached.exists()
+        assert "Date validation error for profile 'test'" in capsys.readouterr().out
+
     def test_main_reports_configuration_errors(self, capsys):
         profile = ProfileConfig(
             name="test",

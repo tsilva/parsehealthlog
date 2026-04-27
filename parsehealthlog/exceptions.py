@@ -24,6 +24,12 @@ class DateExtractionError(HealthLogParserError):
         self.section = section
 
 
+class DateValidationError(HealthLogParserError):
+    """Raised when source health log date headers are invalid."""
+
+    pass
+
+
 class PromptError(HealthLogParserError):
     """Raised when a required prompt file is missing or invalid."""
 
@@ -39,5 +45,4 @@ class ExtractionError(HealthLogParserError):
         super().__init__(message)
         self.date = date
         self.errors = errors or []
-
 
