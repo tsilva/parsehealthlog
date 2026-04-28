@@ -41,19 +41,23 @@ This document describes the data processing pipeline used by parsehealthlog to t
 
 ### Step 1: Source Date Validation
 
-**What it does:** Validates the source health log date headers before cache deletion, lab/exam loading, or LLM extraction begins. If validation fails, the process exits nonzero so scripts can stop immediately.
+**What it does:** Validates the source health log date headers and existing extracted journal entry files before cache deletion, lab/exam loading, or LLM extraction begins. If validation fails, the process exits nonzero so scripts can stop immediately.
 
 **Key files/APIs:**
 - `main.py:validate_health_log_dates()` - Preflight validation logic
+- `main.py:validate_extracted_entry_dates()` - Stale extracted entry validation
 
-**Input:** Raw markdown file (`health_log_path`)
+**Input:** Raw markdown file (`health_log_path`) and existing `entries/` cache directory
 **Output:** None (raises `DateValidationError` if validation fails)
 
 **Behavior notes:**
-- Date section headers must use exact `### YYYY-MM-DD`
-- Slash dates, en/em dash dates, malformed dates, and impossible calendar dates fail
+- Date section headers may use `### YYYY-MM-DD` or `### YYYY/MM/DD`
+- Accepted date headers are normalized internally to `### YYYY-MM-DD`
+- En/em dash dates, malformed dates, and impossible calendar dates fail
 - Duplicate dates fail
 - Dates must be monotonic in one direction, either oldest-to-newest or newest-to-oldest
+- Extracted journal entry files for dates no longer present in the raw health log fail in bulk before any generated files are deleted or rewritten
+- Lab/exam-only placeholder entries with `raw:none` dependencies are allowed without matching journal sections
 
 ---
 
@@ -82,8 +86,8 @@ This document describes the data processing pipeline used by parsehealthlog to t
 **Output:** List of section strings, each starting with `### YYYY-MM-DD`
 
 **Behavior notes:**
-- Only normalized `YYYY-MM-DD` section headers are accepted
-- Uses regex: `^###\s*\d{4}-\d{2}-\d{2}`
+- `YYYY-MM-DD` and `YYYY/MM/DD` section headers are accepted
+- Returned section headers are normalized to `YYYY-MM-DD`
 - Content before the first dated section is discarded
 
 ---

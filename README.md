@@ -25,6 +25,7 @@ The tool processes, validates, and enriches health log entries. Reports, summari
 - **Parallel processing** of hundreds of journal entries
 - **Structured lab and exam integration** without adding medical interpretation
 - **Hash-based caching** for efficient incremental rebuilds
+- **Startup validation** that stops on malformed dates or stale extracted journal entries
 - **Multi-model support** via OpenRouter (GPT-4, Claude, etc.)
 - **Profile-based configuration** for managing multiple health logs
 
@@ -101,9 +102,11 @@ Started vitamin D 2000 IU daily.
 Feeling better after starting vitamin D. Energy levels improved.
 ```
 
-Date headers must use exact `### YYYY-MM-DD`, contain real calendar dates, be unique,
-and stay in one sequential order, either oldest-to-newest or newest-to-oldest. The
-process exits with an error before extraction if the source log needs date fixes.
+Date headers may use `### YYYY-MM-DD` or `### YYYY/MM/DD`; slash dates are
+normalized internally to `YYYY-MM-DD`. Dates must be real calendar dates, be
+unique, and stay in one sequential order, either oldest-to-newest or
+newest-to-oldest. The process exits with an error before extraction if the
+source log needs date fixes.
 
 ## License
 
