@@ -133,9 +133,18 @@ PROMPTS_DIR: Final = Path(__file__).with_suffix("").parent / "prompts"
 JOURNAL_SECTION_HEADER: Final = "## Journal"
 LAB_SECTION_HEADER: Final = "## Lab Results"
 MEDICAL_EXAMS_SECTION_HEADER: Final = "## Medical Exams"
-NORMALIZED_DATE_HEADER_RE: Final = re.compile(r"^###\s*(\d{4}-\d{2}-\d{2})(?:\s|$)")
+SUPPORTED_DATE_HEADER_RE: Final = re.compile(
+    r"^###\s*(\d{4}([-\/])\d{1,2}\2\d{1,2})(?:\s|$)"
+)
 DATE_LIKE_HEADER_RE: Final = re.compile(
     r"^###\s*(\d{4}[-/–—]\d{1,2}[-/–—]\d{1,2})(?:\s|$)"
+)
+DATE_SECTION_SPLIT_RE: Final = re.compile(
+    r"(?=^###\s*\d{4}(?:-\d{1,2}-|/\d{1,2}/)\d{1,2}(?:\s|$))",
+    flags=re.MULTILINE,
+)
+DATE_HEADER_LINE_RE: Final = re.compile(
+    r"^###\s*\d{4}(?:-\d{1,2}-|/\d{1,2}/)\d{1,2}(?P<rest>\s.*|)$"
 )
 
 
@@ -203,6 +212,29 @@ def extract_date(section: str) -> str:
     )
 
 
+def normalize_date_header_token(token: str) -> str:
+    """Return a canonical YYYY-MM-DD date for supported source header tokens."""
+    normalized = token.replace("/", "-")
+    parsed = datetime.strptime(normalized, "%Y-%m-%d")
+    return parsed.strftime("%Y-%m-%d")
+
+
+def normalize_section_date_header(section: str) -> str:
+    """Normalize a section's date header separator while preserving the body."""
+    lines = section.strip().splitlines()
+    if not lines:
+        return ""
+
+    date_value = extract_date(lines[0])
+    rest = ""
+    match = DATE_HEADER_LINE_RE.match(lines[0])
+    if match:
+        rest = match.group("rest")
+
+    lines[0] = f"### {date_value}{rest}"
+    return "\n".join(lines)
+
+
 @dataclass(frozen=True)
 class DateHeader:
     """A normalized date section header found in the source health log."""
@@ -214,7 +246,8 @@ class DateHeader:
 def validate_health_log_dates(path: Path) -> list[DateHeader]:
     """Validate date section headers before any extraction work begins.
 
-    Source logs must use exact `### YYYY-MM-DD` headers with real calendar dates.
+    Source logs must use `### YYYY-MM-DD` or `### YYYY/MM/DD` headers with real
+    calendar dates.
     Dates must be unique and monotonic, in either oldest-to-newest or
     newest-to-oldest order.
     """
@@ -228,22 +261,19 @@ def validate_health_log_dates(path: Path) -> list[DateHeader]:
             continue
 
         token = date_like.group(1)
-        normalized = NORMALIZED_DATE_HEADER_RE.match(line)
-        if not normalized:
+        supported = SUPPORTED_DATE_HEADER_RE.match(line)
+        if not supported:
             errors.append(
-                f"line {line_number}: use normalized date header `### YYYY-MM-DD` "
+                f"line {line_number}: use date header `### YYYY-MM-DD` or "
+                f"`### YYYY/MM/DD` "
                 f"instead of `{token}`"
             )
             continue
 
-        value = normalized.group(1)
         try:
-            parsed = datetime.strptime(value, "%Y-%m-%d")
+            value = normalize_date_header_token(supported.group(1))
         except ValueError:
-            errors.append(f"line {line_number}: `{value}` is not a valid calendar date")
-            continue
-        if parsed.strftime("%Y-%m-%d") != value:
-            errors.append(f"line {line_number}: `{value}` is not normalized")
+            errors.append(f"line {line_number}: `{token}` is not a valid calendar date")
             continue
         headers.append(DateHeader(line_number=line_number, value=value))
 
@@ -262,16 +292,41 @@ def validate_health_log_dates(path: Path) -> list[DateHeader]:
 
     if len(headers) >= 3:
         dates = [datetime.strptime(header.value, "%Y-%m-%d") for header in headers]
-        ascending = all(left < right for left, right in zip(dates, dates[1:]))
-        descending = all(left > right for left, right in zip(dates, dates[1:]))
-        if not ascending and not descending:
-            ordered = "\n".join(
-                f"  line {header.line_number}: {header.value}" for header in headers
+        comparisons = [
+            (left_date, right_date, left_header, right_header)
+            for left_date, right_date, left_header, right_header in zip(
+                dates, dates[1:], headers, headers[1:]
+            )
+            if left_date != right_date
+        ]
+        direction = next(
+            (
+                1 if right_date > left_date else -1
+                for left_date, right_date, _, _ in comparisons
+            ),
+            0,
+        )
+        if direction:
+            out_of_order = [
+                (left_header, right_header)
+                for left_date, right_date, left_header, right_header in comparisons
+                if (direction == 1 and right_date < left_date)
+                or (direction == -1 and right_date > left_date)
+            ]
+        else:
+            out_of_order = []
+
+        if out_of_order:
+            expected = "oldest-to-newest" if direction == 1 else "newest-to-oldest"
+            transitions = "\n".join(
+                f"  line {left.line_number}: {left.value} -> "
+                f"line {right.line_number}: {right.value}"
+                for left, right in out_of_order
             )
             errors.append(
                 "date sections must be sequential in one direction "
-                "(oldest-to-newest or newest-to-oldest):\n"
-                f"{ordered}"
+                f"(expected {expected}); out-of-order transitions:\n"
+                f"{transitions}"
             )
 
     if errors:
@@ -282,6 +337,69 @@ def validate_health_log_dates(path: Path) -> list[DateHeader]:
         )
 
     return headers
+
+
+def is_journal_extracted_entry_file(path: Path) -> bool:
+    """Return True if an entries file represents raw-log journal extraction."""
+    if path.name.endswith(".raw.md"):
+        return True
+    if path.name.endswith((".failed.md", ".failed.json")):
+        return True
+    if not path.name.endswith(".processed.md"):
+        return False
+
+    try:
+        first_line = path.read_text(encoding="utf-8").split("\n", 1)[0]
+    except OSError:
+        return True
+    deps = parse_deps_comment(first_line)
+    raw_dep = deps.get("raw")
+    if raw_dep == "none":
+        return False
+    return True
+
+
+def validate_extracted_entry_dates(
+    source_dates: set[str],
+    entries_dir: Path,
+    *,
+    source_path: Path | None = None,
+) -> None:
+    """Validate that raw-log extracted entry files still exist in the source log.
+
+    Lab/exam-only placeholders use a `raw:none` dependency and are allowed to
+    exist without a journal section in the source health log.
+    """
+    if not entries_dir.exists():
+        return
+
+    stale_files_by_date: dict[str, list[Path]] = {}
+    for entry_file in sorted(entries_dir.iterdir()):
+        if not entry_file.is_file():
+            continue
+        date_match = re.match(r"(\d{4}-\d{2}-\d{2})", entry_file.name)
+        if not date_match:
+            continue
+
+        file_date = date_match.group(1)
+        if file_date in source_dates:
+            continue
+        if is_journal_extracted_entry_file(entry_file):
+            stale_files_by_date.setdefault(file_date, []).append(entry_file)
+
+    if not stale_files_by_date:
+        return
+
+    source_detail = f" in {source_path}" if source_path else ""
+    lines = [
+        "Extracted entry date validation failed.",
+        f"These extracted journal entry dates no longer exist in the raw log{source_detail}:",
+    ]
+    for date, files in stale_files_by_date.items():
+        lines.append(f"- {date}:")
+        lines.extend(f"  - {path}" for path in files)
+    lines.append("Remove or reconcile these extracted files before running extraction.")
+    raise DateValidationError("\n".join(lines))
 
 
 def strip_date_header(section: str) -> str:
@@ -619,17 +737,22 @@ class HealthLogProcessor:
     def __init__(self, config: Config) -> None:
         self.config = config
         self.path = config.health_log_path
+        self.logger = logging.getLogger(__name__)
         if not self.path.exists():
             raise FileNotFoundError(self.path)
-        validate_health_log_dates(self.path)
+        date_headers = validate_health_log_dates(self.path)
 
         output_base = config.output_path
         self.OUTPUT_PATH = output_base
-        self.OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
         self.entries_dir = self.OUTPUT_PATH / "entries"
-        self.entries_dir.mkdir(exist_ok=True)
+        validate_extracted_entry_dates(
+            {header.value for header in date_headers},
+            self.entries_dir,
+            source_path=self.path,
+        )
 
-        self.logger = logging.getLogger(__name__)
+        self.OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
+        self.entries_dir.mkdir(exist_ok=True)
 
         # Prompts (lazy-load to keep __init__ lightweight)
         self.prompts: dict[str, str] = {}
@@ -1110,17 +1233,17 @@ class HealthLogProcessor:
         validate_health_log_dates(self.path)
         text = self.path.read_text(encoding="utf-8")
 
-        date_regex = r"^###\s*\d{4}-\d{2}-\d{2}"
-        match = re.search(date_regex, text, flags=re.MULTILINE)
+        match = DATE_SECTION_SPLIT_RE.search(text)
         if not match:
             raise ValueError(
-                "No dated sections found (expected '### YYYY-MM-DD')."
+                "No dated sections found (expected '### YYYY-MM-DD' or "
+                "'### YYYY/MM/DD')."
             )
 
         body = text[match.start() :]
         sections = [
-            s.strip()
-            for s in re.split(rf"(?={date_regex})", body, flags=re.MULTILINE)
+            normalize_section_date_header(s)
+            for s in DATE_SECTION_SPLIT_RE.split(body)
             if s.strip()
         ]
 
@@ -1451,7 +1574,7 @@ class HealthLogProcessor:
         """Assert that extracted dates match source file dates exactly.
 
         Compares dates from source log sections against dates found in the
-        entries directory (from .raw.md files). Raises AssertionError if:
+        entries directory (from .raw.md files). Raises DateValidationError if:
         - Dates in entries don't exist in source
         - Dates in source don't exist in entries
         - Any mismatch is detected
@@ -1460,7 +1583,7 @@ class HealthLogProcessor:
             sections: List of section strings from the source health log.
 
         Raises:
-            AssertionError: If date sets don't match exactly.
+            DateValidationError: If date sets don't match exactly.
         """
         source_dates = {extract_date(sec) for sec in sections}
         entry_dates: set[str] = set()
@@ -1470,22 +1593,21 @@ class HealthLogProcessor:
                 if date_match:
                     entry_dates.add(date_match.group(1))
 
-        missing_in_entries = source_dates - entry_dates
-        extra_in_entries = entry_dates - source_dates
+        validate_extracted_entry_dates(
+            source_dates,
+            self.entries_dir,
+            source_path=getattr(self, "path", None),
+        )
 
-        if missing_in_entries or extra_in_entries:
+        missing_in_entries = source_dates - entry_dates
+
+        if missing_in_entries:
             error_msg = "Date validation failed:\n"
-            if missing_in_entries:
-                error_msg += (
-                    "  - Dates in source but missing from entries: "
-                    f"{sorted(missing_in_entries)}\n"
-                )
-            if extra_in_entries:
-                error_msg += (
-                    "  - Dates in entries but not in source: "
-                    f"{sorted(extra_in_entries)}\n"
-                )
-            raise AssertionError(error_msg)
+            error_msg += (
+                "  - Dates in source but missing from entries: "
+                f"{sorted(missing_in_entries)}\n"
+            )
+            raise DateValidationError(error_msg)
 
         self.logger.info(
             "Date validation passed: %d dates in source match %d dates in entries",
@@ -1776,7 +1898,12 @@ Examples:
             return False
 
         try:
-            validate_health_log_dates(config.health_log_path)
+            date_headers = validate_health_log_dates(config.health_log_path)
+            validate_extracted_entry_dates(
+                {header.value for header in date_headers},
+                config.output_path / "entries",
+                source_path=config.health_log_path,
+            )
         except (DateValidationError, OSError) as e:
             print(f"Date validation error for profile '{profile_name}': {e}")
             return False

@@ -23,6 +23,7 @@ from parsehealthlog.main import (
     format_labs,
     parse_deps_comment,
     short_hash,
+    validate_extracted_entry_dates,
     validate_health_log_dates,
 )
 from parsehealthlog.main import (
@@ -177,12 +178,13 @@ class TestHealthLogDateValidation:
 
         assert [header.value for header in headers] == ["2024-01-20", "2024-01-15"]
 
-    def test_rejects_non_normalized_date_headers(self, tmp_path):
+    def test_accepts_slash_date_headers_as_normalized_dates(self, tmp_path):
         source = tmp_path / "health.md"
         source.write_text("### 2024/01/15\n\nA\n", encoding="utf-8")
 
-        with pytest.raises(DateValidationError, match="normalized date header"):
-            validate_health_log_dates(source)
+        headers = validate_health_log_dates(source)
+
+        assert [header.value for header in headers] == ["2024-01-15"]
 
     def test_rejects_impossible_calendar_dates(self, tmp_path):
         source = tmp_path / "health.md"
@@ -200,8 +202,28 @@ class TestHealthLogDateValidation:
             encoding="utf-8",
         )
 
-        with pytest.raises(DateValidationError, match="must be sequential"):
+        with pytest.raises(DateValidationError, match="must be sequential") as exc_info:
             validate_health_log_dates(source)
+
+        message = str(exc_info.value)
+        assert "expected newest-to-oldest" in message
+        assert "line 5: 2024-01-10 -> line 9: 2024-01-15" in message
+        assert "line 1: 2024-01-20" not in message
+
+
+class TestSectionSplitting:
+    def test_split_sections_accepts_slash_headers_and_normalizes_output(self, tmp_path):
+        source = tmp_path / "health.md"
+        source.write_text(
+            "Intro\n\n### 2024/01/15\n\nA\n\n### 2024-01-20\n\nB\n",
+            encoding="utf-8",
+        )
+        processor = HealthLogProcessor.__new__(HealthLogProcessor)
+        processor.path = source
+
+        sections = processor._split_sections()
+
+        assert sections == ["### 2024-01-15\n\nA", "### 2024-01-20\n\nB"]
 
 
 class TestFormatLabs:
@@ -460,6 +482,37 @@ class TestContentAwareWrites:
 
 
 class TestInternalValidation:
+    def test_validate_extracted_entry_dates_reports_all_stale_extracted_files(
+        self, tmp_path
+    ):
+        entries_dir = tmp_path / "entries"
+        entries_dir.mkdir()
+        stale_raw = entries_dir / "2024-01-10.raw.md"
+        stale_processed = entries_dir / "2024-01-10.processed.md"
+        stale_failed = entries_dir / "2024-01-10.failed.md"
+        stale_lab = entries_dir / "2024-01-10.labs.md"
+        placeholder = entries_dir / "2024-01-11.processed.md"
+        valid_raw = entries_dir / "2024-01-15.raw.md"
+
+        stale_raw.write_text("old raw\n", encoding="utf-8")
+        stale_processed.write_text("<!-- DEPS: raw:abc -->\nold\n", encoding="utf-8")
+        stale_failed.write_text("failed\n", encoding="utf-8")
+        stale_lab.write_text("lab\n", encoding="utf-8")
+        placeholder.write_text("<!-- DEPS: raw:none -->\nlab-only\n", encoding="utf-8")
+        valid_raw.write_text("current\n", encoding="utf-8")
+
+        with pytest.raises(DateValidationError) as exc_info:
+            validate_extracted_entry_dates({"2024-01-15"}, entries_dir)
+
+        message = str(exc_info.value)
+        assert "2024-01-10" in message
+        assert str(stale_raw) in message
+        assert str(stale_processed) in message
+        assert str(stale_failed) in message
+        assert str(stale_lab) not in message
+        assert str(placeholder) not in message
+        assert str(valid_raw) not in message
+
     def test_validate_date_consistency_surfaces_invalid_sections(self, tmp_path):
         processor = HealthLogProcessor.__new__(HealthLogProcessor)
         processor.entries_dir = tmp_path / "entries"
@@ -467,6 +520,16 @@ class TestInternalValidation:
 
         with pytest.raises(DateExtractionError):
             processor._validate_date_consistency(["### invalid header\n\nContent"])
+
+    def test_validate_date_consistency_stops_on_stale_raw_entry(self, tmp_path):
+        processor = HealthLogProcessor.__new__(HealthLogProcessor)
+        processor.entries_dir = tmp_path / "entries"
+        processor.entries_dir.mkdir()
+        stale = processor.entries_dir / "2024-01-10.raw.md"
+        stale.write_text("old raw\n", encoding="utf-8")
+
+        with pytest.raises(DateValidationError, match="2024-01-10"):
+            processor._validate_date_consistency(["### 2024-01-15\n\nContent"])
 
 
 class TestDryRunProcessor:
@@ -501,11 +564,66 @@ class TestDryRunProcessor:
 
 
 class TestCliErrors:
+    def test_main_exits_nonzero_on_stale_extracted_entry_before_force_delete(
+        self, tmp_path, capsys
+    ):
+        source = tmp_path / "health.md"
+        source.write_text("### 2024-01-15\n\nA\n", encoding="utf-8")
+        output = tmp_path / "output"
+        entries = output / "entries"
+        entries.mkdir(parents=True)
+        stale_raw = entries / "2024-01-10.raw.md"
+        stale_processed = entries / "2024-01-10.processed.md"
+        stale_raw.write_text("stale raw\n", encoding="utf-8")
+        stale_processed.write_text("<!-- DEPS: raw:abc -->\nstale\n", encoding="utf-8")
+        profile = ProfileConfig(
+            name="test",
+            health_log_path=source,
+            output_path=output,
+        )
+        config = Config(
+            base_url="https://example.invalid",
+            api_key="test-key",
+            model_id="test-model",
+            health_log_path=source,
+            output_path=output,
+            labs_parser_output_path=None,
+            medical_exams_parser_output_path=None,
+            max_workers=1,
+        )
+
+        with patch(
+            "parsehealthlog.main.sys.argv",
+            ["parsehealthlog", "--profile", "test", "--force-reprocess"],
+        ), patch(
+            "parsehealthlog.main.setup_logging"
+        ), patch(
+            "parsehealthlog.main.ProfileConfig.find_profile_path",
+            return_value=Path("/tmp/test.yaml"),
+        ), patch(
+            "parsehealthlog.main.ProfileConfig.from_file",
+            return_value=profile,
+        ), patch(
+            "parsehealthlog.main.Config.from_profile",
+            return_value=config,
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                cli_main()
+
+        assert exc_info.value.code == 1
+        assert stale_raw.exists()
+        assert stale_processed.exists()
+        output_text = capsys.readouterr().out
+        assert "Date validation error for profile 'test'" in output_text
+        assert "2024-01-10" in output_text
+        assert str(stale_raw) in output_text
+        assert str(stale_processed) in output_text
+
     def test_main_exits_nonzero_on_date_validation_error_before_force_delete(
         self, tmp_path, capsys
     ):
         source = tmp_path / "health.md"
-        source.write_text("### 2024/01/15\n\nA\n", encoding="utf-8")
+        source.write_text("### 2024/02/30\n\nA\n", encoding="utf-8")
         output = tmp_path / "output"
         entries = output / "entries"
         entries.mkdir(parents=True)
