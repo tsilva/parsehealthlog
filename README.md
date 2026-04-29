@@ -1,112 +1,65 @@
 <div align="center">
-  <img src="https://raw.githubusercontent.com/tsilva/parsehealthlog/main/logo.png" alt="parsehealthlog" width="512"/>
-
-  [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-  [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+  <img src="./logo.png" alt="parsehealthlog" width="512" />
 
   **📓 Transform health journal entries into structured, validated data 🏥**
 
-  [Documentation](docs/pipeline.md)
+  [GitHub](https://github.com/tsilva/parsehealthlog) · [Pipeline docs](docs/pipeline.md)
 </div>
 
-## Overview
+parsehealthlog is a Python CLI for turning a date-sectioned markdown health journal into structured markdown. It reads journal entries, optional lab CSVs, and optional medical exam summaries, then uses an OpenAI-compatible LLM endpoint to process and validate each date independently.
 
-[![CI](https://github.com/tsilva/parsehealthlog/actions/workflows/release.yml/badge.svg)](https://github.com/tsilva/parsehealthlog/actions/workflows/release.yml)
+The primary output is `health_log.md`: one collated log, newest to oldest, with `Journal`, `Lab Results`, and `Medical Exams` sections when those sources are present.
 
-parsehealthlog is a data extraction and curation tool that transforms unstructured health journal entries into structured, validated data ready for downstream analysis.
-
-**What it produces:**
-- **`health_log.md`** — All processed entries (newest to oldest) with per-date `Journal`, `Lab Results`, and `Medical Exams` sections when present
-
-The tool processes, validates, and enriches health log entries. Reports, summaries, and recommendations are left to downstream consumers of the structured data.
-
-## Features
-
-- **Parallel processing** of hundreds of journal entries
-- **Structured lab and exam integration** without adding medical interpretation
-- **Hash-based caching** for efficient incremental rebuilds
-- **Startup validation** that stops on malformed dates or stale extracted journal entries
-- **Multi-model support** via OpenRouter (GPT-4, Claude, etc.)
-- **Profile-based configuration** for managing multiple health logs
-
-## Quick Start
+## Install
 
 ```bash
-# Install uv (if needed)
 curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Clone and install
 git clone https://github.com/tsilva/parsehealthlog.git
 cd parsehealthlog
 uv sync
 
-# Configure
 mkdir -p ~/.config/parsehealthlog/profiles
 
-# Create ~/.config/parsehealthlog/profiles/myprofile.yaml
-# health_log_path: /path/to/health.md
-# output_path: /path/to/output
+cat > ~/.config/parsehealthlog/.env <<'ENV'
+OPENROUTER_API_KEY=your-key
+MODEL_ID=gpt-4o-mini
+ENV
 
-# Create ~/.config/parsehealthlog/.env
-# OPENROUTER_API_KEY=your-key
-# MODEL_ID=your-model
+cat > ~/.config/parsehealthlog/profiles/myprofile.yaml <<'YAML'
+health_log_path: /path/to/health.md
+output_path: /path/to/output
+base_url: https://openrouter.ai/api/v1
+workers: 4
+YAML
 
-# Run
 uv run parsehealthlog --profile myprofile
 ```
 
-## Output Structure
+Open `/path/to/output/health_log.md`.
 
-```
-OUTPUT_PATH/
-├── health_log.md            # PRIMARY: All entries (newest to oldest), sectioned by source
-└── entries/                 # INTERMEDIATE (kept for caching)
-    ├── YYYY-MM-DD.raw.md
-    ├── YYYY-MM-DD.processed.md
-    ├── YYYY-MM-DD.labs.md
-    └── YYYY-MM-DD.exams.md
-```
+## Commands
 
-## Configuration
-
-### Environment Variables (`~/.config/parsehealthlog/.env`)
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `OPENROUTER_API_KEY` | Yes | Your OpenRouter API key |
-| `MODEL_ID` | No | LLM model to use (default: `gpt-4o-mini`) |
-
-### Profile Configuration (`~/.config/parsehealthlog/profiles/<name>.yaml`)
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `health_log_path` | Yes | Path to your markdown health log |
-| `output_path` | Yes | Directory for generated output |
-| `workers` | No | Parallel processing threads (default: `4`) |
-| `base_url` | No | OpenAI-compatible API base URL (default: `https://openrouter.ai/api/v1`) |
-
-See [docs/pipeline.md](docs/pipeline.md) for all configuration options.
-
-## Health Log Format
-
-Your health log should be a markdown file with dated sections:
-
-```markdown
-### 2024-01-15
-
-Visited Dr. Smith for annual checkup. Blood pressure 120/80.
-Started vitamin D 2000 IU daily.
-
-### 2024-01-20
-
-Feeling better after starting vitamin D. Energy levels improved.
+```bash
+uv run parsehealthlog --profile myprofile          # process one profile
+uv run parsehealthlog --profile myprofile --dry-run # preview planned changes
+uv run parsehealthlog --profile myprofile --force-reprocess # ignore cached outputs
+uv run parsehealthlog --list-profiles              # list configured profiles
+uv run pytest                                      # run tests
 ```
 
-Date headers may use `### YYYY-MM-DD` or `### YYYY/MM/DD`; slash dates are
-normalized internally to `YYYY-MM-DD`. Dates must be real calendar dates, be
-unique, and stay in one sequential order, either oldest-to-newest or
-newest-to-oldest. The process exits with an error before extraction if the
-source log needs date fixes.
+## Notes
+
+- Source entries use `### YYYY-MM-DD` or `### YYYY/MM/DD` headings. Dates must be real, unique, and consistently ordered.
+- Runtime config lives in `~/.config/parsehealthlog/.env`; profiles live in `~/.config/parsehealthlog/profiles/<name>.yaml`.
+- `OPENROUTER_API_KEY` is required. `MODEL_ID` defaults to `gpt-4o-mini`, and `base_url` defaults to `https://openrouter.ai/api/v1`.
+- Optional profile fields include `labs_parser_output_path`, `medical_exams_parser_output_path`, and `workers`.
+- Output is written under `output_path`, with cached per-date artifacts in `output_path/entries/`.
+- Caching is hash-based through `DEPS` comments; use `--force-reprocess` after prompt or source changes when you need a full rebuild.
+- Logs are written to `logs/all.log` and `logs/warnings.log`.
+
+## Architecture
+
+![parsehealthlog architecture diagram](./architecture.png)
 
 ## License
 
