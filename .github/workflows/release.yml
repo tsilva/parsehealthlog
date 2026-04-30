@@ -8,7 +8,20 @@ concurrency:
   cancel-in-progress: false
 jobs:
   test:
-    uses: tsilva/.github/.github/workflows/test.yml@main
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v4
+        with:
+          cache: true
+      - run: uv sync
+      - run: uv run --with pytest pytest
 
   publish:
     needs: [test]
@@ -24,20 +37,76 @@ jobs:
           fetch-depth: 0
       - name: Check version
         id: check-version
-        uses: tsilva/.github/.github/actions/check-version@main
+        shell: bash
+        run: |
+          VERSION=$(python - <<'PY'
+          import re
+          import tomllib
+
+          with open("pyproject.toml", "rb") as f:
+              config = tomllib.load(f)
+
+          project = config.get("project", {})
+          if "version" in project:
+              print(project["version"])
+          elif "version" in project.get("dynamic", []):
+              version_path = config.get("tool", {}).get("hatch", {}).get("version", {}).get("path")
+              if not version_path:
+                  raise ValueError("Dynamic version specified but no hatch.version.path found")
+              with open(version_path) as vf:
+                  match = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', vf.read())
+              if not match:
+                  raise ValueError(f"Could not find __version__ in {version_path}")
+              print(match.group(1))
+          else:
+              raise ValueError("No version found in pyproject.toml")
+          PY
+          )
+          TAG="v$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+            TAG_EXISTS=true
+          else
+            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
+            TAG_EXISTS=false
+          fi
+          PYPI_EXISTS=$(python - "$VERSION" <<'PY'
+          import sys
+          import urllib.error
+          import urllib.request
+
+          url = f"https://pypi.org/pypi/parsehealthlog/{sys.argv[1]}/json"
+          try:
+              with urllib.request.urlopen(url, timeout=10) as response:
+                  print("true" if response.status == 200 else "false")
+          except urllib.error.HTTPError as exc:
+              if exc.code == 404:
+                  print("false")
+              else:
+                  raise
+          PY
+          )
+          echo "pypi_exists=$PYPI_EXISTS" >> "$GITHUB_OUTPUT"
+          if [ "$TAG_EXISTS" = "true" ] || [ "$PYPI_EXISTS" = "true" ]; then
+            echo "version_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "version_exists=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Setup uv
-        if: steps.check-version.outputs.tag_exists == 'false'
+        if: steps.check-version.outputs.version_exists == 'false'
         uses: astral-sh/setup-uv@v4
         with:
           cache: true
       - name: Build package
-        if: steps.check-version.outputs.tag_exists == 'false'
+        if: steps.check-version.outputs.version_exists == 'false'
         run: uv build
       - name: Create GitHub release
-        if: steps.check-version.outputs.tag_exists == 'false'
+        if: steps.check-version.outputs.version_exists == 'false'
         run: gh release create "${{ steps.check-version.outputs.tag }}" --title "${{ steps.check-version.outputs.tag }}" --generate-notes dist/*
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Publish to PyPI
-        if: steps.check-version.outputs.tag_exists == 'false'
+        if: steps.check-version.outputs.version_exists == 'false'
         uses: pypa/gh-action-pypi-publish@release/v1
