@@ -1,11 +1,15 @@
 name: Release
+
 on:
   push:
     branches: [main]
     paths: [parsehealthlog/__init__.py]
+  workflow_dispatch:
+
 concurrency:
   group: release
   cancel-in-progress: false
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -13,15 +17,15 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@v8
         with:
-          cache: true
-      - run: uv sync
-      - run: uv run --with pytest pytest
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run pytest
 
   publish:
     needs: [test]
@@ -32,12 +36,17 @@ jobs:
       contents: write
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - name: Check version
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Check release targets
         id: check-version
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           VERSION=$(python - <<'PY'
           import re
@@ -65,13 +74,14 @@ jobs:
           TAG="v$VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
-            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
-            TAG_EXISTS=true
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            RELEASE_EXISTS=true
           else
-            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
-            TAG_EXISTS=false
+            RELEASE_EXISTS=false
           fi
+          echo "release_exists=$RELEASE_EXISTS" >> "$GITHUB_OUTPUT"
+
           PYPI_EXISTS=$(python - "$VERSION" <<'PY'
           import sys
           import urllib.error
@@ -89,24 +99,25 @@ jobs:
           PY
           )
           echo "pypi_exists=$PYPI_EXISTS" >> "$GITHUB_OUTPUT"
-          if [ "$TAG_EXISTS" = "true" ] || [ "$PYPI_EXISTS" = "true" ]; then
-            echo "version_exists=true" >> "$GITHUB_OUTPUT"
+
+          if [ "$RELEASE_EXISTS" = "true" ] && [ "$PYPI_EXISTS" = "true" ]; then
+            echo "fully_published=true" >> "$GITHUB_OUTPUT"
           else
-            echo "version_exists=false" >> "$GITHUB_OUTPUT"
+            echo "fully_published=false" >> "$GITHUB_OUTPUT"
           fi
       - name: Setup uv
-        if: steps.check-version.outputs.version_exists == 'false'
-        uses: astral-sh/setup-uv@v4
+        if: steps.check-version.outputs.fully_published == 'false'
+        uses: astral-sh/setup-uv@v8
         with:
-          cache: true
+          enable-cache: true
       - name: Build package
-        if: steps.check-version.outputs.version_exists == 'false'
+        if: steps.check-version.outputs.fully_published == 'false'
         run: uv build
+      - name: Publish to PyPI
+        if: steps.check-version.outputs.pypi_exists == 'false'
+        uses: pypa/gh-action-pypi-publish@release/v1
       - name: Create GitHub release
-        if: steps.check-version.outputs.version_exists == 'false'
+        if: steps.check-version.outputs.release_exists == 'false'
         run: gh release create "${{ steps.check-version.outputs.tag }}" --title "${{ steps.check-version.outputs.tag }}" --generate-notes dist/*
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Publish to PyPI
-        if: steps.check-version.outputs.version_exists == 'false'
-        uses: pypa/gh-action-pypi-publish@release/v1
+          GH_TOKEN: ${{ github.token }}
