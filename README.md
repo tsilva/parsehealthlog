@@ -12,6 +12,8 @@ The primary output is `health_log.md`: one collated log, newest to oldest, with 
 
 ## Install
 
+Requires Python 3.9 or newer.
+
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 git clone https://github.com/tsilva/parsehealthlog.git
