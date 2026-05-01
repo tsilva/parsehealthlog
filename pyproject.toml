@@ -3,7 +3,7 @@ name = "parsehealthlog"
 dynamic = ["version"]
 description = "Tool for parsing health journal entries into structured markdown"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "Tiago Silva" }]
 keywords = ["health", "log", "parser", "llm", "markdown"]
