@@ -75,7 +75,7 @@ class TestConfigFromProfile:
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}, clear=False):
             os.environ.pop("MODEL_ID", None)
             config = Config.from_profile(_profile())
-        assert config.model_id == "gpt-4o-mini"
+        assert config.model_id == "google/gemini-3.6-flash"
 
     def test_default_max_workers(self):
         with patch("os.cpu_count", return_value=8):

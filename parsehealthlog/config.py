@@ -18,6 +18,7 @@ from parsehealthlog.exceptions import ConfigurationError
 # OpenRouter pricing per 1M tokens (input/output) in USD
 # Prices as of 2024 - update as needed
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
+DEFAULT_MODEL_ID = "google/gemini-3.6-flash"
 
 
 MODEL_PRICING = {
@@ -216,7 +217,7 @@ class Config:
             raise ConfigurationError(
                 "Missing required environment variable: OPENROUTER_API_KEY"
             )
-        model_id = os.getenv("MODEL_ID", "gpt-4o-mini")
+        model_id = os.getenv("MODEL_ID", DEFAULT_MODEL_ID)
 
         # Workers with priority: profile > env > default (clamped to CPU count)
         if profile.workers is not None:

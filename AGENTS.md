@@ -23,7 +23,7 @@ uv run parsehealthlog --profile <profile_name>
 
 # Environment configuration (~/.config/parsehealthlog/.env)
 OPENROUTER_API_KEY=your-key         # Required
-MODEL_ID=your-model                 # Optional, defaults to gpt-4o-mini
+MODEL_ID=your-model                 # Optional, defaults to google/gemini-3.6-flash
 
 # Profile configuration (~/.config/parsehealthlog/profiles/<name>.yaml)
 health_log_path: /path/to/health.md    # Required
