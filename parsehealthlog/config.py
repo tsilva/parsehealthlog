@@ -18,7 +18,7 @@ from parsehealthlog.exceptions import ConfigurationError
 # OpenRouter pricing per 1M tokens (input/output) in USD
 # Prices as of 2024 - update as needed
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_MODEL_ID = "google/gemini-3.6-flash"
+DEFAULT_MODEL_ID = "google/gemini-3.7-flash"
 
 
 MODEL_PRICING = {

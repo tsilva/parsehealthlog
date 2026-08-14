@@ -223,7 +223,7 @@ Environment variables:
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `OPENROUTER_API_KEY` | Yes | - | OpenRouter API key |
-| `MODEL_ID` | No | `google/gemini-3.6-flash` | Model used for processing and validation |
+| `MODEL_ID` | No | `google/gemini-3.7-flash` | Model used for processing and validation |
 | `MAX_WORKERS` | No | `4` | Parallel processing threads when the profile omits `workers` |
 
 Profile fields:

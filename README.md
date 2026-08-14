@@ -24,7 +24,7 @@ mkdir -p ~/.config/parsehealthlog/profiles
 
 cat > ~/.config/parsehealthlog/.env <<'ENV'
 OPENROUTER_API_KEY=your-key
-MODEL_ID=google/gemini-3.6-flash
+MODEL_ID=google/gemini-3.7-flash
 ENV
 
 cat > ~/.config/parsehealthlog/profiles/myprofile.yaml <<'YAML'
@@ -53,7 +53,7 @@ uv run pytest                                      # run tests
 
 - Source entries use `### YYYY-MM-DD` or `### YYYY/MM/DD` headings. Dates must be real, unique, and consistently ordered.
 - Runtime config lives in `~/.config/parsehealthlog/.env`; profiles live in `~/.config/parsehealthlog/profiles/<name>.yaml`.
-- `OPENROUTER_API_KEY` is required. `MODEL_ID` defaults to `google/gemini-3.6-flash`, and `base_url` defaults to `https://openrouter.ai/api/v1`.
+- `OPENROUTER_API_KEY` is required. `MODEL_ID` defaults to `google/gemini-3.7-flash`, and `base_url` defaults to `https://openrouter.ai/api/v1`.
 - Optional profile fields include `labs_parser_output_path`, `medical_exams_parser_output_path`, and `workers`.
 - Output is written under `output_path`, with cached per-date artifacts in `output_path/entries/`.
 - Caching is hash-based through `DEPS` comments; use `--force-reprocess` after prompt or source changes when you need a full rebuild.
