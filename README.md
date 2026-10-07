@@ -1,10 +1,12 @@
-<div align="center">
+<p align="center">
   <img src="./logo.png" alt="parsehealthlog" width="512" />
+  <br />
+  <!-- repo-tagline:start -->
+  <strong>📓 Transform health journal entries into structured, validated data 🏥</strong>
+  <!-- repo-tagline:end -->
+</p>
 
-  **📓 Transform health journal entries into structured, validated data 🏥**
-
-  [GitHub](https://github.com/tsilva/parsehealthlog) · [Pipeline docs](docs/pipeline.md)
-</div>
+[GitHub](https://github.com/tsilva/parsehealthlog) · [Pipeline docs](docs/pipeline.md)
 
 parsehealthlog is a Python CLI for turning a date-sectioned markdown health journal into structured markdown. It reads journal entries, optional lab CSVs, and optional medical exam summaries, then uses an OpenAI-compatible LLM endpoint to process and validate each date independently.
 
