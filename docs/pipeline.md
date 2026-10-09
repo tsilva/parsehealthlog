@@ -14,7 +14,7 @@ This document describes the data processing pipeline used by parsehealthlog to t
   health.md          +--------------------------------------------+
        |             |                                            |
        v             |   1. VALIDATE SOURCE DATES                |
-  [Markdown Log]---->|      Check headers are valid and ordered   |
+  [Markdown Log]---->|      Validate dates; merge repeated days   |
        |             |                                            |
        |             |   2. VALIDATE PROMPTS                      |
        |             |      Check all required prompts exist      |
@@ -277,3 +277,11 @@ Progress tracked in `.state.json`:
 - `status`: not_started | in_progress | completed | completed_with_errors
 - `started_at`, `completed_at`: ISO timestamps
 - `sections_total`, `sections_processed`: Progress counters
+
+### Fidelity and reconstruction
+
+Runtime date validation accepts repeated or nonsequential valid date headers. Splitting merges each repeated day in source order without editing the journal; final aggregation sorts dates. Direct calls to `validate_health_log_dates()` retain strict uniqueness/order checks unless the corresponding flags are enabled. Each lab input is normalized before concatenation using one coherent value/unit/range schema, with the canonical `value`/`lab_unit` schema preferred. Raw comparators and censor flags are preserved, and decimal formatting avoids floating-point artifacts. If only lab/exam dependencies change, the processor retains previously validated Journal content while rebuilding evidence inserts. Source-specific orphan detection removes stale sidecars even when the journal still has that date.
+
+The unified timeline retains an attributed verbatim copy of every journal body, in its original language, alongside successful English curation. If curation fails validation, the timeline keeps the source copy and evidence inserts; `.failed.md` records the curation failure and the run reports errors. Embedded clinical interpretations and historical dates must survive curation.
+
+Exam summaries use their explicit `exam_date`; the directory date is a legacy fallback only. Explicitly undated summaries remain available in the exam corpus and are not assigned a journal date.

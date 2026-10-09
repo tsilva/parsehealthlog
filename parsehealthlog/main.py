@@ -243,7 +243,9 @@ class DateHeader:
     value: str
 
 
-def validate_health_log_dates(path: Path) -> list[DateHeader]:
+def validate_health_log_dates(
+    path: Path, *, allow_duplicate_dates: bool = False, allow_unsorted_dates: bool = False
+) -> list[DateHeader]:
     """Validate date section headers before any extraction work begins.
 
     Source logs must use `### YYYY-MM-DD` or `### YYYY/MM/DD` headers with real
@@ -286,16 +288,20 @@ def validate_health_log_dates(path: Path) -> list[DateHeader]:
     for header in headers:
         seen.setdefault(header.value, []).append(header.line_number)
     for value, line_numbers in seen.items():
-        if len(line_numbers) > 1:
+        if len(line_numbers) > 1 and not allow_duplicate_dates:
             lines = ", ".join(str(line) for line in line_numbers)
             errors.append(f"date `{value}` appears more than once on lines {lines}")
 
-    if len(headers) >= 3:
-        dates = [datetime.strptime(header.value, "%Y-%m-%d") for header in headers]
+    ordered_headers = list({header.value: header for header in reversed(headers)}.values())
+    ordered_headers.reverse()
+    if not allow_duplicate_dates:
+        ordered_headers = headers
+    if len(ordered_headers) >= 3 and not allow_unsorted_dates:
+        dates = [datetime.strptime(header.value, "%Y-%m-%d") for header in ordered_headers]
         comparisons = [
             (left_date, right_date, left_header, right_header)
             for left_date, right_date, left_header, right_header in zip(
-                dates, dates[1:], headers, headers[1:]
+                dates, dates[1:], ordered_headers, ordered_headers[1:]
             )
             if left_date != right_date
         ]
@@ -411,9 +417,14 @@ def strip_date_header(section: str) -> str:
     return "\n".join(lines[1:]).strip()
 
 
-def format_journal_section(content: str) -> str:
+def format_journal_section(content: str, source_content: str | None = None) -> str:
     """Wrap processed journal content in a normalized Journal section."""
     normalized = normalize_markdown_headers(content.strip(), target_base_level=3)
+    if source_content is not None and source_content.strip():
+        quoted = "\n".join("> " + line for line in source_content.splitlines())
+        normalized = "\n\n".join(part for part in (
+            normalized, "### Original journal (verbatim)\n\n" + quoted,
+        ) if part)
     if not normalized.strip():
         return ""
     return f"{JOURNAL_SECTION_HEADER}\n\n{normalized}"
@@ -437,10 +448,11 @@ def format_lab_line(
     unit: str,
     reference_min: ScalarLike,
     reference_max: ScalarLike,
+    comparator: str = "",
 ) -> str:
     """Format a single lab result line."""
     formatted_value = format_scalar(value)
-    line = f"- **{name}:** {formatted_value}{f' {unit}' if unit else ''}"
+    line = f"- **{name}:** {comparator}{formatted_value}{f' {unit}' if unit else ''}"
     if pd.notna(reference_min) and pd.notna(reference_max):
         line += f" (ref: {format_scalar(reference_min)} - {format_scalar(reference_max)})"
     return line
@@ -454,6 +466,7 @@ def format_scalar(value: ScalarLike) -> str:
         numeric = float(value)
         if numeric.is_integer():
             return str(int(numeric))
+        return f"{numeric:.12g}"
     return str(value)
 
 
@@ -467,9 +480,18 @@ def format_labs(df: pd.DataFrame) -> str:
     for row in df.itertuples():
         group, subgroup, test_name = split_lab_name(row.lab_name_standardized)
         bucket = grouped.setdefault(group, {"tests": [], "subgroups": {}})
-        unit = str(getattr(row, "unit_normalized", "")).strip()
+        unit_value = getattr(row, "unit_normalized", "")
+        unit = str(unit_value).strip() if pd.notna(unit_value) else ""
         rmin, rmax = row.reference_min_normalized, row.reference_max_normalized
-        line = format_lab_line(test_name, row.value_normalized, unit, rmin, rmax)
+        raw_value = str(getattr(row, "raw_value", ""))
+        match = re.match(r"\s*(<=|>=|[<>≤≥])", raw_value)
+        comparator = match.group(1) if match else ""
+        if not comparator:
+            for attr, symbol in (("is_below_limit", "<"), ("is_above_limit", ">")):
+                if str(getattr(row, attr, "")).strip().lower() in {"true", "1", "1.0"}:
+                    comparator = symbol
+                    break
+        line = format_lab_line(test_name, row.value_normalized, unit, rmin, rmax, comparator)
 
         if subgroup:
             bucket["subgroups"].setdefault(subgroup, []).append(line)
@@ -524,7 +546,9 @@ def parse_front_matter(content: str) -> tuple[ExamFrontMatter, str]:
                 "category",
             ):
                 value = loaded.get(key)
-                if value is not None:
+                if key == "exam_date" and key in loaded and value is None:
+                    metadata[key] = None
+                elif value is not None:
                     metadata[key] = str(value)
     except YAMLError:
         metadata = {}
@@ -740,7 +764,9 @@ class HealthLogProcessor:
         self.logger = logging.getLogger(__name__)
         if not self.path.exists():
             raise FileNotFoundError(self.path)
-        date_headers = validate_health_log_dates(self.path)
+        date_headers = validate_health_log_dates(
+            self.path, allow_duplicate_dates=True, allow_unsorted_dates=True
+        )
 
         output_base = config.output_path
         self.OUTPUT_PATH = output_base
@@ -1139,6 +1165,22 @@ class HealthLogProcessor:
     def _process_section(self, section: str) -> tuple[str, bool]:
         plan = self._build_entry_plan(section=section)
 
+        # Evidence updates do not invalidate a journal already validated against
+        # the same raw text and prompts. Reattach sidecars deterministically.
+        if plan.processed_path.exists():
+            previous = plan.processed_path.read_text(encoding="utf-8")
+            previous_deps = parse_deps_comment(previous.split("\n", 1)[0])
+            journal = re.search(
+                r"(?ms)^## Journal\s*\n.*?(?=^## (?:Lab Results|Medical Exams)\s*$|\Z)",
+                previous,
+            )
+            if journal and all(previous_deps.get(key) == plan.deps.get(key)
+                               for key in ("raw", "process_prompt", "validate_prompt")):
+                self._write_processed_entry(plan, assemble_entry_content(
+                    journal.group(0).strip(), plan.labs_content, plan.exams_content,
+                ))
+                return plan.date, True
+
         last_processed = ""
         last_validation = ""
 
@@ -1186,11 +1228,12 @@ class HealthLogProcessor:
 
             if "$OK$" in validation:
                 final_content = assemble_entry_content(
-                    format_journal_section(processed),
+                    format_journal_section(processed, plan.raw_content),
                     plan.labs_content,
                     plan.exams_content,
                 )
                 self._write_processed_entry(plan, final_content)
+                (self.entries_dir / f"{plan.date}.failed.md").unlink(missing_ok=True)
                 return plan.date, True
 
             self.logger.error(
@@ -1223,6 +1266,13 @@ class HealthLogProcessor:
         failed_path.write_text(diagnostic, encoding="utf-8")
         self.logger.error("Saved diagnostic info to %s", failed_path)
 
+        # A failed curation must not remove the person's source evidence from
+        # the unified timeline. Keep the original language, visibly attributed.
+        self._write_processed_entry(plan, assemble_entry_content(
+            format_journal_section("", plan.raw_content),
+            plan.labs_content, plan.exams_content,
+        ))
+
         return plan.date, False
 
     # --------------------------------------------------------------
@@ -1230,7 +1280,7 @@ class HealthLogProcessor:
     # --------------------------------------------------------------
 
     def _split_sections(self) -> list[str]:
-        validate_health_log_dates(self.path)
+        validate_health_log_dates(self.path, allow_duplicate_dates=True, allow_unsorted_dates=True)
         text = self.path.read_text(encoding="utf-8")
 
         match = DATE_SECTION_SPLIT_RE.search(text)
@@ -1247,18 +1297,17 @@ class HealthLogProcessor:
             if s.strip()
         ]
 
-        seen: dict[str, int] = {}
+        merged: dict[str, str] = {}
         for sec in sections:
             date = extract_date(sec)
-            seen[date] = seen.get(date, 0) + 1
-        duplicates = [date for date, count in seen.items() if count > 1]
-        if duplicates:
-            raise ValueError(
-                "Duplicate date sections found in source file — fix before running:\n"
-                + "\n".join(f"  - {d}" for d in sorted(duplicates))
-            )
-
-        return sections
+            if date in merged:
+                heading, _, body = sec.partition("\n")
+                label = heading.removeprefix(f"### {date}").strip()
+                addition = f"{label}\n\n{body}" if label else body
+                merged[date] = f"{merged[date]}\n\n{addition.strip()}"
+            else:
+                merged[date] = sec
+        return list(merged.values())
 
     def _load_labs(self) -> None:
         lab_dfs: list[pd.DataFrame] = []
@@ -1297,33 +1346,42 @@ class HealthLogProcessor:
             self.logger.info("No lab CSV files found")
             return
 
-        labs_df = pd.concat(lab_dfs, ignore_index=True)
+        # Normalize each CSV before concatenation. Value, unit and ranges must
+        # come from one schema, never from different normalization stages.
+        schemas = [
+            ("value", "lab_unit", "reference_min", "reference_max"),
+            ("lab_value_final", "lab_unit_final", "lab_range_min_final", "lab_range_max_final"),
+            ("value_primary", "lab_unit_primary", "reference_min_primary", "reference_max_primary"),
+            (
+                "value_normalized", "unit_normalized",
+                "reference_min_normalized", "reference_max_normalized",
+            ),
+            ("value", "unit", "reference_min", "reference_max"),
+            ("value", "lab_unit_standardized", "reference_min", "reference_max"),
+        ]
+        normalized_frames = []
+        for frame in lab_dfs:
+            schema = next((s for s in schemas if all(c in frame for c in s[:2])), None)
+            names = [
+                c for c in ("lab_name", "lab_name_enum", "lab_name_standardized") if c in frame
+            ]
+            if schema is None or not names or "date" not in frame:
+                self.logger.error("Lab CSV has no coherent value/unit schema or identity columns")
+                continue
+            source_columns = ("date", "raw_value", "is_below_limit", "is_above_limit")
+            normalized = frame[[c for c in source_columns if c in frame]].copy()
+            normalized["lab_name_standardized"] = frame[names].bfill(axis=1).iloc[:, 0]
+            targets = (
+                "value_normalized", "unit_normalized",
+                "reference_min_normalized", "reference_max_normalized",
+            )
+            for source, target in zip(schema, targets):
+                normalized[target] = frame[source] if source in frame else None
+            normalized_frames.append(normalized)
+        if not normalized_frames:
+            return
+        labs_df = pd.concat(normalized_frames, ignore_index=True)
         initial_count = len(labs_df)
-
-        # Handle multiple column naming conventions (before validation)
-        column_mappings = {
-            "lab_name_enum": "lab_name_standardized",
-            "lab_name": "lab_name_standardized",
-            "lab_value_final": "value_normalized",
-            "lab_unit_final": "unit_normalized",
-            "lab_range_min_final": "reference_min_normalized",
-            "lab_range_max_final": "reference_max_normalized",
-            # Additional mappings for different CSV formats
-            "value": "value_normalized",
-            "unit": "unit_normalized",
-            "reference_min": "reference_min_normalized",
-            "reference_max": "reference_max_normalized",
-            "lab_unit_standardized": "unit_normalized",
-            # Mappings for _primary suffix columns
-            "value_primary": "value_normalized",
-            "lab_unit_primary": "unit_normalized",
-            "reference_min_primary": "reference_min_normalized",
-            "reference_max_primary": "reference_max_normalized",
-        }
-        # Rename columns if they exist
-        labs_df = labs_df.rename(
-            columns={k: v for k, v in column_mappings.items() if k in labs_df.columns}
-        )
 
         # Validate required columns exist
         required_cols = ["date", "lab_name_standardized"]
@@ -1356,6 +1414,9 @@ class HealthLogProcessor:
             "unit_normalized",
             "reference_min_normalized",
             "reference_max_normalized",
+            "raw_value",
+            "is_below_limit",
+            "is_above_limit",
         ]
         labs_df = labs_df[[c for c in keep_cols if c in labs_df.columns]]
 
@@ -1406,16 +1467,9 @@ class HealthLogProcessor:
             if not subdir.is_dir():
                 continue
 
-            # Extract date from directory name
+            # Directory dates are only a fallback for legacy summaries.
             match = date_pattern.match(subdir.name)
-            if not match:
-                self.logger.debug(
-                    "Skipping directory without date prefix: %s", subdir.name
-                )
-                skipped_count += 1
-                continue
-
-            date = match.group(1)
+            directory_date = match.group(1) if match else None
 
             # Find .summary.md file in this directory
             summary_files = list(subdir.glob("*.summary.md"))
@@ -1428,6 +1482,16 @@ class HealthLogProcessor:
                 try:
                     content = summary_file.read_text(encoding="utf-8").strip()
                     if content:
+                        metadata, _ = parse_front_matter(content)
+                        date = metadata.get("exam_date", directory_date)
+                        if not date:
+                            skipped_count += 1
+                            continue
+                        try:
+                            datetime.strptime(date, "%Y-%m-%d")
+                        except ValueError:
+                            skipped_count += 1
+                            continue
                         if date not in exams_by_date:
                             exams_by_date[date] = []
                         exams_by_date[date].append(content)
@@ -1519,6 +1583,12 @@ class HealthLogProcessor:
 
             if entry_file.name.endswith(".raw.md"):
                 if file_date not in source_dates:
+                    orphaned.append(entry_file)
+            elif entry_file.name.endswith(".labs.md"):
+                if file_date not in self.labs_by_date:
+                    orphaned.append(entry_file)
+            elif entry_file.name.endswith(".exams.md"):
+                if file_date not in self.medical_exams_by_date:
                     orphaned.append(entry_file)
             elif file_date not in valid_dates:
                 orphaned.append(entry_file)
@@ -1898,7 +1968,9 @@ Examples:
             return False
 
         try:
-            date_headers = validate_health_log_dates(config.health_log_path)
+            date_headers = validate_health_log_dates(
+                config.health_log_path, allow_duplicate_dates=True, allow_unsorted_dates=True
+            )
             validate_extracted_entry_dates(
                 {header.value for header in date_headers},
                 config.output_path / "entries",

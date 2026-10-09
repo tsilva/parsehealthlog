@@ -42,7 +42,7 @@ class ProgressSnapshot(TypedDict, total=False):
 class ExamFrontMatter(TypedDict, total=False):
     title: str
     exam_name_raw: str
-    exam_date: str
+    exam_date: str | None
     doctor: str
     facility: str
     department: str
