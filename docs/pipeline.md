@@ -218,7 +218,10 @@ This document describes the data processing pipeline used by parsehealthlog to t
 
 Runtime configuration is loaded from `~/.config/parsehealthlog`:
 - Environment variables: `~/.config/parsehealthlog/.env` or `~/.config/parsehealthlog/.env.<name>`
-- Profiles: `~/.config/parsehealthlog/profiles/<name>.yaml`
+- Profiles: `~/.config/parsehealthlog/profiles/<name>.yaml`; copy the tracked
+  [template](../profiles/template.yaml.example) and edit the private copy.
+  Person-specific journal/lab/exam paths stay outside Git. The default gateway
+  URL is already in code; profile `base_url` is only needed for an override.
 
 Environment variables:
 

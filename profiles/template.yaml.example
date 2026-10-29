@@ -1,0 +1,15 @@
+# Copy to ~/.config/parsehealthlog/profiles/myprofile.yaml and edit the private copy.
+name: "Example Person"
+health_log_path: "/absolute/path/to/health-journal.md"
+output_path: "/absolute/path/to/parsed-health-log"
+
+# Optional parser outputs for this same person; omit unavailable sources.
+# labs_parser_output_path: "/absolute/path/to/parsed-labs"
+# medical_exams_parser_output_path: "/absolute/path/to/parsed-exams"
+
+# Optional machine-specific concurrency override; omit to use the default.
+# workers: 4
+# The gateway endpoint already has a code default. Override only when needed.
+# base_url: "http://127.0.0.1:8082/api/v1"
+# Shared model settings belong in ~/.config/parsehealthlog/.env or the
+# environment; credentials use the existing approved credential workflow.

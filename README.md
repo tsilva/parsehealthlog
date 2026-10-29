@@ -29,17 +29,22 @@ AGENTBRIDGE_API_KEY=your-key
 MODEL_ID=google/gemini-3.7-flash
 ENV
 
-cat > ~/.config/parsehealthlog/profiles/myprofile.yaml <<'YAML'
-health_log_path: /path/to/health.md
-output_path: /path/to/output
-base_url: http://127.0.0.1:8082/api/v1
-workers: 4
-YAML
+cp profiles/template.yaml.example ~/.config/parsehealthlog/profiles/myprofile.yaml
+# Edit the copied journal/output paths before running.
 
 uv run parsehealthlog --profile myprofile
 ```
 
 Open `/path/to/output/health_log.md`.
+
+## Profile templates and private configuration
+
+Copy the tracked [profile template](profiles/template.yaml.example) to
+`~/.config/parsehealthlog/profiles/myprofile.yaml`, then edit that private copy. The
+example records supported configuration without storing anyone's real identity,
+source paths, goals or account bindings. Keep `.config/` and live profiles ignored;
+back up the external files independently. Shared rules belong in repository code,
+documentation and synthetic tests; machine-specific settings remain runtime overrides.
 
 ## Local profile shortcuts
 
