@@ -134,6 +134,8 @@ This document describes the data processing pipeline used by parsehealthlog to t
 
 **Behavior notes:**
 - Uses `ThreadPoolExecutor` with `MAX_WORKERS` threads (default: 4)
+- Codex processing and validation requests explicitly use medium reasoning through AgentBridge, overriding its model default.
+- Reasoning effort is not a cache dependency; existing valid entries are reused when their tracked dependencies match.
 - Validation retries up to 3 times if `$OK$` marker not found
 - Processed date blocks are assembled in source order: `## Journal`, `## Lab Results`, `## Medical Exams`
 - Imported exam summaries have YAML front matter stripped and are normalized into titled bullet-based blocks
@@ -222,7 +224,7 @@ Environment variables:
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `OPENROUTER_API_KEY` | Yes | - | OpenRouter API key |
+| `AGENTBRIDGE_API_KEY` | No | `not-needed` | Optional gateway access token |
 | `MODEL_ID` | No | `google/gemini-3.7-flash` | Model used for processing and validation |
 | `MAX_WORKERS` | No | `4` | Parallel processing threads when the profile omits `workers` |
 
@@ -232,7 +234,7 @@ Profile fields:
 |-------|----------|---------|-------------|
 | `health_log_path` | Yes | - | Path to the markdown health log |
 | `output_path` | Yes | - | Base directory for generated output |
-| `base_url` | No | `https://openrouter.ai/api/v1` | OpenAI-compatible API base URL |
+| `base_url` | No | `http://127.0.0.1:8082/api/v1` | OpenAI-compatible API base URL |
 | `workers` | No | `4` | Parallel processing threads |
 | `labs_parser_output_path` | No | - | Path to aggregated lab CSVs |
 | `medical_exams_parser_output_path` | No | - | Path to medical exam summaries |

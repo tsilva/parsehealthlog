@@ -30,25 +30,25 @@ def _profile(**overrides):
 class TestConfigFromProfile:
     """Tests for Config.from_profile() method."""
 
-    def test_missing_openrouter_api_key_raises(self, monkeypatch):
-        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-        with pytest.raises(ConfigurationError, match="OPENROUTER_API_KEY"):
-            Config.from_profile(_profile())
+    def test_gateway_token_is_optional(self, monkeypatch):
+        monkeypatch.delenv("AGENTBRIDGE_API_KEY", raising=False)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "must-not-send")
+        assert Config.from_profile(_profile()).api_key == "not-needed"
 
     def test_missing_health_log_path_raises(self):
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        with patch.dict(os.environ, {"AGENTBRIDGE_API_KEY": "test-key"}):
             with pytest.raises(ConfigurationError, match="health_log_path"):
                 Config.from_profile(_profile(health_log_path=None))
 
     def test_missing_output_path_raises(self):
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        with patch.dict(os.environ, {"AGENTBRIDGE_API_KEY": "test-key"}):
             with pytest.raises(ConfigurationError, match="output_path"):
                 Config.from_profile(_profile(output_path=None))
 
     def test_valid_minimal_config(self):
         with patch.dict(
             os.environ,
-            {"OPENROUTER_API_KEY": "test-key", "MODEL_ID": "test-model"},
+            {"AGENTBRIDGE_API_KEY": "test-key", "MODEL_ID": "test-model"},
         ):
             config = Config.from_profile(_profile())
         assert config.api_key == "test-key"
@@ -57,65 +57,67 @@ class TestConfigFromProfile:
         assert config.output_path == Path("/path/to/output")
 
     def test_default_base_url(self):
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        with patch.dict(os.environ, {"AGENTBRIDGE_API_KEY": "test-key"}):
             config = Config.from_profile(_profile())
-        assert config.base_url == "https://openrouter.ai/api/v1"
+        assert config.base_url == "http://127.0.0.1:8082/api/v1"
 
     def test_custom_base_url(self):
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        with patch.dict(os.environ, {"AGENTBRIDGE_API_KEY": "test-key"}):
             config = Config.from_profile(_profile(base_url="https://custom.api/v1"))
         assert config.base_url == "https://custom.api/v1"
 
     def test_api_key_comes_from_env(self):
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "my-key"}):
+        with patch.dict(os.environ, {"AGENTBRIDGE_API_KEY": "my-key"}):
             config = Config.from_profile(_profile())
         assert config.api_key == "my-key"
 
     def test_model_id_defaults_from_env_fallback(self):
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}, clear=False):
+        with patch.dict(os.environ, {"AGENTBRIDGE_API_KEY": "test-key"}, clear=False):
             os.environ.pop("MODEL_ID", None)
             config = Config.from_profile(_profile())
         assert config.model_id == "google/gemini-3.7-flash"
 
     def test_default_max_workers(self):
         with patch("os.cpu_count", return_value=8):
-            with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+            with patch.dict(os.environ, {"AGENTBRIDGE_API_KEY": "test-key"}):
                 config = Config.from_profile(_profile())
         assert config.max_workers == 4
 
     def test_profile_workers(self):
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        with patch.dict(os.environ, {"AGENTBRIDGE_API_KEY": "test-key"}):
             config = Config.from_profile(_profile(workers=2))
         assert config.max_workers == 2
 
     def test_max_workers_zero_becomes_one(self):
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        with patch.dict(os.environ, {"AGENTBRIDGE_API_KEY": "test-key"}):
             config = Config.from_profile(_profile(workers=0))
         assert config.max_workers == 1
 
     def test_negative_max_workers_becomes_one(self):
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        with patch.dict(os.environ, {"AGENTBRIDGE_API_KEY": "test-key"}):
             config = Config.from_profile(_profile(workers=-5))
         assert config.max_workers == 1
 
     def test_large_max_workers_clamped_to_cpu_count(self):
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        with patch.dict(os.environ, {"AGENTBRIDGE_API_KEY": "test-key"}):
             config = Config.from_profile(_profile(workers=9999))
         max_cpu = os.cpu_count() or 8
         assert config.max_workers == max_cpu
 
     def test_optional_paths_none_by_default(self):
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        with patch.dict(os.environ, {"AGENTBRIDGE_API_KEY": "test-key"}):
             config = Config.from_profile(_profile())
         assert config.labs_parser_output_path is None
         assert config.medical_exams_parser_output_path is None
 
     def test_optional_paths_from_profile(self):
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-            config = Config.from_profile(_profile(
-                labs_parser_output_path=Path("/path/to/labs"),
-                medical_exams_parser_output_path=Path("/path/to/exams"),
-            ))
+        with patch.dict(os.environ, {"AGENTBRIDGE_API_KEY": "test-key"}):
+            config = Config.from_profile(
+                _profile(
+                    labs_parser_output_path=Path("/path/to/labs"),
+                    medical_exams_parser_output_path=Path("/path/to/exams"),
+                )
+            )
         assert config.labs_parser_output_path == Path("/path/to/labs")
         assert config.medical_exams_parser_output_path == Path("/path/to/exams")
 

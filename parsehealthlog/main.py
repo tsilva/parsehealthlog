@@ -33,6 +33,7 @@ from tenacity import (
 from tqdm import tqdm
 from yaml import YAMLError, safe_load
 
+from parsehealthlog.agentbridge import model_id as gateway_model
 from parsehealthlog.config import (
     Config,
     ProfileConfig,
@@ -133,12 +134,8 @@ PROMPTS_DIR: Final = Path(__file__).with_suffix("").parent / "prompts"
 JOURNAL_SECTION_HEADER: Final = "## Journal"
 LAB_SECTION_HEADER: Final = "## Lab Results"
 MEDICAL_EXAMS_SECTION_HEADER: Final = "## Medical Exams"
-SUPPORTED_DATE_HEADER_RE: Final = re.compile(
-    r"^###\s*(\d{4}([-\/])\d{1,2}\2\d{1,2})(?:\s|$)"
-)
-DATE_LIKE_HEADER_RE: Final = re.compile(
-    r"^###\s*(\d{4}[-/–—]\d{1,2}[-/–—]\d{1,2})(?:\s|$)"
-)
+SUPPORTED_DATE_HEADER_RE: Final = re.compile(r"^###\s*(\d{4}([-\/])\d{1,2}\2\d{1,2})(?:\s|$)")
+DATE_LIKE_HEADER_RE: Final = re.compile(r"^###\s*(\d{4}[-/–—]\d{1,2}[-/–—]\d{1,2})(?:\s|$)")
 DATE_SECTION_SPLIT_RE: Final = re.compile(
     r"(?=^###\s*\d{4}(?:-\d{1,2}-|/\d{1,2}/)\d{1,2}(?:\s|$))",
     flags=re.MULTILINE,
@@ -198,18 +195,14 @@ def extract_date(section: str) -> str:
     """
     lines = section.strip().splitlines()
     if not lines:
-        raise DateExtractionError(
-            "Cannot extract date from empty section", section=section
-        )
+        raise DateExtractionError("Cannot extract date from empty section", section=section)
     header = lines[0].lstrip("#").replace("–", "-").replace("—", "-")
     for token in re.split(r"\s+", header):
         try:
             return date_parse(token, fuzzy=False).strftime("%Y-%m-%d")
         except ValueError:
             continue
-    raise DateExtractionError(
-        f"No valid date found in header: {header}", section=section
-    )
+    raise DateExtractionError(f"No valid date found in header: {header}", section=section)
 
 
 def normalize_date_header_token(token: str) -> str:
@@ -280,9 +273,7 @@ def validate_health_log_dates(
         headers.append(DateHeader(line_number=line_number, value=value))
 
     if not headers and not errors:
-        errors.append(
-            "no dated sections found; expected section headers like `### YYYY-MM-DD`"
-        )
+        errors.append("no dated sections found; expected section headers like `### YYYY-MM-DD`")
 
     seen: dict[str, list[int]] = {}
     for header in headers:
@@ -306,10 +297,7 @@ def validate_health_log_dates(
             if left_date != right_date
         ]
         direction = next(
-            (
-                1 if right_date > left_date else -1
-                for left_date, right_date, _, _ in comparisons
-            ),
+            (1 if right_date > left_date else -1 for left_date, right_date, _, _ in comparisons),
             0,
         )
         if direction:
@@ -338,8 +326,7 @@ def validate_health_log_dates(
     if errors:
         raise DateValidationError(
             "Health log date validation failed. Fix the source log before running "
-            "extraction:\n"
-            + "\n".join(f"- {error}" for error in errors)
+            "extraction:\n" + "\n".join(f"- {error}" for error in errors)
         )
 
     return headers
@@ -604,9 +591,7 @@ def format_exam_metadata(metadata: ExamFrontMatter) -> str:
 def format_exam_summary(content: str) -> str:
     """Normalize a medical exam summary into structured markdown."""
     metadata, body = parse_front_matter(content)
-    title = str(
-        metadata.get("title") or metadata.get("exam_name_raw") or "Medical Exam"
-    ).strip()
+    title = str(metadata.get("title") or metadata.get("exam_name_raw") or "Medical Exam").strip()
 
     parts = [f"### {title}"]
     metadata_line = format_exam_metadata(metadata)
@@ -737,12 +722,17 @@ class LLM:
         max_tokens: int = 2048,
         temperature: float = 0.0,
     ) -> str:
+        resolved_model = gateway_model(self.model)
+        request_options = (
+            {"reasoning_effort": "medium"} if resolved_model.startswith("codex/") else {}
+        )
         resp = self.client.chat.completions.create(
-            model=self.model,
+            model=resolved_model,
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
             timeout=120.0,  # 2 minute timeout per request
+            **request_options,
         )
         if not resp or not resp.choices:
             raise ValueError(f"Empty response from API for model {self.model}")
@@ -786,8 +776,7 @@ class HealthLogProcessor:
         # OpenAI client + per-role models
         self.client = OpenAI(base_url=config.base_url, api_key=config.api_key)
         self.llm = {
-            role: LLM(self.client, config.model_id)
-            for role in ("process", "validate", "status")
+            role: LLM(self.client, config.model_id) for role in ("process", "validate", "status")
         }
 
         # Lab data per date – populated lazily
@@ -816,9 +805,7 @@ class HealthLogProcessor:
             "validate.user_prompt",
         ]
 
-        missing = [
-            p for p in required_prompts if not (PROMPTS_DIR / f"{p}.md").exists()
-        ]
+        missing = [p for p in required_prompts if not (PROMPTS_DIR / f"{p}.md").exists()]
         if missing:
             raise PromptError(f"Missing required prompt files: {', '.join(missing)}")
 
@@ -901,9 +888,7 @@ class HealthLogProcessor:
             "sections_total": state.get("sections_total", 0),
             "sections_processed": len(processed_files),
             "sections_failed": [f.stem.replace(".failed", "") for f in failed_files],
-            "extractions_failed": [
-                f.stem.replace(".failed", "") for f in extraction_failed_files
-            ],
+            "extractions_failed": [f.stem.replace(".failed", "") for f in extraction_failed_files],
             "reports_generated": state.get("reports_generated", []),
         }
 
@@ -950,9 +935,10 @@ class HealthLogProcessor:
         # Process (potentially in parallel)
         max_workers = self.config.max_workers
         failed: list[str] = []
-        with ThreadPoolExecutor(max_workers=max_workers) as ex, tqdm(
-            total=len(to_process), desc="Processing"
-        ) as bar:
+        with (
+            ThreadPoolExecutor(max_workers=max_workers) as ex,
+            tqdm(total=len(to_process), desc="Processing") as bar,
+        ):
             futures = {ex.submit(self._process_section, sec): sec for sec in to_process}
             for fut in as_completed(futures):
                 try:
@@ -968,9 +954,7 @@ class HealthLogProcessor:
                         date = extract_date(section)
                     except DateExtractionError:
                         date = "(unknown date)"
-                    self.logger.error(
-                        "Exception processing section %s: %s", date, e, exc_info=True
-                    )
+                    self.logger.error("Exception processing section %s: %s", date, e, exc_info=True)
                     failed.append(date)
                     stats["failed"] += 1
                 bar.update(1)
@@ -1122,9 +1106,7 @@ class HealthLogProcessor:
             "validate_prompt": validate_prompt_hash,
         }
 
-    def _check_needs_regeneration(
-        self, path: Path, expected_deps: DependencyMap
-    ) -> bool:
+    def _check_needs_regeneration(self, path: Path, expected_deps: DependencyMap) -> bool:
         """Check if a file needs regeneration based on its dependencies.
 
         Returns True if file doesn't exist or dependencies have changed.
@@ -1147,7 +1129,10 @@ class HealthLogProcessor:
             if existing_deps.get(key) != expected_hash:
                 self.logger.info(
                     "Cache miss for %s: %s changed (%s -> %s)",
-                    path.name, key, existing_deps.get(key), expected_hash,
+                    path.name,
+                    key,
+                    existing_deps.get(key),
+                    expected_hash,
                 )
                 return True
 
@@ -1286,15 +1271,12 @@ class HealthLogProcessor:
         match = DATE_SECTION_SPLIT_RE.search(text)
         if not match:
             raise ValueError(
-                "No dated sections found (expected '### YYYY-MM-DD' or "
-                "'### YYYY/MM/DD')."
+                "No dated sections found (expected '### YYYY-MM-DD' or '### YYYY/MM/DD')."
             )
 
         body = text[match.start() :]
         sections = [
-            normalize_section_date_header(s)
-            for s in DATE_SECTION_SPLIT_RE.split(body)
-            if s.strip()
+            normalize_section_date_header(s) for s in DATE_SECTION_SPLIT_RE.split(body) if s.strip()
         ]
 
         merged: dict[str, str] = {}
@@ -1324,13 +1306,9 @@ class HealthLogProcessor:
         if self.config.labs_parser_output_path:
             labs_path = self.config.labs_parser_output_path
             if not labs_path.exists():
-                self.logger.warning(
-                    "LABS_PARSER_OUTPUT_PATH does not exist: %s", labs_path
-                )
+                self.logger.warning("LABS_PARSER_OUTPUT_PATH does not exist: %s", labs_path)
             elif not labs_path.is_dir():
-                self.logger.warning(
-                    "LABS_PARSER_OUTPUT_PATH is not a directory: %s", labs_path
-                )
+                self.logger.warning("LABS_PARSER_OUTPUT_PATH is not a directory: %s", labs_path)
             else:
                 agg_csv = labs_path / "all.csv"
                 if agg_csv.exists():
@@ -1338,9 +1316,7 @@ class HealthLogProcessor:
                         lab_dfs.append(pd.read_csv(agg_csv))
                         self.logger.info("Loaded aggregated labs from %s", agg_csv)
                     except (pd.errors.ParserError, pd.errors.EmptyDataError) as e:
-                        self.logger.error(
-                            "Failed to parse aggregated labs CSV %s: %s", agg_csv, e
-                        )
+                        self.logger.error("Failed to parse aggregated labs CSV %s: %s", agg_csv, e)
 
         if not lab_dfs:
             self.logger.info("No lab CSV files found")
@@ -1446,9 +1422,7 @@ class HealthLogProcessor:
 
         exams_path = self.config.medical_exams_parser_output_path
         if not exams_path.exists():
-            self.logger.warning(
-                "MEDICAL_EXAMS_PARSER_OUTPUT_PATH does not exist: %s", exams_path
-            )
+            self.logger.warning("MEDICAL_EXAMS_PARSER_OUTPUT_PATH does not exist: %s", exams_path)
             return
         if not exams_path.is_dir():
             self.logger.warning(
@@ -1502,9 +1476,7 @@ class HealthLogProcessor:
         self.medical_exams_by_date = exams_by_date
 
         if skipped_count > 0:
-            self.logger.warning(
-                "Skipped %d directories without valid date prefix", skipped_count
-            )
+            self.logger.warning("Skipped %d directories without valid date prefix", skipped_count)
         self.logger.info(
             "Loaded %d medical exam summaries for %d dates from %s",
             loaded_count,
@@ -1568,9 +1540,7 @@ class HealthLogProcessor:
             List of Path objects for orphaned entry files.
         """
         source_dates = {extract_date(sec) for sec in sections}
-        data_dates = set(self.labs_by_date.keys()) | set(
-            self.medical_exams_by_date.keys()
-        )
+        data_dates = set(self.labs_by_date.keys()) | set(self.medical_exams_by_date.keys())
         valid_dates = source_dates | data_dates
 
         orphaned: list[Path] = []
@@ -1605,9 +1575,7 @@ class HealthLogProcessor:
         Returns the original sections list unchanged.
         """
         log_dates = {extract_date(sec) for sec in sections}
-        data_dates = set(self.labs_by_date.keys()) | set(
-            self.medical_exams_by_date.keys()
-        )
+        data_dates = set(self.labs_by_date.keys()) | set(self.medical_exams_by_date.keys())
         missing_dates = sorted(data_dates - log_dates)
 
         if not missing_dates:
@@ -1674,8 +1642,7 @@ class HealthLogProcessor:
         if missing_in_entries:
             error_msg = "Date validation failed:\n"
             error_msg += (
-                "  - Dates in source but missing from entries: "
-                f"{sorted(missing_in_entries)}\n"
+                f"  - Dates in source but missing from entries: {sorted(missing_in_entries)}\n"
             )
             raise DateValidationError(error_msg)
 

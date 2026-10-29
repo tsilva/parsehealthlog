@@ -22,13 +22,13 @@ mkdir -p ~/.config/parsehealthlog/profiles
 uv run parsehealthlog --profile <profile_name>
 
 # Environment configuration (~/.config/parsehealthlog/.env)
-OPENROUTER_API_KEY=your-key         # Required
+AGENTBRIDGE_API_KEY=your-key         # Required
 MODEL_ID=your-model                 # Optional, defaults to google/gemini-3.7-flash
 
 # Profile configuration (~/.config/parsehealthlog/profiles/<name>.yaml)
 health_log_path: /path/to/health.md    # Required
 output_path: /path/to/output           # Required
-base_url: https://openrouter.ai/api/v1 # Optional (default shown)
+base_url: http://127.0.0.1:8082/api/v1 # Optional (default shown)
 ```
 
 See `docs/pipeline.md` for full configuration options.
@@ -100,3 +100,15 @@ Output written to:
 - `logs/all.log` - All INFO+ messages
 - `logs/warnings.log` - WARNING+ messages
 - Console - All levels
+
+## Local profile shortcuts
+
+The repo `.config/` directory is Git-ignored and exposes only external runtime
+profiles for local browsing. `.config/profiles` links to the existing
+`~/.config/parsehealthlog/profiles/` directory; keep that target limited to profile
+files. Do not move actual runtime files into the checkout or expose `.env`,
+credentials, sessions, databases, caches, logs or parser outputs through these
+shortcuts. Edits through a profile link affect its original and retain all
+existing source-write restrictions. Runtime discovery paths are unchanged.
+See README.md for recreation commands; links are local and external profiles
+require independent backups.

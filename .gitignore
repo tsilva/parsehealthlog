@@ -129,3 +129,6 @@ target/
 var/
 venv.bak/
 wheels/
+
+# Local shortcuts to external runtime profiles
+/.config/

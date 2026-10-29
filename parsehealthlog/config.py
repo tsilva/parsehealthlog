@@ -13,11 +13,12 @@ from pathlib import Path
 
 import yaml
 
+from parsehealthlog.agentbridge import base_url as gateway_base_url
 from parsehealthlog.exceptions import ConfigurationError
 
 # OpenRouter pricing per 1M tokens (input/output) in USD
 # Prices as of 2024 - update as needed
-DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
+DEFAULT_BASE_URL = "http://127.0.0.1:8082/api/v1"
 DEFAULT_MODEL_ID = "google/gemini-3.7-flash"
 
 
@@ -133,17 +134,13 @@ class ProfileConfig:
             health_log_path=get_path("health_log_path"),
             output_path=get_path("output_path"),
             labs_parser_output_path=get_path("labs_parser_output_path"),
-            medical_exams_parser_output_path=get_path(
-                "medical_exams_parser_output_path"
-            ),
+            medical_exams_parser_output_path=get_path("medical_exams_parser_output_path"),
             workers=data.get("workers"),
             base_url=data.get("base_url", DEFAULT_BASE_URL),
         )
 
     @classmethod
-    def find_profile_path(
-        cls, profile_name: str, profiles_dir: Path | None = None
-    ) -> Path | None:
+    def find_profile_path(cls, profile_name: str, profiles_dir: Path | None = None) -> Path | None:
         """Find a profile file by name in the configured profiles directory."""
         profiles_dir = profiles_dir or get_profiles_dir()
         for ext in (".yaml", ".yml", ".json"):
@@ -212,11 +209,7 @@ class Config:
             raise ConfigurationError(
                 f"Profile '{profile.name}' missing required field: output_path"
             )
-        api_key = os.getenv("OPENROUTER_API_KEY")
-        if not api_key:
-            raise ConfigurationError(
-                "Missing required environment variable: OPENROUTER_API_KEY"
-            )
+        api_key = os.getenv("AGENTBRIDGE_API_KEY") or "not-needed"
         model_id = os.getenv("MODEL_ID", DEFAULT_MODEL_ID)
 
         # Workers with priority: profile > env > default (clamped to CPU count)
@@ -231,7 +224,7 @@ class Config:
         max_workers = max(1, min(max_workers_raw, max_cpu))
 
         return cls(
-            base_url=profile.base_url,
+            base_url=gateway_base_url(profile.base_url),
             api_key=api_key,
             model_id=model_id,
             health_log_path=profile.health_log_path,
