@@ -10,6 +10,9 @@ The tool processes, validates, and enriches health log entries but does **not** 
 
 ## Quick Start
 
+For agent-operated extraction, use the command and profile declared in the root
+`.runbox.yaml`. The setup below is for standalone use.
+
 ```bash
 # Setup
 curl -LsSf https://astral.sh/uv/install.sh | sh  # Install uv if needed
@@ -21,8 +24,7 @@ mkdir -p ~/.config/parsehealthlog/profiles
 # Run
 uv run parsehealthlog --profile <profile_name>
 
-# Environment configuration (~/.config/parsehealthlog/.env)
-AGENTBRIDGE_API_KEY=your-key         # Required
+# Optional model override for standalone use
 MODEL_ID=your-model                 # Optional, defaults to google/gemini-3.7-flash
 
 # Profile configuration (~/.config/parsehealthlog/profiles/<name>.yaml)
